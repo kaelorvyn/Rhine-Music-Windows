@@ -1,5 +1,9 @@
 # Rhine Lab UI
 
+## 当前维护范围
+
+- 用户于 2026-10-05 明确：本仓库后续只维护网页版本，不收录或维护 DSH Desktop 衍生主题、安装工具及其独立发布流程。适用于网页的贡献可单独提取、验证并保留来源署名。
+
 ## Cloudflare 托管迁移
 
 - 用户于 2026-09-15 授权将正式网站迁到 Cloudflare Pages，保留 `rhine.lubeiluchen.cc`，并明确授权通过浏览器修改阿里云 DNS。项目名为 `rhine-lab-ui`，沿用正式 main 的原生实现与视觉规范。

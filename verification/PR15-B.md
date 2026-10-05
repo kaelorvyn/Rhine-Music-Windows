@@ -45,4 +45,10 @@ Idle showed a modest improvement, while navigation showed no stable benefit. Med
 
 ## Deployment boundary
 
-Cloudflare configuration is unchanged. Branch and merge commit titles carry `[CF-Pages-Skip]`, the documented ad hoc prefix that omits a Pages deployment without changing configuration. No deploy, retry, deployment hook or deployment configuration action is part of this task. The original contributor PR and branch are left unchanged.
+The initial extraction was prepared with `[CF-Pages-Skip]` and no deployment. On 2026-10-05 the owner explicitly authorized deploying after merging PR #16, superseding that boundary. The PR title and final merge title omit the skip prefix; existing Cloudflare configuration remains unchanged.
+
+PRs #12, #13 and #16 were tested together before merging: production/PWA build, 29 logic checks, 11 Edge rendering checks, and native keyboard checks for custom quality selection and modal license-link navigation passed. PR #16 merged as `d0c023b21a5262f6084c536db91e74a33571a950`. Cloudflare production deployment `8328242d-3ebf-40e3-af7e-cbe1ea05811a` succeeded at 2026-10-05 20:45:16 (UTC+8).
+
+Both the deployment URL and `rhine.lubeiluchen.cc` serve PWA version `c1149b36b86fa692`, with 821 manifest entries. The production JavaScript matches the tested build byte-for-byte; the three licensed webfonts match the local verified sources. Homepage, stylesheet, worker and update entry return 200; update cache policies and missing-asset 404 behavior passed. This is a focused production check, not an exhaustive comparison of all manifest entries.
+
+The owner also confirmed that this repository will maintain only the website. PR #15 was replied to and closed, explaining that its applicable web optimizations were accepted through #16 and recommending independent maintenance of the DSH theme. The contributor branch was not changed.
