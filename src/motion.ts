@@ -6,6 +6,8 @@ export const smooth = (t: number) => {
 const bell = (x: number, width: number) => Math.exp(-0.5 * (x / width) ** 2);
 export function archiveWave(row: number, lane: number, time: number) {
   const t = time - 22;
+  // Both authored envelopes are exactly zero outside this interval.
+  if (t <= 0 || t >= 4.35) return 0;
   const phase = row + (lane - 2) * 0.65;
   const enter = smooth(t / 0.32);
   const first = 3 + t * 19;
