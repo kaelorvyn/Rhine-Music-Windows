@@ -116,7 +116,18 @@ export function qualityMarkup(quality: RenderQuality) {
 export function syncQualityUI(quality: RenderQuality) {
   const preset = document.querySelector<HTMLSelectElement | HTMLButtonElement>("#quality-preset");
   if (!preset) return;
-  preset.value = matchingPreset(quality);
+  const value = matchingPreset(quality);
+  if (preset instanceof HTMLSelectElement) {
+    let custom = preset.querySelector<HTMLOptionElement>('option[value="custom"]');
+    if (value === "custom" && !custom) {
+      custom = new Option("自定义", "custom");
+      custom.disabled = true;
+      preset.add(custom);
+    } else if (value !== "custom") {
+      custom?.remove();
+    }
+  }
+  preset.value = value;
   document
     .querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("[data-quality]")
     .forEach((control) => {
