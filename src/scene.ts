@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { ArchiveVisibility } from "./archive-visibility";
+import { ArchiveDrawCoverage, ArchiveShadowCoverage } from "./archive-draw-coverage";
 import { InstanceUpdates } from "./instance-updates";
 import { RenderState } from "./render-state";
 import { SharedDepthAO, SharedDepthBokeh } from "./shared-depth";
@@ -169,9 +170,12 @@ export class ArchiveScene {
   private matrixUpdates?: InstanceUpdates;
   private themeUpdates?: InstanceUpdates;
   private renderState = new RenderState();
+  private shadowState = new RenderState();
   private renderedFrames = 0;
   private reusedFrames = 0;
   private visibility = new ArchiveVisibility();
+  private drawCoverage = new ArchiveDrawCoverage();
+  private shadowCoverage?: ArchiveShadowCoverage;
   private instanceCapacity = LOOP_COLUMNS * LOOP_ROWS;
   private drawnCells: ArchiveCell[] = [];
   private extraCoverage = false;
@@ -226,6 +230,8 @@ export class ArchiveScene {
   private archiveMomentum: { motion: ArchivePlaneMomentum; time: number } | null = null;
   private holdingArchive = false;
   private cancelPointer = () => {};
+  private pendingHover: Pick<PointerEvent, 'clientX' | 'clientY' | 'pointerType'> | null = null;
+  private flushHover = () => {};
   private rotation = 0;
   private targetRotation = 0;
   private light: THREE.DirectionalLight;
@@ -273,7 +279,10 @@ export class ArchiveScene {
       "三维研究档案阵列，点击选择，左右拖动切列，上下拖动或滚轮切换列内档案",
     );
     container.appendChild(this.renderer.domElement);
-    this.renderer.domElement.addEventListener('webglcontextrestored', () => this.renderState.invalidate(), { signal: this.inputEvents.signal });
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => {
+      this.renderState.invalidate();
+      this.shadowState.invalidate();
+    }, { signal: this.inputEvents.signal });
     this.scene.background = new THREE.Color("#eae5e1");
     // The frame updates world matrices once after simulation; subsequent
     // beauty, normal, depth and transmission renders reuse those same matrices.
@@ -468,6 +477,8 @@ export class ArchiveScene {
       this.instances.push(inst);
       this.scene.add(inst);
     }
+    this.shadowCoverage = new ArchiveShadowCoverage(this.instances.find(mesh => mesh.castShadow)!);
+    this.scene.add(this.shadowCoverage.mesh);
     this.labelCanvas.width = 1024;
     this.labelCanvas.height = 440;
     this.labelTexture = new THREE.CanvasTexture(this.labelCanvas);
@@ -966,7 +977,7 @@ export class ArchiveScene {
     let wheelTotal = 0,
       wheelTime = 0;
     const pointers = new Set<number>();
-    const hover = (e: PointerEvent) => {
+    const hover = (e: Pick<PointerEvent, 'clientX' | 'clientY' | 'pointerType'>) => {
       if (
         e.pointerType !== "mouse" ||
         !this.canBrowse() ||
@@ -982,7 +993,13 @@ export class ArchiveScene {
       this.setHover(cell);
       canvas.style.cursor = cell ? "pointer" : "grab";
     };
+    this.flushHover = () => {
+      const sample = this.pendingHover;
+      this.pendingHover = null;
+      if (sample) hover(sample);
+    };
     const reset = () => {
+      this.pendingHover = null;
       const id = activePointer;
       activePointer = null;
       this.dragging = false;
@@ -1030,6 +1047,7 @@ export class ArchiveScene {
     canvas.addEventListener("pointerdown", (e) => {
       if (e.pointerType === "mouse" && e.button !== 0) return;
       if (!this.canBrowse() && !this.canInspect) return;
+      this.pendingHover = null;
       pointers.add(e.pointerId);
       if (pointers.size > 1) {
         cancelled = true;
@@ -1062,7 +1080,8 @@ export class ArchiveScene {
       }
       if (activePointer !== null && e.pointerId !== activePointer) return;
       if (activePointer === null) {
-        hover(e);
+        // Coalesce uncaptured hover only; dragging and release velocity stay immediate.
+        this.pendingHover = { clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType };
         return;
       }
       if (cancelled) return;
@@ -1125,6 +1144,7 @@ export class ArchiveScene {
       }
     }, { signal: this.inputEvents.signal });
     canvas.addEventListener("pointerleave", () => {
+      this.pendingHover = null;
       this.pointer.set(0, 0);
       this.setHover(null);
     }, { signal: this.inputEvents.signal });
@@ -1189,6 +1209,7 @@ export class ArchiveScene {
     this.last = time;
     this.clock = time;
     if (!this.loaded) return;
+    this.flushHover();
     const step = !this.motion.surfaceTransitions ? 1 : Math.min(elapsed, .25) / 1.1;
     this.presence += Math.sign(this.presenceTarget - this.presence) * Math.min(step, Math.abs(this.presenceTarget - this.presence));
     this.renderer.domElement.style.opacity = String(THREE.MathUtils.clamp(this.presence / .16, 0, 1));
@@ -1309,7 +1330,8 @@ export class ArchiveScene {
       spectrumPoint.set((lane - 2) * COLUMN_SPACING - trackX, -4.6, (row - 15.5) * ROW_SPACING + this.rail.value).project(this.camera);
       return (spectrumPoint.x + 1) / 2;
     };
-    const field = (row: number, lane: number) => {
+    const fieldCache = new Map<number, Map<number, number>>();
+    const calculateField = (row: number, lane: number) => {
       if (cinematic)
         return cinematicField(
           row,
@@ -1351,6 +1373,15 @@ export class ArchiveScene {
         (activePlay && !this.reduced ? rhythmDisplacement(row, lane, time, play.bands, play.strength, rhythm, screenX(row, lane)) : 0) +
         (this.relayLifts.get(cellKey({ row, lane })) ?? 0)
       );
+    };
+    const field = (row: number, lane: number): number => {
+      let values = fieldCache.get(lane);
+      if (!values) { values = new Map(); fieldCache.set(lane, values); }
+      const previous = values.get(row);
+      if (previous !== undefined) return previous;
+      const value = calculateField(row, lane);
+      values.set(row, value);
+      return value;
     };
     const selectedBase = chosen.y + field(selectedRow, selectedLane);
     if (!cinematic) {
@@ -1639,6 +1670,8 @@ export class ArchiveScene {
 
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld();
+    // Music can depend on projected X; invalidate after the camera advances.
+    if (activePlay && !this.reduced) fieldCache.clear();
     // Build and compact the instance set only after the actual damped camera
     // is final for this frame. Picking uses the same packed index-to-cell map.
     const fixed = (Boolean(cinematic) || !this.looping) && !responsiveOpening;
@@ -1648,6 +1681,8 @@ export class ArchiveScene {
     hidden.add(cellKey(this.selectedCell));
     this.drawnCells = [];
     this.relayPoints.clear();
+    this.drawCoverage.update(this.camera);
+    this.shadowCoverage?.begin();
     this.matrixUpdates ??= new InstanceUpdates(this.instances[0].instanceMatrix);
     if (this.themeAttribute) this.themeUpdates ??= new InstanceUpdates(this.themeAttribute);
     for (const cell of this.cells) {
@@ -1657,20 +1692,25 @@ export class ArchiveScene {
       const y = -4.6 + field(row, lane) + hoverLift(cell) - this.presentationDrop(cell);
       const z = (row - 15.5) * ROW_SPACING + entryZ + this.rail.value;
       if (!fixed && !this.visibility.intersects(x, y, z)) continue;
-      const i = this.drawnCells.length;
-      this.ensureInstanceCapacity(i + 1);
-      this.drawnCells.push(cell);
-      this.themeUpdates?.scalar(i, this.theme.sample(cell, time));
+
       const slope = field(row + .5, lane) - field(row - .5, lane);
       this.dummy.position.set(x, y, z);
       this.dummy.rotation.set(slope * .024 * (1 - detail), 0, 0);
       this.dummy.scale.setScalar(1);
       this.dummy.updateMatrix();
       if (play.enabled) this.relayPoints.set(cellKey(cell), { cell: { ...cell }, point: new THREE.Vector3(0, 3.5, 0).applyMatrix4(this.dummy.matrix) });
+      this.shadowCoverage?.add(this.dummy.matrix);
+      if (!this.drawCoverage.contains(x, y, z)) continue;
+      const i = this.drawnCells.length;
+      this.ensureInstanceCapacity(i + 1);
+      this.drawnCells.push(cell);
+      this.themeUpdates?.scalar(i, this.theme.sample(cell, time));
       this.matrixUpdates!.set(i * 16, this.dummy.matrix.elements);
     }
     const countChanged = this.instances[0].count !== this.drawnCells.length;
-    const matricesChanged = this.matrixUpdates!.commit();
+    const visibleMatricesChanged = this.matrixUpdates!.commit();
+    const shadowMatricesChanged = this.shadowCoverage?.commit() ?? false;
+    const matricesChanged = visibleMatricesChanged || shadowMatricesChanged;
     for (const inst of this.instances) {
       inst.count = this.drawnCells.length;
     }
@@ -1756,7 +1796,17 @@ export class ArchiveScene {
       if (!state.end()) { this.reusedFrames++; return; }
     }
     this.renderedFrames++;
-    this.renderer.shadowMap.needsUpdate = true;
+    const shadow = this.shadowState;
+    shadow.begin();
+    shadow.add(this.light.shadow.mapSize.x, Number(this.renderer.shadowMap.enabled));
+    shadow.floats(...this.light.matrixWorld.elements, ...this.light.target.matrixWorld.elements);
+    this.scene.traverseVisible(object => {
+      if (!(object instanceof THREE.Mesh) || !object.castShadow) return;
+      shadow.add(object.id, object.geometry.id);
+      shadow.floats(...object.matrixWorld.elements);
+      if (object instanceof THREE.InstancedMesh) shadow.add(object.count, object.instanceMatrix.version);
+    });
+    this.renderer.shadowMap.needsUpdate = shadow.end() || this.light.shadow.needsUpdate;
     if (this.superPerformance) this.renderer.render(this.scene, this.camera);
     else this.composer.render();
   }

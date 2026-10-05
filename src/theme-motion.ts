@@ -21,6 +21,9 @@ export class ThemeWave {
   background(time: number) { return this.backgroundFrom + (this.target - this.backgroundFrom) * ease((time - this.start) / .85); }
   beginFrame() { this.latest.clear(); }
   sample(cell: ThemeCell, time: number) {
+    // Every lane has completed its transition after the maximum delay + duration.
+    // A subsequent set() can use backgroundFrom for these uniformly settled cells.
+    if (time - this.start >= 1.18) return this.target;
     const delay = Math.min(.6, Math.abs(cell.row - this.origin.row) * .034 + Math.abs(cell.lane - this.origin.lane) * .11);
     const from = this.from.get(key(cell)) ?? this.backgroundFrom;
     const value = from + (this.target - from) * ease((time - this.start - delay) / .58);
