@@ -66,9 +66,13 @@ function dispatch(key: string, repeat = false): void {
     const index = items.indexOf(active as HTMLElement);
     const backwards = ["Shift+Tab", "ArrowUp", "ArrowLeft"].includes(key);
     if (items.length)
-      items[(index + (backwards ? items.length - 1 : 1)) % items.length].focus({
-        preventScroll: true,
-      });
+      items[
+        index < 0
+          ? backwards
+            ? items.length - 1
+            : 0
+          : (index + (backwards ? items.length - 1 : 1)) % items.length
+      ].focus();
     return;
   }
   const event = new KeyboardEvent("keydown", {
