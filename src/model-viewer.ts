@@ -12,7 +12,7 @@ import {
   resizeQuality,
 } from "./quality-renderer";
 import { fullMotion, type MotionPreferences } from "./motion-preferences";
-import { onInputDevice } from "./gamepad";
+import { inputDevice, onInputDevice } from "./gamepad";
 
 const PARTS = [
   { id: "fasteners", label: "紧固件", en: "FASTENERS", depth: 2.75 },
@@ -123,15 +123,7 @@ export class ModelViewer {
       </footer>
       <div class="viewer-state" aria-live="polite">已组装</div>`;
     parent.appendChild(this.root);
-    this.disposeDeviceListener = onInputDevice((device) => {
-      const help = this.root.querySelector(".viewer-help");
-      if (help) {
-        help.innerHTML =
-          device === "gamepad"
-            ? `<span>LS · DP 平移</span><span>Y 复位视角</span>`
-            : `<span>拖动旋转</span><span>↑ ↓ ← → 平移</span><span>滚轮缩放</span>`;
-      }
-    });
+    this.disposeDeviceListener = onInputDevice(() => this.updateHelp());
     this.canvasHost = this.root.querySelector(".viewer-canvas")!;
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -600,11 +592,18 @@ export class ModelViewer {
     this.camera.updateProjectionMatrix();
     this.controlCamera.aspect = this.camera.aspect;
     this.controlCamera.updateProjectionMatrix();
+    this.updateHelp();
+  }
+
+  private updateHelp() {
     const touch = matchMedia("(pointer: coarse)").matches;
     const help = this.root.querySelector(".viewer-help")!;
-    help.innerHTML = touch
-      ? "<span>单指旋转</span><span>双指缩放 / 平移</span>"
-      : "<span>拖动旋转</span><span>↑ ↓ ← → 平移</span><span>滚轮缩放</span>";
+    help.innerHTML =
+      inputDevice() === "gamepad"
+        ? "<span>LS · DP 平移</span><span>Y 复位视角</span><span>LB · RB 选择操作 / A 确认 / B 返回</span>"
+        : touch
+          ? "<span>单指旋转</span><span>双指缩放 / 平移</span>"
+          : "<span>拖动旋转</span><span>↑ ↓ ← → 平移</span><span>滚轮缩放</span>";
   }
 
   update(time: number) {

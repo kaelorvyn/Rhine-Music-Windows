@@ -1,8 +1,13 @@
 type PressedKeys = Set<string>;
 
 function currentPad(): Gamepad | undefined {
-  const pads = navigator.getGamepads();
-  for (const pad of pads) if (pad && pad.connected) return pad;
+  try {
+    const pads = navigator.getGamepads();
+    for (const pad of pads)
+      if (pad?.connected && pad.mapping === "standard") return pad;
+  } catch {
+    /* Gamepad access can be blocked by Permissions Policy. */
+  }
   return undefined;
 }
 
@@ -16,6 +21,8 @@ function keysFor(pad: Gamepad): PressedKeys {
   if (button(1) || button(8)) keys.add("Escape");
   if (button(2)) keys.add("/");
   if (button(3)) keys.add("Home");
+  if (button(4)) keys.add("Shift+Tab");
+  if (button(5)) keys.add("Tab");
   if (button(12) || axis(1) < -DEADZONE) keys.add("ArrowUp");
   if (button(13) || axis(1) > DEADZONE) keys.add("ArrowDown");
   if (button(14) || axis(0) < -DEADZONE) keys.add("ArrowLeft");
@@ -24,19 +31,66 @@ function keysFor(pad: Gamepad): PressedKeys {
   return keys;
 }
 
-function dispatch(key: string): void {
+const gamepadEvents = new WeakSet<KeyboardEvent>();
+export const isGamepadEvent = (event: KeyboardEvent) =>
+  gamepadEvents.has(event);
+
+function dispatch(key: string, repeat = false): void {
   const active = document.activeElement;
   const target =
     active instanceof HTMLElement && active !== document.body
       ? active
-      : document;
-  target.dispatchEvent(
-    new KeyboardEvent("keydown", {
-      key,
-      bubbles: true,
-      cancelable: true,
-    }),
-  );
+      : document.body;
+  const modal =
+    active instanceof HTMLElement ? active.closest(".terminal-modal") : null;
+  const moveFocus =
+    key === "Tab" || key === "Shift+Tab" || (modal && key.startsWith("Arrow"));
+  if (moveFocus) {
+    const scope =
+      modal ??
+      (active instanceof HTMLElement
+        ? active.closest('[role="dialog"]')
+        : null) ??
+      document;
+    const items = [
+      ...scope.querySelectorAll<HTMLElement>(
+        'a[href],button,input,select,summary,[tabindex="0"]',
+      ),
+    ].filter(
+      (el) =>
+        el.tabIndex >= 0 &&
+        !el.matches(':disabled,[aria-disabled="true"]') &&
+        !el.closest("[inert]") &&
+        el.getClientRects().length > 0,
+    );
+    const index = items.indexOf(active as HTMLElement);
+    const backwards = ["Shift+Tab", "ArrowUp", "ArrowLeft"].includes(key);
+    if (items.length)
+      items[(index + (backwards ? items.length - 1 : 1)) % items.length].focus({
+        preventScroll: true,
+      });
+    return;
+  }
+  const event = new KeyboardEvent("keydown", {
+    key,
+    repeat,
+    bubbles: true,
+    cancelable: true,
+  });
+  gamepadEvents.add(event);
+  target.dispatchEvent(event);
+  // Synthetic keyboard events have no native button activation.
+  if (
+    key === "Enter" &&
+    !event.defaultPrevented &&
+    active instanceof HTMLElement &&
+    active.matches(
+      'button,a[href],summary,input[type="checkbox"],input[type="radio"]',
+    ) &&
+    !active.matches(':disabled,[aria-disabled="true"]') &&
+    !active.closest("[inert]")
+  )
+    active.click();
 }
 
 const DEADZONE = 0.35;
@@ -49,11 +103,7 @@ const lastDispatched = new Map<string, number>();
 
 let frame = 0;
 let running = false;
-let present = false;
-
-export function gamepadConnected(): boolean {
-  return present;
-}
+let waitForRelease = false;
 
 export type InputDevice = "keyboard" | "gamepad";
 
@@ -82,9 +132,16 @@ export function onInputDevice(
 
 function poll(): void {
   frame = requestAnimationFrame(poll);
+  if (document.hidden || !document.hasFocus()) {
+    waitForRelease = true;
+    held.clear();
+    firstAt.clear();
+    lastDispatched.clear();
+    return;
+  }
   const pad = currentPad();
   if (!pad) {
-    present = false;
+    setDevice("keyboard");
     held.clear();
     firstAt.clear();
     lastDispatched.clear();
@@ -92,8 +149,11 @@ function poll(): void {
     cancelAnimationFrame(frame);
     return;
   }
-  present = true;
   const pressed = keysFor(pad);
+  if (waitForRelease) {
+    waitForRelease = pressed.size > 0;
+    return;
+  }
   const now = performance.now();
   if (pressed.size > 0) setDevice("gamepad");
 
@@ -112,11 +172,12 @@ function poll(): void {
       lastDispatched.set(key, now);
       dispatch(key);
     } else if (
+      (key.startsWith("Arrow") || key.endsWith("Tab")) &&
       now - firstAt.get(key)! >= REPEAT_START &&
       now - lastDispatched.get(key)! >= REPEAT_RATE
     ) {
       lastDispatched.set(key, now);
-      dispatch(key);
+      dispatch(key, true);
     }
   }
 }
@@ -127,7 +188,10 @@ function start(): void {
   poll();
 }
 
+let enabled = false;
 export function enableGamepad(): void {
+  if (enabled) return;
+  enabled = true;
   if (typeof navigator === "undefined" || !("getGamepads" in navigator)) return;
   window.addEventListener(
     "keydown",
@@ -139,9 +203,11 @@ export function enableGamepad(): void {
       passive: true,
     },
   );
+  window.addEventListener("pointerdown", () => setDevice("keyboard"), {
+    passive: true,
+  });
   start();
   window.addEventListener("gamepadconnected", () => {
-    setDevice("gamepad");
     start();
   });
   window.addEventListener("gamepaddisconnected", () => {

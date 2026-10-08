@@ -67,7 +67,7 @@ import { paintTheme, themeSettingsMarkup } from "./theme-ui";
 let playground: ArchivePlayground | undefined;
 import { WallpaperEffects } from "./wallpaper-effects";
 import { WallpaperBackground } from "./wallpaper-background";
-import { enableGamepad, gamepadConnected, onInputDevice } from "./gamepad";
+import { enableGamepad, isGamepadEvent, onInputDevice } from "./gamepad";
 let wallpaperEffects: WallpaperEffects | undefined;
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
@@ -1157,7 +1157,7 @@ document.addEventListener("keydown", (e) => {
     if (mode === "boot") setMode("archive");
     openModal("search");
   }
-  if (e.key === "Home" && gamepadConnected() && mode === "archive" && !modal) {
+  if (e.key === "Home" && isGamepadEvent(e) && mode === "archive" && !modal) {
     e.preventDefault();
     openModal("saved");
   }
@@ -1175,8 +1175,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (
     e.key === "Enter" &&
-    (gamepadConnected() ||
-      document.activeElement === document.body ||
+    (document.activeElement === document.body ||
       document.activeElement?.id === "detail-content" ||
       ["prev", "next", "column-prev", "column-next"].includes(
         (document.activeElement as HTMLElement)?.dataset.action ?? "",
