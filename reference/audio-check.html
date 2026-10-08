@@ -11,7 +11,7 @@
 <pre id="result">等待检查。点击后会解码音乐并在离线音频上下文中检查信号。</pre>
 <details><summary>原片对照（6.76–40 秒）</summary><video controls preload="metadata" src="/《明日方舟》特别映像 [莱茵生命：访问] [BV1rr4y1b7sz].mp4#t=6.76,40"></video></details>
 <script type="module">
-import {TerminalAudio,synthesizeSound,BOOT_CUES} from '/src/audio.ts';
+import {TerminalAudio,synthesizeSound,BOOT_CUES,rampLevel} from '/src/audio.ts';
 import {TYPING_FRAMES,hasTypingBetween} from '/src/typing-rhythm.ts';
 let terminal=new TerminalAudio();
 const output=document.querySelector('#result');let running=false;
@@ -45,6 +45,17 @@ document.querySelector('#test').onclick=async()=>{
   const typingBuffer=await typingContext.startRendering();let typingPeak=0;
   for(const x of typingBuffer.getChannelData(0)){checkFinite(x);typingPeak=Math.max(typingPeak,Math.abs(x));}
   check(typingPeak>.01&&typingPeak<.15,`25Hz 连续输入无削波（峰值 ${typingPeak.toFixed(3)}）`);
+  for(const supportsHold of [true,false]){
+   const c=new OfflineAudioContext(1,48000*.2,48000),source=c.createConstantSource(),gain=c.createGain();
+   source.offset.value=1;source.connect(gain);gain.connect(c.destination);source.start(0);
+   // Firefox keeps cancelAndHoldAtTime unimplemented, so both timelines must reach the target level.
+   if(!supportsHold)Object.defineProperty(gain.gain,'cancelAndHoldAtTime',{value:undefined,configurable:true});
+   gain.gain.setValueAtTime(1,0);
+   rampLevel(gain.gain,.25,0,.05);
+   const rendered=await c.startRendering(),samples=rendered.getChannelData(0);
+   check(Math.abs(samples[48000*.001|0]-1)<.05,`${supportsHold?'完整':'缺少 cancelAndHoldAtTime'} 时电平起点保持`);
+   check(Math.abs(samples[48000*.15|0]-.25)<.02,`${supportsHold?'完整':'缺少 cancelAndHoldAtTime'} 时电平过渡到目标值`);
+  }
   for(const start of [6.8,11.28,12.8,14.68,16.92,17.96])check(hasTypingBetween(start-.01,start),`字段首字 ${start}s 有输入反馈`);
   check(!hasTypingBetween(18.9,19.48),'闪动后文字恢复不产生输入声');
   for(const name of ['atmosphere','motif','pulse']){
