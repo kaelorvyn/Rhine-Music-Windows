@@ -56,13 +56,19 @@ function typingSample(c: BaseAudioContext) {
 }
 const clamp = (x: number) =>
   Math.max(0, Math.min(1, Number.isFinite(x) ? x : 0));
-const level = (
+export const rampLevel = (
   param: AudioParam,
   value: number,
   now: number,
   seconds = 0.05,
 ) => {
-  param.cancelAndHoldAtTime(now);
+  if (typeof param.cancelAndHoldAtTime === "function") {
+    param.cancelAndHoldAtTime(now);
+  } else {
+    const held = param.value;
+    param.cancelScheduledValues(now);
+    param.setValueAtTime(held, now);
+  }
   param.linearRampToValueAtTime(value, now + seconds);
 };
 export const BOOT_CUES: readonly { time: number; sound: Sound }[] = [
@@ -289,7 +295,7 @@ export function synthesizeSound(
   return {
     end,
     stop(now: number) {
-      level(output.gain, 0, now, 0.018);
+      rampLevel(output.gain, 0, now, 0.018);
       for (const source of sources) {
         try {
           source.stop(now + 0.02);
@@ -404,12 +410,12 @@ export class TerminalAudio {
       musicVolume: clamp(prefs.musicVolume),
     };
     if (this.context) {
-      level(
+      rampLevel(
         this.effects!.gain,
         this.prefs.sound ? this.prefs.soundVolume : 0,
         this.context.currentTime,
       );
-      level(
+      rampLevel(
         this.musicBus!.gain,
         this.prefs.music ? this.prefs.musicVolume : 0,
         this.context.currentTime,
@@ -565,7 +571,7 @@ export class TerminalAudio {
       viewer: [0.8, 0.24, 0.28],
     }[this.scene];
     this.stemGains.forEach((g, i) =>
-      level(g.gain, gains[i], this.context!.currentTime, 1.1),
+      rampLevel(g.gain, gains[i], this.context!.currentTime, 1.1),
     );
   }
   play(type: Sound = "tick", pan = 0) {
@@ -601,7 +607,7 @@ export class TerminalAudio {
         type,
       )
     ) {
-      level(this.duck!.gain, 0.65, now, 0.035);
+      rampLevel(this.duck!.gain, 0.65, now, 0.035);
       this.duck!.gain.linearRampToValueAtTime(1, now + 0.9);
     }
   }
@@ -619,7 +625,7 @@ export class TerminalAudio {
         [0.72, 0.36, 0.12],
       ][phase];
       this.stemGains.forEach((g, i) =>
-        level(g.gain, gains[i], this.context!.currentTime, 0.9),
+        rampLevel(g.gain, gains[i], this.context!.currentTime, 0.9),
       );
     }
     if (

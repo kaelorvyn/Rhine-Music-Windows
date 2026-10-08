@@ -14,6 +14,9 @@ export class SharedDepthAO extends SSAOPass {
   private depthClear = new Float32Array([1, 1, 1, 1]);
   constructor(scene: THREE.Scene, camera: THREE.Camera, width: number, height: number, kernel = 32) {
     super(scene, camera, width, height, kernel);
+    // PR #15: fullscreen AO targets never use a depth attachment.
+    this.ssaoRenderTarget.depthBuffer = false;
+    this.blurRenderTarget.depthBuffer = false;
     this.packed = this.normalRenderTarget.texture.clone();
     this.packed.name = 'Archive.packedDepth';
     this.normalRenderTarget.textures.push(this.packed);
@@ -25,6 +28,13 @@ export class SharedDepthAO extends SSAOPass {
       shader.fragmentShader = shader.fragmentShader.replace('void main() {', 'void main() {\narchivePackedDepth = packDepthToRGBA(0.5 * vArchiveZW.x / vArchiveZW.y + 0.5);');
     };
     this.normalMaterial.customProgramCacheKey = () => `archive-normal-packed-depth-v1-${this.sharing}`;
+  }
+  render(renderer: THREE.WebGLRenderer, write: THREE.WebGLRenderTarget, read: THREE.WebGLRenderTarget, delta: number, mask: boolean) {
+    const hidden: THREE.Object3D[] = [];
+    this.scene.traverseVisible(object => { if (object.userData.excludeFromAO) hidden.push(object); });
+    for (const object of hidden) object.visible = false;
+    try { super.render(renderer, write, read, delta, mask); }
+    finally { for (const object of hidden) object.visible = true; }
   }
   setSharing(enabled: boolean) {
     if (enabled === this.sharing) return;

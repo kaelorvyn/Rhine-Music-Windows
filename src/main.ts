@@ -1124,10 +1124,15 @@ document.addEventListener("keydown", (e) => {
   if (modal && e.key === "Tab") {
     const focusables = [
       ...$("#modal-root").querySelectorAll<HTMLElement>(
-        'button,input:not(:disabled),select:not(:disabled),summary,[tabindex="0"]',
+        'a[href],button:not(:disabled),input:not(:disabled),select:not(:disabled),summary,[tabindex="0"]',
       ),
     ];
-    const visible = focusables.filter((el) => el.getClientRects().length > 0);
+    const visible = focusables.filter(
+      (el) =>
+        el.tabIndex >= 0 &&
+        !el.matches(":disabled") &&
+        el.getClientRects().length > 0,
+    );
     const first = visible[0],
       last = visible.at(-1);
     if (e.shiftKey && document.activeElement === first) {
