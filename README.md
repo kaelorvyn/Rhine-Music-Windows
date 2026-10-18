@@ -153,6 +153,6 @@ MiSans 字体、第三方依赖、模型、标志、《明日方舟》相关视�
 隐私说明见 [PRIVACY.md](PRIVACY.md)。
 
 
-源码完整公开，包括取源链路与各平台适配。不入库的只有两类：用户导入的密钥文件（`*.rhinekey`、`pool-credential.json`），以及 `scripts/lx-sources/` 下由他人分发、可能自带他人配置的音源脚本。
+源码完整公开，包括取源链路、各平台适配与 `scripts/lx-sources/` 下的第三方音源。唯一不入库的是用户导入的密钥文件（`*.rhinekey`、`pool-credential.json`、`build-credential.json`）。
 
 共享音源的服务地址不在代码里写死，一律由用户导入的密钥提供；未导入密钥时该通道停用，其余功能不受影响。
