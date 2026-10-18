@@ -1,0 +1,454 @@
+/* ── 搜索页 UI（美化版）────────────────────────────────────────────
+   设计基调：暖米色编辑风（--panel 米白 / --ink 墨色 / --accent 琥珀）。
+   美化原则：柔和圆角 + 轻浮层，去掉直角硬块与硬分割线；
+   胶囊元素（tab、徽标）保持 999px，输入/按钮统一 12px，卡片 14px。 */
+
+/* 平台切换（网络搜索 / 本地音乐）—— 胶囊，与下方音源 tab 同语言 */
+.search-sources { display: flex; gap: 8px; margin-bottom: 18px; }
+.search-sources button {
+  padding: 8px 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: .3px;
+  color: var(--muted);
+  background: transparent;
+  transition: background .18s ease, color .18s ease, border-color .18s ease, transform .18s ease;
+}
+.search-sources button:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 32%, transparent);
+  transform: translateY(-1px);
+}
+.search-sources button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+/* 搜索表单：输入框 + 主按钮，圆角呼应 */
+.online-search-form { display: flex; align-items: stretch; gap: 10px; }
+.online-search-form .album-search {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  border-radius: 12px !important;
+  padding: 13px 16px !important;
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.online-search-form .album-search:hover {
+  border-color: color-mix(in srgb, var(--ink) 28%, transparent);
+}
+.online-search-form .album-search:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.online-search-form button {
+  flex-shrink: 0;
+  padding: 0 22px;
+  border-radius: 12px !important;
+  letter-spacing: .4px;
+  transition: transform .18s ease, box-shadow .18s ease, opacity .18s ease;
+}
+.online-search-form button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--ink) 26%, transparent);
+}
+.online-search-form button:active { transform: translateY(0); }
+
+/* 对齐上游 search-platform-row：platform 行只在搜索出结果之后出现。
+   [hidden] 必须胜过上面的 display:flex，否则 hidden 属性无效。 */
+.online-source-tabs[hidden] { display: none; }
+.online-source-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 6px; }
+.online-source-tabs button {
+  padding: 7px 16px;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  letter-spacing: .3px;
+  border-radius: 999px;
+  color: var(--muted);
+  transition: background .18s ease, color .18s ease, border-color .18s ease, transform .18s ease;
+}
+.online-source-tabs button:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 32%, transparent);
+  transform: translateY(-1px);
+}
+.online-source-tabs button[aria-selected="true"] {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+/* 结果行：圆角 hover 卡片替代硬分割线（仿上游列表行的柔和状态）。
+   列结构对齐上游 unified-song-row（序号 | 收藏 | 封面 | 信息 | 版本 | 专辑 | 时长 | 操作）：
+     序号 | 封面 | 标题+徽章·歌手 | 专辑名 | 时长 | 操作
+   上游原始 grid：
+     grid-template-columns:38px 28px 42px minmax(180px,1.5fr) minmax(130px,1fr) 64px 68px */
+.unified-song {
+  position: relative;
+  display: grid;
+  grid-template-columns: 26px 46px minmax(0, 1.6fr) minmax(96px, 1fr) 48px auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: 14px;
+  transition: background .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+.unified-song:last-child { border-bottom-color: transparent; }
+.unified-song:hover {
+  background: color-mix(in srgb, var(--panel) 60%, var(--surface));
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 7%, transparent);
+  border-bottom-color: transparent;
+}
+/* 序号列（序号两位补零）：等宽数字防跳动。 */
+.unified-song-index {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  text-align: right;
+  letter-spacing: .5px;
+}
+.unified-song:hover .unified-song-index { color: var(--ink); }
+.unified-song-cover {
+  width: 46px;
+  height: 46px;
+  border-radius: 11px;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: .92;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--ink) 12%, transparent);
+  transition: transform .2s ease, opacity .2s ease;
+}
+.unified-song:hover .unified-song-cover { transform: scale(1.04); opacity: 1; }
+.unified-song-cover-empty {
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: color-mix(in srgb, var(--surface) 70%, var(--panel));
+}
+.unified-song-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.unified-song-copy strong {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: .1px;
+}
+/* 标题行 / 歌手行：一把横向 flex（对齐上游 unified-song-title-line / artist-line，
+   两者都是 display:flex;align-items:center;gap:7px），徽章与 MV 都挂在里面。 */
+.unified-song-title-line,
+.unified-song-artist-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.unified-song-artist-line { margin-top: 0; font-size: 11px; color: var(--muted); }
+.unified-song-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unified-song-title-line .unified-song-mv { margin: 0; font-size: 10px; }
+.unified-song-title-line .song-favorite,
+.unified-song-artist-line .song-favorite { margin: 0; font-size: 13px; line-height: 1; }
+.unified-song-copy small, .unified-song-alias {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 专辑名 / 时长列（上游 unified-song-album / duration 同款：次要色、单行省略、时长右对齐）。 */
+.unified-song-album {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.unified-song-duration {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.unified-song-original-tag {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.5;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-radius: 999px;
+}
+.unified-song-badges { display: flex; align-items: center; gap: 6px; }
+.source-badge, .fee-tag {
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  padding: 2.5px 9px;
+  border-radius: 999px;
+}
+/* ── 音质徽章：1:1 对齐上游真实 CSS ──────────────────────────────────
+   配色不是猜的、也不是从屏幕取像素，而是**直接从既有样式表的原始取值**
+   （已核对）：
+     .unified-song-quality-tag{display:inline-flex;align-items:center;padding:0 5px;
+       border:1px solid currentColor;border-radius:4px;font-size:9px;font-weight:600;
+       line-height:13px}
+     .is-quality-standard{color:#777b82}   .is-quality-hq{color:#1e8b72}
+     .is-quality-sq{color:#d34b5f}         .is-quality-hires{color:#e6bd58;border-color:#e6bd58;background:#171717}
+     .is-hires{color:#1e8b72}              .is-dolby{color:#b06a17}
+     .is-master{color:#a34f96}
+   容器 .unified-song-quality-badge{inline-flex;gap:3px;max-width:320px;flex-wrap:wrap}
+   注意：是**描边 chip**（border:1px solid currentColor + 透明底），不是实心 pill。 */
+.unified-song-quality-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 320px;
+  flex-wrap: wrap;
+  font-size: 9px;
+  line-height: 14px;
+  white-space: normal;
+}
+.unified-song-quality-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+  letter-spacing: 0;
+  transition: filter .18s ease;
+}
+.unified-song:hover .unified-song-quality-tag { filter: brightness(1.12); }
+/* 7 个档位的配色（浅色底上的原样色值）。 */
+.unified-song-quality-tag.is-quality-standard { color: #777b82; background: transparent; }
+.unified-song-quality-tag.is-quality-hq { color: #1e8b72; background: transparent; }
+.unified-song-quality-tag.is-quality-sq { color: #d34b5f; background: transparent; }
+.unified-song-quality-tag.is-quality-hires { color: #e6bd58; border-color: #e6bd58; background: #171717; }
+.unified-song-quality-tag.is-hires { color: #1e8b72; background: transparent; }
+.unified-song-quality-tag.is-dolby { color: #b06a17; background: transparent; }
+.unified-song-quality-tag.is-master { color: #a34f96; background: transparent; }
+/* 兼容块：歌曲详情页（music-song-view.ts:218）仍用旧类名
+   `quality-tag quality-${tier}`，那些规则原本也定义在本文件里。本任务不改
+   music-song-view.ts（不在交付范围内），所以照样保留这几个类，只是把配色
+   换成上面同一套上游真实色值 —— 类名不变、观感与列表行一致，不算回归。 */
+.quality-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+}
+.quality-standard { color: #777b82; }
+.quality-high { color: #1e8b72; }
+.quality-lossless { color: #d34b5f; }
+.quality-hires { color: #e6bd58; border-color: #e6bd58; background: #171717; }
+.quality-hifi { color: #1e8b72; }
+.quality-surround { color: #b06a17; }
+.quality-master { color: #a34f96; }
+.music-app[data-theme="night"] .quality-standard { color: #9aa3ad; }
+.music-app[data-theme="night"] .quality-high { color: #3fbf9c; }
+.music-app[data-theme="night"] .quality-lossless { color: #f0707f; }
+.music-app[data-theme="night"] .quality-hifi { color: #3fbf9c; }
+.music-app[data-theme="night"] .quality-surround { color: #e0913f; }
+.music-app[data-theme="night"] .quality-master { color: #d178c4; }
+/* 夜间主题（本仓库的深色主题选择器是 .music-app[data-theme="night"]）里，
+   上游那几个为浅底挑的色值偏暗，按同色相提亮保证可读。
+   这是本文件唯一偏离上游原值的地方（上游自己用 [data-theme=dark] 的另一套变量）。 */
+.music-app[data-theme="night"] .unified-song-quality-tag.is-quality-standard { color: #9aa3ad; }
+.music-app[data-theme="night"] .unified-song-quality-tag.is-quality-hq { color: #3fbf9c; }
+.music-app[data-theme="night"] .unified-song-quality-tag.is-quality-sq { color: #f0707f; }
+.music-app[data-theme="night"] .unified-song-quality-tag.is-hires { color: #3fbf9c; }
+.music-app[data-theme="night"] .unified-song-quality-tag.is-dolby { color: #e0913f; }
+.music-app[data-theme="night"] .unified-song-quality-tag.is-master { color: #d178c4; }
+
+/* 人气/最新 排序切换：对齐上游 search-song-order-options（胶囊分段 + 滑块）。 */
+.online-platform-row { display: flex; align-items: center; gap: 12px; }
+.online-song-order[hidden] { display: none; }
+.online-song-order {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  isolation: isolate;
+}
+.online-song-order::before {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 4.5px);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 8%, transparent);
+  content: "";
+  pointer-events: none;
+  transform: translate(0);
+  transition: transform .22s cubic-bezier(.22, 1, .36, 1);
+}
+.online-song-order.is-time-active::before { transform: translate(calc(100% + 3px)); }
+.online-song-order button {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color .18s ease;
+}
+.online-song-order button:hover,
+.online-song-order button[aria-selected="true"] { color: var(--accent); }
+/* 操作区（上游 unified-song-actions：紧跟时长列之后的按钮条）。
+   播放按钮 + 微小「查看」链接，横排右对齐。 */
+.unified-song-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.unified-song-play {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--muted);
+  background: transparent;
+  transition: background .18s ease, color .18s ease, border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+.unified-song-play i { font-style: normal; line-height: 1; }
+.unified-song-play:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 35%, transparent);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.unified-song-play[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+/* 「查看」：微小文字链接，不抢按钮的视觉权重。 */
+.unified-song-view {
+  font-size: 9px;
+  line-height: 1.3;
+  letter-spacing: .3px;
+  color: var(--muted);
+  opacity: .65;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: opacity .18s ease, color .18s ease, border-color .18s ease;
+}
+.unified-song-view:hover {
+  opacity: 1;
+  color: var(--accent);
+  border-bottom-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.online-search-note, .online-search-status {
+  font-size: 11px;
+  line-height: 1.75;
+  color: var(--muted);
+  margin: 14px 0;
+}
+.online-search-status { min-height: 19px; }
+
+/* 分页：胶囊按钮 */
+.online-search-pages { display: flex; justify-content: space-between; gap: 12px; margin-top: 18px; }
+.online-search-pages button {
+  padding: 9px 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: .3px;
+  color: var(--muted);
+  transition: background .18s ease, color .18s ease, border-color .18s ease, transform .18s ease;
+}
+.online-search-pages button:hover:not([disabled]) {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 35%, transparent);
+  transform: translateY(-1px);
+}
+#online-results [disabled] { opacity: .45; cursor: wait; }
+
+/* 登录卡片（设置页） */
+.netease-login { margin-bottom: 22px; }
+.netease-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 55%, var(--surface));
+}
+.netease-account small { display: block; opacity: .65; margin-top: 7px; }
+.netease-qr { text-align: center; padding: 22px 12px 10px; }
+.netease-qr img {
+  background: white;
+  padding: 12px;
+  border-radius: 16px;
+  box-sizing: content-box;
+  box-shadow: 0 10px 32px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+.netease-qr p, .netease-auth-status { font-size: 12px; line-height: 1.8; opacity: .7; }
+
+.login-platforms { flex-wrap: wrap; }
+.platform-login-method {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  font-size: 12px;
+}
+.platform-login-method select {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: 8px 12px;
+  border-radius: 10px;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+.platform-login-method select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}

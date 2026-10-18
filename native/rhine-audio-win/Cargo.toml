@@ -1,0 +1,27 @@
+[package]
+name = "rhine-audio-win"
+version = "0.1.0"
+edition = "2021"
+description = "Rhine Music Windows native audio output (symphonia decode + cpal/WASAPI playback)"
+
+[[bin]]
+name = "rhine-audio-win"
+path = "src/main.rs"
+
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+# 原生音频输出。选这套的理由与上游 一致（原生音频方案成熟 /
+# cpal 32 次 / symphonia 194 次）—— 自己下载、自己解码、自己输出，不依赖
+# 浏览器 <audio>：
+#   · symphonia 纯 Rust 解码，能处理浏览器放不了的特殊容器
+#   · cpal 走 WASAPI，直接对声卡说话，延迟低、能做实时 DSP
+symphonia = { version = "0.5", features = [
+    "mp3", "flac", "aac", "isomp4", "alac", "ogg", "vorbis", "wav", "pcm",
+] }
+cpal = "0.15"
+# 下载音频字节。原生侧不受浏览器 CORS / 防盗链限制，这也是能放加密格式的前提。
+ureq = { version = "2", features = ["tls"] }
+serde_json = "1"

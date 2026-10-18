@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Rhine Music",
+  "version": "0.1.0",
+  "identifier": "local.rhine.music.windows",
+  "build": {
+    "beforeBuildCommand": "npm run desktop:prepare",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": { "../desktop-runtime/": "runtime/" },
+    "icon": ["icons/icon.ico"],
+    "publisher": "Rhine Music",
+    "copyright": "Rhine Music",
+    "shortDescription": "Rhine Music 桌面音乐播放器",
+    "longDescription": "Rhine Music 桌面音乐播放器：本地音乐库、在线搜索与聚合音源、歌单与歌词。",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "lzma",
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

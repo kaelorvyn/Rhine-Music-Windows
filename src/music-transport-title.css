@@ -1,0 +1,131 @@
+/* Growing this slot moves every preceding control left while playback stays put. */
+.music-topnav {
+  --song-cap: clamp(0px, calc(100vw - 760px), 240px);
+  flex-shrink: 0;
+}
+.music-topnav .minimal-transport button.transport-track {
+  display: block;
+  position: relative;
+  flex: none;
+  width: 0;
+  margin-right: -6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  transition: width calc(640ms * var(--music-motion-scale, 1)) cubic-bezier(0.4, 0, 0.2, 1), opacity calc(400ms * var(--music-motion-scale, 1)) ease;
+}
+.music-topnav .minimal-transport .transport-track.visible {
+  width: min(var(--song-width, 240px), var(--song-cap));
+  opacity: 1;
+  pointer-events: auto;
+}
+.transport-track > span {
+  display: block;
+  position: relative;
+  width: max-content;
+  max-width: max(0px, calc(var(--song-cap) - 14px));
+  padding-inline: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  line-height: 29px;
+  transform: translateX(18px);
+  transition: transform calc(640ms * var(--music-motion-scale, 1)) cubic-bezier(0.4, 0, 0.2, 1);
+}
+.transport-track.visible > span {
+  transform: translateX(0);
+}
+.transport-title-measure {
+  display: inline-flex;
+  width: max-content;
+  white-space: pre;
+  opacity: 0;
+  pointer-events: none;
+}
+.transport-title-measure > span {
+  display: inline-block;
+  flex: none;
+  padding: 0;
+  border: 0;
+}
+.transport-title-ellipsis {
+  position: absolute;
+  width: max-content;
+  white-space: pre;
+  visibility: hidden;
+  pointer-events: none;
+}
+.transport-track .transport-title-reel {
+  --rn-blur: 0.2;
+  --rn-edge-fade: 0.08em;
+  position: absolute;
+  left: 2px;
+  top: 0;
+  white-space: pre;
+}
+@media (max-width: 1100px) {
+  .music-topnav { --song-cap: clamp(0px, calc(100vw - 610px), 180px); }
+  .transport-track > span { font-size: 11px; }
+}
+@media (max-width: 700px) {
+  .music-topnav { --song-cap: clamp(0px, calc(100vw - 340px), 100px); }
+  .music-topnav .minimal-transport button.transport-track { margin-right: -1px; }
+  .transport-track > span { font-size: 10px; }
+}
+@media (max-width: 480px) {
+  .music-header { gap: 12px; }
+  .music-brand strong { font-size: clamp(18px, 5vw, 24px); }
+  .music-brand span { font-size: 6px; letter-spacing: 0.8px; }
+}
+.reduce-motion .music-topnav .minimal-transport button.transport-track,
+.reduce-motion .transport-track > span {
+  transition: none;
+}
+
+/* 播控条上的下载键：与播放键同排，随「有没有在播的歌」一起出现/隐藏。
+   它存在的理由见 music-transport-title.ts 里的注释 —— 下载入口原先只在歌曲
+   详情视图里，停在 3D 专辑阵列时整个界面找不到下载键。 */
+.music-topnav .minimal-transport button.transport-download {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 0;
+  height: 30px;
+  margin-left: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: width calc(320ms * var(--music-motion-scale, 1)) cubic-bezier(0.4, 0, 0.2, 1),
+              opacity calc(240ms * var(--music-motion-scale, 1)) ease;
+}
+.music-topnav .minimal-transport button.transport-download:not([disabled]) {
+  width: 30px;
+  margin-left: 2px;
+  opacity: 0.72;
+  pointer-events: auto;
+}
+.music-topnav .minimal-transport button.transport-download:not([disabled]):hover,
+.music-topnav .minimal-transport button.transport-download:not([disabled]):focus-visible {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.music-topnav .minimal-transport button.transport-download svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.reduce-motion .music-topnav .minimal-transport button.transport-download {
+  transition: none;
+}

@@ -1,0 +1,48 @@
+/* 下载任务面板: Rhine glass dialog. */
+.dl-overlay {
+  position: fixed; inset: 0; z-index: 1200;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--ink, #2a2622) 42%, transparent);
+  backdrop-filter: blur(6px);
+}
+.dl-surface {
+  width: min(560px, calc(100vw - 48px)); max-height: min(80vh, 720px); overflow: auto;
+  background: var(--surface, #faf7f2); color: var(--ink, #2a2622);
+  border: 1px solid var(--line, #e3d9cd); border-radius: 16px; padding: 18px 22px 20px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
+}
+.dl-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.dl-head [data-dl-close] { margin-left: auto; }
+.dl-surface [data-dl-current] { width: 100%; margin-bottom: 8px; }
+.dl-status { min-height: 18px; font-size: 12px; color: var(--muted, #8b7f70); }
+.dl-tasks { list-style: none; margin: 8px 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.dl-empty { font-size: 12px; color: var(--muted, #8b7f70); }
+.dl-task {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line, #e3d9cd); border-radius: 12px; padding: 8px 12px;
+}
+.dl-task.is-failed { border-color: color-mix(in srgb, var(--accent, #ca6734) 55%, transparent); }
+.dl-task-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.dl-task-main strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-task-main small { font-size: 11px; color: var(--muted, #8b7f70); }
+.dl-task-status { color: var(--accent, #ca6734); }
+.dl-hint { font-size: 11px; color: var(--muted, #8b7f70); line-height: 1.7; }
+
+/* 音质选择行：点「下载当前歌曲」后展开，列出这首歌实际具备的档位。
+   设计意图：音质是「这首歌的属性」而不是「全局设置」，所以用一排
+   可选按钮直接把每个档位的体积摊在用户面前，选哪个一目了然。 */
+.dl-quality { margin: 4px 0 10px; padding: 12px 14px; border-radius: 12px;
+  background: color-mix(in srgb, var(--accent, #ca6734) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #ca6734) 22%, transparent); }
+.dl-quality[hidden] { display: none; }
+.dl-quality-label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.dl-quality-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.dl-quality-option { font: inherit; font-size: 12px; cursor: pointer;
+  padding: 7px 14px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--line, #e3d9cd); background: var(--surface, #faf7f2);
+  color: inherit; transition: border-color 0.15s, background 0.15s; }
+.dl-quality-option:hover:not(:disabled) { border-color: var(--accent, #ca6734); }
+.dl-quality-option.is-default { border-color: var(--accent, #ca6734);
+  background: color-mix(in srgb, var(--accent, #ca6734) 12%, transparent); font-weight: 600; }
+.dl-quality-option:disabled { opacity: 0.5; cursor: default; }
+.dl-quality-hint { margin: 8px 0 0; font-size: 11px; color: var(--muted, #8b7f70); }

@@ -1,0 +1,16 @@
+/* Watch-only MV overlay: Rhine glass styling over the darkened scene. */
+.mv-overlay {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(12, 16, 22, .62); backdrop-filter: blur(6px);
+}
+.mv-surface {
+  width: min(880px, 92vw); display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 16px 16px; border-radius: 16px;
+  background: rgba(255, 255, 255, .10); border: 1px solid rgba(255, 255, 255, .22);
+}
+.mv-head { display: flex; align-items: baseline; gap: 10px; }
+.mv-head strong { font-size: 15px; }
+.mv-head small { opacity: .78; flex: 1 1 auto; }
+.mv-video { width: 100%; max-height: 66vh; border-radius: 10px; background: #000; }
+.mv-status { margin: 0; min-height: 18px; font-size: 12px; opacity: .85; }

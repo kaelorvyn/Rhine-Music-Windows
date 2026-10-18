@@ -1,0 +1,145 @@
+import content from "../content/archives.json" with { type: "json" };
+import type { MusicAlbum, MusicGenre } from "./music-types";
+import { musicArtistKey, orderMusicAlbums, type MusicSortMode } from "./music-order.ts";
+export { orderMusicAlbums, type MusicSortMode } from "./music-order.ts";
+
+export interface ArchiveRecord {
+  id: string;
+  title: string;
+  en: string;
+  department: string;
+  category: string;
+  date: string;
+  lead: string;
+  clearance: string;
+  abstract: string;
+  findings: string[];
+  source: string;
+  album?: MusicAlbum;
+}
+
+export let records: ArchiveRecord[] = content.records;
+export let categories = ["全部档案", ...content.categories];
+export let archiveColumns = content.columns;
+export let musicLibrary = false;
+export let slotStride = 32;
+export let playlistRows: string[] = [];
+let playlistCells = new Map<string, number>();
+let playlistLengths: number[] = [];
+let filesByColumn = archiveColumns.map((name) => records.flatMap((record, index) => record.category === name ? [index] : []));
+
+/** Replace the view model atomically; audio files and their metadata stay intact. */
+export function setMusicAlbums(albums: MusicAlbum[], genres: MusicGenre[] = [], sortMode: MusicSortMode = "genre") {
+  musicLibrary = true;
+  playlistRows = []; playlistLengths = []; playlistCells.clear();
+ // 换墙时必须清掉队列墙状态，否则 fileAtSlot 会拿旧队列去映射当前墙（封面/选中会错）。
+  playbackCards = [];
+  const ordered = orderMusicAlbums(albums, sortMode);
+  const usedGenres = new Set(ordered.map((album) => album.genreId));
+  const names = new Map(genres.map((genre) => [genre.id, genre.name]));
+  const genreIds = [...genres.map((genre) => genre.id).filter((id) => usedGenres.has(id)), ...usedGenres].filter((id, index, all) => all.indexOf(id) === index);
+  const genreNames = genreIds.map((id) => names.get(id) ?? id ?? "未分类");
+  categories = ["全部专辑", ...genreNames];
+  records = ordered.map((album) => ({
+    id: album.id, title: album.title, en: album.artist, department: album.artist,
+    category: names.get(album.genreId) ?? album.genreId ?? "未分类",
+    date: album.year ? String(album.year) : "年份未知", lead: album.artist,
+    clearance: album.offline ? "音乐库离线" : `${album.tracks.length} 首歌曲`,
+    abstract: album.folder, findings: album.rawGenres,
+    source: album.online?.sourceUrl ?? "本地音乐库", album,
+  }));
+  if (sortMode === "artist") {
+    const artists = new Map<string, { name: string; files: number[] }>();
+    ordered.forEach((album, index) => {
+      const key = musicArtistKey(album);
+      let group = artists.get(key);
+      if (!group) {
+        group = { name: album.artist.trim().replace(/\s+/g, " ") || "未知歌手", files: [] };
+        artists.set(key, group);
+      }
+      group.files.push(index);
+    });
+    archiveColumns = [...artists.values()].map((group) => group.name);
+    filesByColumn = [...artists.values()].map((group) => group.files);
+  } else if (sortMode === "album") {
+    archiveColumns = [];
+    filesByColumn = [];
+    for (let start = 0; start < ordered.length; start += 12) {
+      const end = Math.min(start + 12, ordered.length);
+      archiveColumns.push(`${String(start + 1).padStart(2, "0")}–${String(end).padStart(2, "0")}`);
+      filesByColumn.push(Array.from({ length: end - start }, (_, offset) => start + offset));
+    }
+  } else {
+    archiveColumns = genreNames;
+ // Use stable genre IDs even when custom genres share a display name.
+    filesByColumn = genreIds.map((id) => ordered.flatMap((album, index) => album.genreId === id ? [index] : []));
+  }
+  slotStride = Math.max(32, ...filesByColumn.map((files) => files.length + 12));
+}
+
+/** 搜索结果/播放队列墙：只铺中间一条（lane 2），行向首尾相连地回绕循环。
+ * 其余列留空 —— 不铺成主页那种很多条。 */
+let playbackCards: number[] = [];
+export function setPlaybackAlbums(albums: MusicAlbum[], rows: number) {
+  setMusicAlbums(albums, [{ id: 'playback', name: '播放队列' }]);
+ // A searchAnchor record is detail-only: it never takes a wall slot, so the
+ // visible cards stay the songs alone (one card per song, its own cover).
+  const cards = albums.flatMap((album, index) => album.searchAnchor ? [] : [index]);
+  playbackCards = [...cards];
+  archiveColumns = ['', '', '播放队列', '', ''];
+  filesByColumn = archiveColumns.map((_, lane) => lane === 2 ? cards : []);
+  slotStride = rows + 12;
+}
+/** 队列墙的格子 → 唱片：只有中间一条有歌，行向回绕（末首接回首首）。 */
+export function playbackFile(lane: number, row: number) {
+  if (!playbackCards.length || lane !== 2) return -1;
+  const position = row - 12;
+  return playbackCards[((position % playbackCards.length) + playbackCards.length) % playbackCards.length];
+}
+/** 唱片在队列环上的位置（0 起），不是环上出现时 -1。 */
+export function playbackPosition(index: number) {
+  return playbackCards.indexOf(index);
+}
+/** 队列环的长度（首尾相连的回绕周期）。 */
+export function playbackTotal() {
+  return playbackCards.length;
+}
+
+/** Repeat the finite playlists and each playlist's own songs through the display pool. */
+export function setPlaylistAlbums(albums: MusicAlbum[], names: string[]) {
+  setMusicAlbums(albums);
+  playlistRows = [...names];
+  slotStride = Math.max(32, ...albums.map(album => (album.playlistCell?.total || 0) + 24));
+  archiveColumns = ['', '', ...names];
+  filesByColumn = archiveColumns.map(() => []);
+  records.forEach((record, index) => {
+    const cell = record.album!.playlistCell!;
+    playlistLengths[cell.playlistIndex] = Math.max(1, cell.total);
+    const lane = cell.playlistIndex + 2, row = cell.songIndex + 12;
+    playlistCells.set(`${lane}:${row}`, index); filesByColumn[lane].push(index);
+  });
+}
+export function playlistFile(lane: number, row: number) {
+  if (!playlistRows.length || !Number.isInteger(lane) || !Number.isInteger(row)) return -1;
+  const playlist = ((lane - 2) % playlistRows.length + playlistRows.length) % playlistRows.length;
+  const period = playlistLengths[playlist] || 1;
+  const song = ((row - 12) % period + period) % period;
+  return playlistCells.get(`${playlist + 2}:${song + 12}`) ?? -1;
+}
+
+export function columnFiles(lane: number) {
+  return filesByColumn[lane] ?? [];
+}
+export function fileLocation(index: number) {
+  const playlist = records[index]?.album?.playlistCell;
+  if (playlist) { const lane = playlist.playlistIndex + 2, row = playlist.songIndex + 12; return { lane, row, slot: lane * slotStride + row }; }
+  const lane = Math.max(0, filesByColumn.findIndex((files) => files.includes(index)));
+  const row = 12 + Math.max(0, columnFiles(lane).indexOf(index));
+  return { lane, row, slot: lane * slotStride + row };
+}
+export function fileAtSlot(slot: number) {
+  if (playlistRows.length) return playlistFile(Math.floor(slot / slotStride), slot % slotStride);
+  if (playbackCards.length) return playbackFile(Math.floor(slot / slotStride), slot % slotStride);
+  const files = columnFiles(Math.floor(slot / slotStride));
+  return files[Math.max(0, Math.min(files.length - 1, (slot % slotStride) - 12))] ?? -1;
+}

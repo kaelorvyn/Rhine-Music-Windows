@@ -1,0 +1,26 @@
+[package]
+name = "rhine-music-windows"
+version = "0.1.1"
+description = "Rhine Music Windows desktop port"
+edition = "2021"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon / image-png：用户要求「关闭时最小化到系统托盘，歌可以继续放」。
+# Tauri 2 把托盘做成可选特性，不开这两个 feature 编译不过（tray 模块不存在）。
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.15"
+open = "5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
