@@ -1193,7 +1193,7 @@ function updateStatus() {
  // 「我的歌单」入口：有本地专辑，或有任何歌单（本地歌单不登录也有）。
   $<HTMLButtonElement>('[data-action="overview"]').hidden = !albums.length && !playlistLibrary.playlists.length;
   stage.classList.toggle('empty-library', !albums.length && !playlistLibrary.playlists.length);
-  const label = lightingDemo ? "V0.1.2-preview · 内置演示封面" : !apiAvailable
+  const label = lightingDemo ? `V${appVersion}-preview · 内置演示封面` : !apiAvailable
     ? "本地音乐服务尚未连接"
     : library.scan.running
       ? "正在扫描音乐库…"
