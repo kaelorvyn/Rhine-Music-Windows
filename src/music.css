@@ -72,6 +72,13 @@
   outline: 2px solid var(--accent);
   outline-offset: 4px;
 }
+/* 浏览界面作为整块焦点容器，不画描边：进入界面时焦点停在这里，
+   若画描边会变成一整圈橙色边框把「打开专辑」框住。键盘使用者按 Tab
+   仍会落到内部第一个按钮，届时按常规规则显示描边。 */
+.music-app #music-browse:focus,
+.music-app #music-browse:focus-visible {
+  outline: none;
+}
 .music-app button:disabled {
   opacity: 0.38;
   cursor: default;
@@ -2346,7 +2353,28 @@
   font-size: clamp(18px, 2vw, 29px);
 }
 .music-app .theme-cards {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 三套主题平铺一行；两列会变成 2+1，末行只剩一张、右边空着很难看。 */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.music-app .theme-cards button {
+  padding: 9px 8px;
+  min-width: 0;
+}
+.music-app .theme-cards i {
+  height: 40px;
+  margin-bottom: 8px;
+}
+.music-app .theme-cards strong {
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+.music-app .theme-cards span {
+  font-size: 7.5px;
+  line-height: 1.35;
+  /* 副标题较长，允许在卡内折行而不是把卡撑宽 */
+  display: block;
+  overflow-wrap: anywhere;
 }
 .music-topnav .minimal-transport {
   border-left: 1px solid var(--line);

@@ -102,7 +102,7 @@ const lightingLab = new URLSearchParams(location.search).get("lab") !== "0";
 let lightingControls: LightingLabController | undefined;
 let motionControls: ReturnType<typeof setupMotionLab> | undefined;
 
-type Theme = "day" | "night";
+type Theme = "day" | "night" | "dusk";
 type Panel = "library" | "search" | "settings" | "netease-login" | "playlists" | null;
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
@@ -228,7 +228,7 @@ if (isDesktop() && preferences.qualityPipelineVersion !== 5) {
   preferences.qualityPipelineVersion = 5;
   save("rhine-music-preferences", preferences);
 }
-if (!["day", "night"].includes(preferences.theme)) {
+if (!["day", "night", "dusk"].includes(preferences.theme)) {
   preferences.theme = "day";
   save("rhine-music-preferences", preferences);
 }
@@ -335,6 +335,7 @@ if (savedPlayback) {
 const themeNames: Record<Theme, string> = {
   day: "暖昼",
   night: "深夜",
+  dusk: "蓝灰",
 };
 const stage = $("#stage");
 stage.className = "music-app";
@@ -364,7 +365,7 @@ stage.innerHTML = `
     <button type="button" class="overview-return" data-action="overview-return" aria-label="返回标准视图">${svg('<path d="M15 5l-7 7 7 7"/>')}<span>返回近景</span></button>
     <nav class="overview-controls" aria-label="总览列导航"><button data-action="genre-prev" aria-label="总览上一列">←</button><button data-action="genre-next" aria-label="总览下一列">→</button></nav>
   </section>
-  <section id="music-browse" class="music-browse" aria-label="专辑浏览">
+  <section id="music-browse" class="music-browse" aria-label="专辑浏览" tabindex="-1">
     <div class="music-browse-veil" aria-hidden="true"></div>
     <div class="album-callout"><p class="music-eyebrow">MUSIC ARCHIVE <span>／</span> <span id="selection-genre"></span></p>
       <div class="selection-rule"><span id="selection-code">ALBUM <span id="selection-code-number">001</span></span><span id="selection-format"></span></div>
@@ -626,7 +627,10 @@ function showBrowseSurface() {
   $("#music-browse").inert = !!panel;
   $("#music-browse").setAttribute("aria-hidden", "false");
   syncSelectionMotion();
-  if (!panel) $("[data-action=open]").focus({ preventScroll: true });
+  // 把焦点停在容器上而不是「打开专辑」按钮上：容器带 tabindex="-1"，
+  // 程序化聚焦不会触发 :focus-visible，也就不会每次打开都画一圈橙色描边。
+  // Tab 键仍然从容器进入内部第一个可聚焦元素，键盘可达性不变。
+  if (!panel) $("#music-browse").focus({ preventScroll: true });
 }
 function setOverview(active: boolean, reveal = true) {
   if (active && (!ready || (!albums.length && !accountView) || boot?.active || panel || mode !== "archive")) return;
@@ -953,7 +957,7 @@ async function copyPerformanceReport() {
   } catch { notify("浏览器未允许复制，请检查剪贴板权限后重试。"); }
 }
 function setTheme(theme: Theme) {
-  if (theme !== "day" && theme !== "night") theme = "day";
+  if (theme !== "day" && theme !== "night" && theme !== "dusk") theme = "day";
   if (theme === preferences.theme) return;
   preferences.theme = theme;
   stage.dataset.theme = theme;
@@ -966,7 +970,7 @@ function setTheme(theme: Theme) {
     );
   document
     .querySelector('meta[name="theme-color"]')
-    ?.setAttribute("content", theme === "night" ? "#0a1220" : "#e8e5e1");
+    ?.setAttribute("content", theme === "night" ? "#0a1220" : theme === "dusk" ? "#cbd6df" : "#e8e5e1");
   savePrefs();
 }
 function fit() {
@@ -1189,7 +1193,7 @@ function updateStatus() {
  // 「我的歌单」入口：有本地专辑，或有任何歌单（本地歌单不登录也有）。
   $<HTMLButtonElement>('[data-action="overview"]').hidden = !albums.length && !playlistLibrary.playlists.length;
   stage.classList.toggle('empty-library', !albums.length && !playlistLibrary.playlists.length);
-  const label = lightingDemo ? "V0.1.1-preview · 内置演示封面" : !apiAvailable
+  const label = lightingDemo ? "V0.1.2-preview · 内置演示封面" : !apiAvailable
     ? "本地音乐服务尚未连接"
     : library.scan.running
       ? "正在扫描音乐库…"
@@ -3026,7 +3030,7 @@ async function setAvatarFromFile(file?: File) {
 }
 function renderSettingsPanel() {
   $("#panel-body").innerHTML =
-    `<section class="panel-section" data-settings-group="personalization"><h3>外观主题</h3><div class="theme-cards">${(["day", "night"] as Theme[]).map((t) => `<button data-theme="${t}" aria-pressed="${preferences.theme === t}" class="${t}"><i></i><strong>${themeNames[t]}</strong><span>${t === "day" ? "暖白玻璃与日光" : "极简星空与透光白卡"}</span></button>`).join("")}</div></section>
+    `<section class="panel-section" data-settings-group="personalization"><h3>外观主题</h3><div class="theme-cards">${(["day", "night", "dusk"] as Theme[]).map((t) => `<button data-theme="${t}" aria-pressed="${preferences.theme === t}" class="${t}"><i></i><strong>${themeNames[t]}</strong><span>${t === "day" ? "暖白玻璃与日光" : t === "dusk" ? "冷调薄雾与雾蓝玻璃" : "极简星空与透光白卡"}</span></button>`).join("")}</div></section>
 
     <section class="panel-section" data-settings-group="playback"><h3>播放</h3><label class="settings-row"><span>进入软件自动播放</span><input type="checkbox" id="autoplay-setting" data-settings-key="autoplay" ${preferences.autoplay ? "checked" : ""}></label></section>
     <section class="panel-section" data-settings-group="cache"><h3>缓存</h3><label class="settings-row"><span>缓存上限</span><input type="range" id="cache-limit" data-settings-key="cacheLimit" min="64" max="8192" step="64" value="${preferences.cacheLimit}" aria-label="缓存上限"></label><p class="scan-status" id="cache-limit-status" role="status">${preferences.cacheLimit} MB</p><label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" data-settings-key="cacheLocation" placeholder="留空使用默认位置" aria-label="缓存位置" value="${esc(preferences.cacheLocation)}"></label><button class="text-button" data-action="cache-clear">清理缓存 ↗</button><p class="scan-status" id="cache-status" role="status" aria-live="polite"></p></section>
