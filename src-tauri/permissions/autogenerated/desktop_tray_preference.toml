@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-tray-preference"
+description = "Enables the desktop_tray_preference command without any pre-configured scope."
+commands.allow = ["desktop_tray_preference"]
+
+[[permission]]
+identifier = "deny-desktop-tray-preference"
+description = "Denies the desktop_tray_preference command without any pre-configured scope."
+commands.deny = ["desktop_tray_preference"]

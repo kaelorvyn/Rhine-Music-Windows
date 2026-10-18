@@ -1,0 +1,87 @@
+/* Primary controls float over the original scene; library and themes live in settings. */
+.music-app #netease-login-button {
+  flex-shrink: 0;
+  min-height: 32px;
+}
+.account-avatar { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; overflow: hidden; background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink); flex-shrink: 0; }
+.account-avatar svg { width: 15px; height: 15px; }
+.account-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar-large { width: 56px; height: 56px; }
+.avatar-large svg { width: 28px; height: 28px; }
+.avatar-settings { display: flex; align-items: center; gap: 12px; }
+/* 文本标签规则，不得作用于头像本身：avatar 是 inline-flex 盒，
+   display:block 会破坏小人的水平/垂直居中（顶栏小头像贴顶的根因）。 */
+.music-app #netease-login-button > span:not(.account-avatar) {
+  display: block;
+  max-width: 122px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.music-app.empty-library .music-view-toggle {
+  display: none;
+}
+.music-app[data-layout="portrait"] .music-topnav:has(#my-playlists-button:not([hidden])) {
+  grid-template-columns: 28px 28px 28px minmax(0, 1fr) minmax(80px, 122px);
+}
+.playlist-list { margin-top: 18px; }
+/* 本地歌单（对照参考行为的本地歌单面板） */
+.local-playlists { margin-bottom: 22px; }
+.local-playlist-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.local-playlist-row { display: flex; align-items: center; gap: 8px; }
+.local-playlist-open { display: flex; flex: 1; min-width: 0; align-items: center; gap: 10px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.local-playlist-open strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-playlist-actions { display: flex; flex: 0 0 auto; gap: 6px; }
+.local-playlist-actions .text-button { font-size: 10px; letter-spacing: .04em; opacity: .68; }
+.local-playlist-actions .text-button:hover { opacity: 1; }
+.local-playlist-favorites .local-playlist-open strong { color: var(--accent); }
+/* 歌曲排序（对照参考行为 playlist.sort.*） */
+.local-playlist-sort { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 11px; color: var(--muted); }
+.local-playlist-sort label { letter-spacing: .06em; white-space: nowrap; }
+.local-playlist-sort select { flex: 0 1 auto; min-width: 0; max-width: 132px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; background: none; color: inherit; font: inherit; font-size: 11px; }
+/* 多选模式（对照参考行为 common.selectionMode） */
+.queue-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.queue-toolbar .text-button { font-size: 10px; letter-spacing: .04em; }
+.queue-selection-count { font-size: 10px; color: var(--muted); letter-spacing: .04em; }
+.queue-row { display: flex; align-items: center; gap: 8px; }
+.queue-select { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 1px solid var(--line); border-radius: 3px; background: none; color: var(--accent); font: inherit; font-size: 11px; line-height: 1; cursor: pointer; }
+.queue-select[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.queue-row-selected .queue-play { color: var(--accent); }
+/* 「加入歌单」对话框（对照参考行为 playlist.chooseTarget） */
+.add-to-playlist .add-to-playlist-target { display: flex; width: 100%; align-items: center; gap: 10px; text-align: left; cursor: pointer; }
+.add-to-playlist .add-to-playlist-target strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#album-ticks[hidden], #playlist-song-bars[hidden] { display: none; }
+#playlist-song-bars { --song-bar-step: 11px; --song-bar-height: 30px; position: relative; flex: 0 0 auto; width: 124px; height: var(--song-bar-height); }
+.playlist-song-bars-viewport { position: relative; width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior: contain; }
+.playlist-song-bars-viewport::-webkit-scrollbar { display: none; }
+.playlist-song-bars-track { position: relative; height: 100%; }
+.playlist-song-bars-track > .playlist-song-bar { position: absolute; top: 0; width: var(--song-bar-step); height: 100%; padding: 0; border: 0; background: transparent; color: inherit; }
+.playlist-song-bar::before { content: ''; position: absolute; width: 3px; height: 10px; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--ink); opacity: .28; transition: height .15s, opacity .15s; }
+.playlist-song-bar.active::before, .playlist-song-bar:is(:hover, :focus)::before { height: var(--song-bar-height); opacity: 1; }
+.playlist-song-bar:is(:hover, :focus)::before { background: var(--accent); }
+.playlist-song-bar:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.playlist-song-bars-label { position: absolute; bottom: calc(100% + 12px); transform: translateX(-50%); max-width: min(260px, 65vw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--ink); pointer-events: none; }
+#playlist-song-bars[data-reduced="true"] .playlist-song-bar::before { transition: none; }
+@media (max-width: 700px) {
+  #playlist-song-bars { --song-bar-step: 8px; --song-bar-height: 21px; width: 88px; }
+  .playlist-song-bar::before { width: 2px; height: 8px; }
+  .playlist-song-bars-label { font-size: 10px; bottom: calc(100% + 9px); }
+}
+.dedicated-login .netease-qr {
+  margin: 24px auto;
+  text-align: center;
+}
+.music-app[data-layout="portrait"] .music-topnav {
+  grid-template-columns: 28px 28px minmax(0, 1fr) minmax(80px, 122px);
+}
+.music-app[data-layout="portrait"] #netease-login-button {
+  width: auto;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+.music-app[data-layout="portrait"] #netease-login-button > span:not(.account-avatar) {
+  display: block;
+  min-width: 0;
+  font-size: 10px;
+}

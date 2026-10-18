@@ -1,0 +1,80 @@
+# 依赖与构建产物
+node_modules/
+/dist/
+/desktop-runtime/
+/desktop-binaries/
+/release/
+/artifacts/
+/backups/
+/src-tauri/target/
+/src-tauri/target-public/
+/src-tauri/gen/
+/native/rhine-audio-win/target/
+__pycache__/
+*.pyc
+*.log
+*.mp4
+*.blend1
+optix7cache.db
+.worktrees/
+.tools/
+
+# 环境与本地配置
+.env
+.env.*
+!.env.example
+/config.json
+/launcher.lock
+*.dpapi
+*.dpapi.*.tmp
+*.backup
+*.zip
+*.tar.gz
+.DS_Store
+.Rhistory
+.RData
+
+# 本机音乐库数据
+music-data*/
+/library-index.json
+/genre-rules.json
+/artwork/
+/.cache/
+
+# ── 服务端实现 ────────────────────────────────────────────
+# 取源链路、共享池、平台协议适配属于服务端实现，不在此仓库内发布。
+# 本仓库只包含桌面客户端与前端界面部分。
+/scripts/music-server.mjs
+/scripts/shared-pool.mjs
+/scripts/backup-sources.mjs
+/scripts/lx-source-host.mjs
+/scripts/lx-source-loader.mjs
+/scripts/lx-source-worker.mjs
+/scripts/lx-sources/
+/scripts/kugou-protocol.mjs
+/scripts/kuwo-protocol.mjs
+/scripts/bodian-protocol.mjs
+/scripts/joox-protocol.mjs
+/scripts/platform-login-protocols.mjs
+/scripts/platform-catalog.mjs
+/scripts/bodian-catalog.mjs
+/scripts/qishui-catalog.mjs
+/scripts/qmc-decrypt.mjs
+/scripts/music-audio.mjs
+/scripts/netease-online.mjs
+/scripts/online-diagnostics.mjs
+/scripts/source-log.mjs
+/scripts/check-source-speed.mjs
+
+# 开发期调试脚本
+/scripts/_*.mjs
+/scripts/_dbg/
+/scripts/_probe-*.mjs
+/tauri-conf-backup.json
+/build-credential.json
+
+# ── 用户导入的密钥文件（绝不入库）────────────────────────────
+# 由设置页导入的那份。里面是凭据本体，上传到任何地方都等于把访问权交出去。
+*.rhinekey
+pool-credential.json
+/rhine-pool.rhinekey
