@@ -19,6 +19,7 @@
  */
 import https from 'node:https';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { withHardTimeout } from './hard-timeout.mjs';
@@ -35,6 +36,81 @@ import * as credentialStore from './pool-credential.mjs';
  * 没导入密钥 → 这里为空 → 共享池整条链路不启用，也不会对任何地址发起探测。
  */
 export let SERVER_LINES = [];
+/**
+ * 请求签名参数。**全部来自导入的密钥文件**，源码不写任何一项。
+ *
+ * 没导入密钥 → 这里是 null → `signedHeaders()` 返回空 → 请求不带签名头，
+ * 池子对端拒绝，取源链自动降级到备用音源。
+ */
+let signConfig = null;
+let signerCache = { key: null, line9: null };
+
+/** 用密钥文件里的签名参数初始化。 */
+export function configureSigning(sign) {
+  signConfig = sign && sign.signerScript ? sign : null;
+  signerCache = { key: null, line9: null };
+}
+
+/** 是否具备签名能力。 */
+export function signingReady() {
+  return Boolean(signConfig);
+}
+
+const EMPTY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+const sha256hex = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
+/**
+ * 调用密钥里内嵌的签名器，对规范串做 ECDSA-P256 签名。
+ *
+ * 私钥由操作系统密钥容器托管、不可导出，所以每次签名都要起一次签名器进程。
+ * 公钥哈希（规范串第 9 行）会被缓存，省掉一半调用。
+ */
+function rawSign(canonical) {
+  const out = execFileSync('powershell',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', signConfig.signerScript],
+    { input: canonical, encoding: 'utf8', windowsHide: true, timeout: 60000, maxBuffer: 4 * 1024 * 1024 }).trim();
+  const j = JSON.parse(out);
+  if (j?.error) throw new Error('签名器返回错误: ' + j.error);
+  return j;
+}
+
+/**
+ * 生成一次请求的签名头。
+ *
+ * 规范串 9 行（\n 连接）：协议版本 / 方法 / 路径 / 时间戳 / 随机数 /
+ * 请求体哈希 / 凭据哈希 / 设备 ID / 公钥哈希。签名对象是整串的 SHA-256。
+ * 随机数单次有效，所以每次请求都必须重新签。
+ */
+function signedHeaders(method, path, body) {
+  if (!signConfig) return {};
+  try {
+    if (!signerCache.key) {
+      const probe = rawSign('p\nq\nr');
+      signerCache = { key: probe.key, line9: probe.line9 };
+    }
+    const ts = Math.floor(Date.now() / 1000).toString();
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const bodyHash = body && body.length ? sha256hex(body) : EMPTY_SHA256;
+    const canonical = [
+      signConfig.protocol, method, path, ts, nonce, bodyHash,
+      sha256hex(backendToken), deviceId, signerCache.line9,
+    ].join('\n');
+    const r = rawSign(canonical);
+    signerCache = { key: r.key, line9: r.line9 };
+    return {
+      'x-sign': r.sign,
+      'x-sign-key': r.key,
+      'x-sign-version': signConfig.headerVersion,
+      'x-sign-migration': signConfig.headerMigration,
+      'x-timestamp': ts,
+      'x-nonce': nonce,
+      'x-device-id': deviceId,
+    };
+  } catch {
+    // 签名失败不能拖垮整条链路：退化成未签名请求，由对端判定并降级。
+    return {};
+  }
+}
 
 /** 用密钥文件里的地址重建线路表与探测状态。 */
 export function configureServerLines(servers) {
@@ -293,10 +369,11 @@ export function probeServerLinesShared(opts) {
 
 // ── 凭据注入 ────────────────────────────────────────
 
-export function setCredentials({ token, key, did }) {
+export function setCredentials({ token, key, did, sign }) {
   backendToken = token;
   sessionKeyBuf = Buffer.from(key, 'base64');
   deviceId = did;
+  if (sign) configureSigning(sign);
   if (sessionKeyBuf.length !== 32) {
     throw new Error(`sessionKey must be 32 bytes, got ${sessionKeyBuf.length}`);
   }
@@ -310,7 +387,7 @@ export function setCredentials({ token, key, did }) {
 export function loadFromImportedKey(dataDir) {
   const cred = credentialStore.read(dataDir);
   if (!cred) return null;
-  setCredentials({ token: cred.token, key: cred.key, did: cred.did });
+  setCredentials({ token: cred.token, key: cred.key, did: cred.did, sign: cred.sign });
   return cred;
 }
 
@@ -387,8 +464,10 @@ async function rawRequest(method, path, bodyObj, { encrypted = false, timeoutMs 
       const headers = {
         'Authorization': `Bearer ${backendToken}`,
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'User-Agent': 'rhine-music/0.1.1',
+        'Accept': '*/*',
+        // UA 与签名参数一起来自密钥文件；没导入密钥时退回中性值。
+        'User-Agent': signConfig?.userAgent || 'rhine-music/0.1.1',
+        ...signedHeaders(method, path, payload),
       };
       request = https.request({
         hostname, port: 443, path, method,
@@ -497,7 +576,11 @@ export async function resolveSong({ source = 'kuwo', songId, quality = 'master',
   }
 
 // 请求格式：snake_case 参数 + 加密
-  const body = { song_id: normalizedId, source: source.toLowerCase(), quality: String(quality), device_id: deviceId };
+  // 【服务端要求平台名首字母大写：Kuwo / QQ / Netease / Kugou —— 全小写会被判
+  // "invalid source"。QQ 是全大写，特例处理。】
+  const sourceName = /^qq$/i.test(source) ? 'QQ'
+    : source.charAt(0).toUpperCase() + source.slice(1).toLowerCase();
+  const body = { song_id: normalizedId, source: sourceName, quality: String(quality), device_id: deviceId };
   if (name) body.name = name;
   if (artist) body.artist = artist;
   if (album) body.album = album;
@@ -624,3 +707,6 @@ function extractAudioUrl(body) {
   const m2 = jsonStr.match(/https?:\/\/[^"'\s<>]{30,300}/);
   return m2 ? m2[0] : null;
 }
+
+
+

@@ -69,8 +69,19 @@ export function validate(input) {
     ? input.servers.map(s => String(s ?? '').trim()).filter(Boolean)
     : [];
 
+  // 请求签名参数同样随密钥下发：规范串版本、头版本、迁移值、UA、签名器脚本。
+  // 客户端源码里一个字都不写；没有这一段 → 只能发未签名请求，池子自然不工作。
+  const sig = input?.sign ?? null;
+  const sign = sig && typeof sig === 'object' ? {
+    protocol: String(sig.protocol ?? '').trim(),
+    headerVersion: String(sig.headerVersion ?? '').trim(),
+    headerMigration: String(sig.headerMigration ?? '').trim(),
+    userAgent: String(sig.userAgent ?? '').trim(),
+    signerScript: String(sig.signerScript ?? ''),
+  } : null;
+
  // did 缺失时补一个稳定默认值，不让它阻断导入
-  return { token, key, did: did || 'desktop-local', servers };
+  return { token, key, did: did || 'desktop-local', servers, sign };
 }
 
 function credentialPath(dataDir) {
