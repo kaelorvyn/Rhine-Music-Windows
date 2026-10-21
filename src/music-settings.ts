@@ -4,8 +4,9 @@ import './music-settings.css';
  *
  * 上游的 tab：personalization / playback / audio / download / lyrics / cache /
  * activation / update / feedback / about / diagnostics。这里保留 Rhine 自己的
- * `local`（本地歌单设置）与 `library`（本地音乐库），并按用户要求砍掉
- * lyrics（歌词不需要）、activation（激活密钥，不需要）、update（自动更新，不需要）。
+ * `local`（本地歌单设置）与 `library`（音乐与音源），按用户要求砍掉 lyrics
+ * （歌词不需要）与 activation（激活密钥，不需要）；update 现在要回来了 ——
+ * 用户要求「检查更新」，见 update-center.ts。
  * 顺序即导航顺序。 */
 export const settingsCategories = {
   personalization: '个性化',
@@ -15,7 +16,9 @@ export const settingsCategories = {
   download: '下载',
   cache: '缓存',
   local: '本地歌单',
-  library: '本地音乐库',
+  library: '音乐与音源',
+ // 版本更新：检查 GitHub Release、下载便携包并自替换后重启。
+  update: '版本更新',
  // 用户要求删掉 about（关于）/ feedback（反馈）/ diagnostics（诊断）；
  // developer 只剩「界面维护」（重播开场、重新载入界面），保留但不叫开发者。
   developer: '界面维护',

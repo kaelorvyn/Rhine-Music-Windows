@@ -445,6 +445,7 @@
   color: var(--ink);
   padding: 8px 12px;
   border-radius: 10px;
+  font: inherit;
   transition: border-color .18s ease, box-shadow .18s ease;
 }
 .platform-login-method select:focus-visible {

@@ -1,0 +1,59 @@
+/* 原生 <select> 的展开层。
+ *
+ * 用户反馈「有抽屉的都不是圆角」——按钮本身加 border-radius 能改，但**展开的那张
+ * 列表**一直由系统绘制，CSS 碰不到。以前只能重写成 div 版 listbox（键盘/无障碍/
+ * 定位/滚动全要自己来）。
+ *
+ * Chromium 121 起给了 `appearance: base-select`，展开层开始走 DOM + CSS。WebView2
+ * 跟随 Edge 内核，Win11 上早已满足。所以这里零重写：只开这个开关，再给展开层写
+ * 圆角与主题色；不支持的旧内核靠 @supports 自动跳过，维持原来的 10px 按钮圆角。
+ */
+
+@supports (appearance: base-select) {
+  .music-app select,
+  .music-app select::picker(select) {
+    appearance: base-select;
+  }
+
+  /* 展开的列表：跟 nav 下拉、更新弹窗同一套观感（12px 圆角 + 玻璃 + 柔和阴影）。 */
+  .music-app select::picker(select) {
+    margin-top: 6px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--surface, #16171b) 92%, transparent);
+    box-shadow: 0 18px 48px rgb(0 0 0 / 0.42);
+    color: var(--ink);
+    /* 与页面里其它浮层一致的模糊厚度。 */
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  /* 每个选项也是圆角块，选中态用强调色描边而不是系统蓝条。 */
+  .music-app select option {
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink);
+  }
+
+  .music-app select option:hover,
+  .music-app select option:focus-visible {
+    background: color-mix(in srgb, var(--ink) 8%, transparent);
+  }
+
+  .music-app select option:checked {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+  }
+
+  /* 自绘箭头：base-select 下浏览器不再画原生三角，这里补一个，位置与原来一致。 */
+  .music-app select::picker-icon {
+    color: color-mix(in srgb, var(--ink) 55%, transparent);
+    transition: transform 160ms ease;
+  }
+
+  .music-app select:open::picker-icon {
+    transform: rotate(180deg);
+  }
+}

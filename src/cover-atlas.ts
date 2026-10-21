@@ -126,8 +126,12 @@ export class CoverAtlas {
   private uploadedTiles = 0;
   private peakDecodes = 0;
   private decodedPixels = 0;
-  private readonly maxDecodeConcurrency = 3;
-  private readonly maxDecodedPixels = 12 * 1024 * 1024;
+  // 预热要覆盖全库，3 个解码槽追不上。
+  private readonly maxDecodeConcurrency = 6;
+  // 12M 像素（≈48MB）只够放 192 张缩略图 —— 用户快速切换时第 193 张起
+  // 又要重新下载并解码，这就是「切一下就卡」。抬到 96M（≈384MB 上限，
+  // 实际按需增长），整库缩略图都能常驻。
+  private readonly maxDecodedPixels = 96 * 1024 * 1024;
   private prefetchRequests = 0;
   private prefetchHits = 0;
   private readonly slotKeys: (string | undefined)[];
@@ -326,7 +330,7 @@ export class CoverAtlas {
             this.decodedImages.delete(job.url);
             this.decodedImages.set(job.url, decoded);
             this.decodedPixels += decoded?.pixels ?? 0;
-            while (this.decodedImages.size > 192 || this.decodedPixels > this.maxDecodedPixels) {
+            while (this.decodedImages.size > 2048 || this.decodedPixels > this.maxDecodedPixels) {
               const first = this.decodedImages.keys().next().value!;
               this.decodedPixels -= this.decodedImages.get(first)?.pixels ?? 0;
               this.decodedImages.delete(first);
@@ -357,7 +361,8 @@ export class CoverAtlas {
  * plan replaces stale speculative queue entries; urgent draws are retained. */
   prefetch(records: readonly (ArchiveRecord | undefined)[], detailed = 0) {
     if (this.disposed) return;
-    const plan = records.slice(0, 192);
+    // 全量：调用方已经把「要预热的范围」决定好了（首屏 or 全库）。
+    const plan = records;
     const wanted = new Set(plan.map(record => record?.album?.coverUrl).filter(Boolean));
     for (let i = this.decodeQueue.length - 1; i >= 0; i--) {
       const job = this.decodeQueue[i];
@@ -376,7 +381,7 @@ export class CoverAtlas {
       const high = i < detailed, size = high ? COVER_PAINT_SIZE : this.tileWidth;
       const cached = this.cachedImage(url);
       if (cached && cached.decodedSize >= Math.min(size, Math.max(cached.width, cached.height))) { this.prefetchHits++; continue; }
-      if (this.decodeQueue.length >= 32 && !this.pendingImages.has(url)) break;
+      if (this.decodeQueue.length >= 512 && !this.pendingImages.has(url)) break;
       this.prefetchRequests++; void this.loadImage(url, high, false);
     }
  // A background scan must not age the upcoming detailed prints simply
@@ -625,7 +630,7 @@ export class CoverAtlas {
       activeDecodes: this.activeJobs.size, queuedDecodes: this.decodeQueue.length,
       pendingImages: this.pendingImages.size, peakDecodes: this.peakDecodes,
       cachedImages: this.decodedImages.size, cachedBytes: this.decodedPixels * 4,
-      cacheLimitBytes: this.maxDecodedPixels * 4, cacheLimitImages: 192,
+      cacheLimitBytes: this.maxDecodedPixels * 4, cacheLimitImages: 2048,
       prefetchRequests: this.prefetchRequests, prefetchHits: this.prefetchHits,
       prefetchQueueLimit: 32,
       preparedTiles: this.paintedTiles.size, preparedTileBytes: this.paintedTiles.size * this.tileWidth * this.tileHeight * 4,

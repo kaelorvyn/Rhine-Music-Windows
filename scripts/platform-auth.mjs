@@ -58,6 +58,7 @@ export class PlatformAuth {
     try {
       const result = await this.transport.poll(challenge, challenge.controller.signal);
       if (this.challenge !== challenge || challenge.epoch !== this.epoch || this.now() >= challenge.expiresAt) return { state: 'expired' };
+      if (result.nextToken) challenge.token = result.nextToken;
       if (result.state === 'expired') { this.discardChallenge(); return { state: 'expired' }; }
       if (result.state !== 'authorized') return { state: result.state === 'scanned' ? 'scanned' : 'waiting' };
       if (!validPlatformCredential(this.provider, result.credential) || !result.profile?.userId) throw failure('平台未返回有效登录信息。');

@@ -152,12 +152,14 @@ export class LocalPlaylists {
     return this.data.playlists.find(playlist => playlist.id === id)
   }
 
-  songs(id, { offset = 0, limit = 100, sort = 'default', direction = 'ascending' } = {}) {
+  songs(id, { offset = 0, limit = 1000, sort = 'default', direction = 'ascending' } = {}) {
     const playlist = this.privatePlaylist(id)
     if (!playlist) throw failure('这个歌单不存在。', 404)
     const ordered = sortSongs(playlist.songs, sort, direction)
     const start = Math.max(0, Math.floor(offset))
-    return { tracks: ordered.slice(start, start + Math.max(1, Math.min(limit, 500))), total: ordered.length }
+    // 上限跟着存储上限走：原来这里硬编码 Math.min(limit, 500)，默认 limit 又是
+    // 100，于是存了上千首的歌单在界面上只能看到前面一小截。
+    return { tracks: ordered.slice(start, start + Math.max(1, Math.min(limit, MAX_SONGS_PER_PLAYLIST))), total: ordered.length }
   }
 
   create(name) {

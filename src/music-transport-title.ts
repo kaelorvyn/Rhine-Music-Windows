@@ -90,17 +90,6 @@ export function setupTransportTitle(slot: HTMLButtonElement, label: HTMLElement)
       slot.classList.toggle("visible", shown);
       slot.setAttribute("aria-hidden", String(!shown));
       slot.disabled = !shown;
- // 下载按钮跟着「有没有正在播的歌」一起开关。
- //
- // 背景：下载入口原先只存在于歌曲详情视图里（`data-action="download-song"`），
- // 而那个视图只在「歌单详情」或「在线单曲的专辑详情」时才渲染。用户停在
- // 3D 专辑阵列听到一首歌，想下载却找不到任何入口 —— 整个界面上都没有下载键。
- // 这里把它挂到播控条上，任何时候都能点到。
-      const download = document.querySelector<HTMLButtonElement>('#transport-download');
-      if (download) {
-        download.disabled = !shown;
-        download.setAttribute('aria-hidden', String(!shown));
-      }
       if (changed) {
         title = next;
         glyphs = segmenter ? Array.from(segmenter.segment(title), item => item.segment) : [...title];

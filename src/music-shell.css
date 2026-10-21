@@ -9,6 +9,9 @@
 .avatar-large { width: 56px; height: 56px; }
 .avatar-large svg { width: 28px; height: 28px; }
 .avatar-settings { display: flex; align-items: center; gap: 12px; }
+/* 「上传头像」是 <label for>，「恢复默认头像」是 <button>：两者要长得一样，
+   除了字体，盒模型也得对齐（label 默认是 inline，行高与基线跟按钮不同）。 */
+.avatar-settings > .text-button { display: inline-flex; align-items: center; line-height: 1.4; margin: 0; cursor: pointer; }
 /* 文本标签规则，不得作用于头像本身：avatar 是 inline-flex 盒，
    display:block 会破坏小人的水平/垂直居中（顶栏小头像贴顶的根因）。 */
 .music-app #netease-login-button > span:not(.account-avatar) {
@@ -38,13 +41,12 @@
 /* 歌曲排序（对照参考行为 playlist.sort.*） */
 .local-playlist-sort { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 11px; color: var(--muted); }
 .local-playlist-sort label { letter-spacing: .06em; white-space: nowrap; }
-.local-playlist-sort select { flex: 0 1 auto; min-width: 0; max-width: 132px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px; background: none; color: inherit; font: inherit; font-size: 11px; }
 /* 多选模式（对照参考行为 common.selectionMode） */
 .queue-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; }
 .queue-toolbar .text-button { font-size: 10px; letter-spacing: .04em; }
 .queue-selection-count { font-size: 10px; color: var(--muted); letter-spacing: .04em; }
 .queue-row { display: flex; align-items: center; gap: 8px; }
-.queue-select { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 1px solid var(--line); border-radius: 3px; background: none; color: var(--accent); font: inherit; font-size: 11px; line-height: 1; cursor: pointer; }
+.queue-select { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 1px solid var(--line); border-radius: 5px; background: none; color: var(--accent); font: inherit; font-size: 11px; line-height: 1; cursor: pointer; }
 .queue-select[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .queue-row-selected .queue-play { color: var(--accent); }
 /* 「加入歌单」对话框（对照参考行为 playlist.chooseTarget） */

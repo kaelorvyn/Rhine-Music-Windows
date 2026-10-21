@@ -223,11 +223,33 @@ export class NeteasePlaylists {
       }
     })();
   }
-  async queue(row: number, song: number) {
+  /**
+   * 取曲目。
+   *
+   * 【默认是窗口模式】3D 场景按格拾取，只需要当前位置附近那几十条，
+   * 一次拉整张 500 首的歌单会让首帧卡住。
+   *
+   * 【full: true 是全量】用户点开歌单要「听整张」，这时候必须把每一页都
+   * 取下来 —— 原来的窗口模式写到 `offset + 100`，于是 500 首的歌单塞进
+   * 队列只有 100 首，界面显示「100 首歌曲」，用户以为歌单只能存 100 个。
+   * 存储上限其实是 MAX_SONGS_PER_PLAYLIST，被截断的只有这一层读取。
+   */
+  async queue(row: number, song: number, { full = false }: { full?: boolean } = {}) {
     const playlist = this.playlists[row]; if (!playlist) return [];
+    if (full) return this.queueAll(row);
     const offset = Math.floor(song / 50) * 50;
     await Promise.all([Math.max(0, offset - 50), offset, offset + 50].filter((value, index, all) => value < playlist.trackCount && all.indexOf(value) === index).map(index => this.ensure(row, index)));
     return Array.from({ length: Math.min(playlist.trackCount, offset + 100) - Math.max(0, offset - 50) }, (_, index) => this.track(row, Math.max(0, offset - 50) + index)).filter((track): track is MusicTrack => !!track);
+  }
+
+  /** 整张歌单：把所有页都 ensure 下来再按顺序铺平。 */
+  async queueAll(row: number) {
+    const playlist = this.playlists[row]; if (!playlist?.trackCount) return [];
+    const offsets: number[] = [];
+    for (let offset = 0; offset < playlist.trackCount; offset += 50) offsets.push(offset);
+    await Promise.all(offsets.map(offset => this.ensure(row, offset)));
+    return Array.from({ length: playlist.trackCount }, (_, index) => this.track(row, index))
+      .filter((track): track is MusicTrack => !!track);
   }
   albums(): MusicAlbum[] {
     if (this.albumsRevision === this.revision) return this.albumsView;

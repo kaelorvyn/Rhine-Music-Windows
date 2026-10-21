@@ -18,8 +18,8 @@ export interface SourcePriority {
 }
 
 /** 换源查找顺序 —— 换源查找顺序：
- * 酷我音乐 → 网易云音乐 → QQ音乐 → 酷狗音乐 → 波点音乐 → JOOX → 汽水音乐
- * 按用户要求去掉波点、汽水（波点搜索页也已移除，汽水本就没接），其余保持
+ * 酷我音乐 → 网易云音乐 → QQ音乐 → 酷狗音乐 → 波点音乐 → JOOX
+ * 按用户要求去掉波点（波点搜索页也已移除），其余保持
  * 上游的原始次序。 */
 export const DEFAULT_SOURCE_PRIORITY: MusicProvider[] = ['kuwo', 'netease', 'qq', 'kugou', 'joox'];
 

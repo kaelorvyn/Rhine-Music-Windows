@@ -13,7 +13,6 @@ import { BodianCatalog } from './bodian-catalog.mjs'
 import { KugouCatalog } from './kugou-protocol.mjs'
 import { KuwoCatalog } from './kuwo-protocol.mjs'
 import { JooxCatalog } from './joox-protocol.mjs'
-import { QishuiCatalog } from './qishui-catalog.mjs'
 import { BackupSources, DEFAULT_SOURCES } from './backup-sources.mjs'
 import { DownloadManager } from './downloads.mjs'
 import { resolveLyrics } from './lyrics.mjs'
@@ -449,6 +448,21 @@ async function writeBackupConfig(dataDir, value) {
 /** 音源自检结果缓存：一天内有效，避免每次开机都重跑 1~3 分钟的自检。 */
 const LX_HEALTH_FILE = 'lx-health.json'
 const LX_HEALTH_TTL = 24 * 60 * 60 * 1000
+/** 插件集合的指纹（数量 + id 校验和）。
+ *
+ * 缓存只按时间判断新鲜度是不够的：往音源目录里加/删/换插件之后，旧自检结果
+ * 里根本没有新插件的条目，`_rankSources` 会给「未自检」打 0 分（居中），于是
+ * 新装的源要等 24 小时过期才会被真正评级 —— 用户会以为"加了没用"。带上指纹
+ * 后，插件集合一变就立即重测。 */
+const lxPluginFingerprint = (sources) => {
+ // 源对象是 `{ name, filePath, ok }`，**没有 id 字段** —— 早先按 `s.id` 取值
+ // 会拿到 undefined，随后 `id.length` 直接抛 TypeError 把自检整条链路打断。
+ // 用文件名做身份：换目录不算变，换文件才算变。
+  const ids = [...new Set((sources ?? []).map((s) => path.basename(String(s?.filePath ?? s?.name ?? ''))))].sort()
+  let hash = 0
+  for (const id of ids) for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0
+  return `${ids.length}:${hash}`
+}
 
 /**
  * 取曲地址缓存（对齐洛雪的 SQLite music_url 表）。
@@ -578,7 +592,7 @@ export async function createMusicServer({
   const output = new NativeAudioOutput({ dataDir: store.dataDir ?? dataDir, decoder, trackFile: (id) => store.trackFile(id) })
   const online = providedOnline ?? new NeteaseOnline({ dataDir })
   const platformAuth = providedPlatformAuth ?? { qq: new PlatformAuth({ provider: 'qq', dataDir }), bodian: new PlatformAuth({ provider: 'bodian', dataDir }), kugou: new PlatformAuth({ provider: 'kugou', dataDir }) }
-  const catalogs = providedCatalogs ?? { qq: new PlatformCatalog({ provider: 'qq', auth: platformAuth.qq }), ...(platformAuth.bodian ? { bodian: new BodianCatalog({ auth: platformAuth.bodian }) } : {}), ...(platformAuth.kugou ? { kugou: new KugouCatalog({ auth: platformAuth.kugou }) } : {}), kuwo: new KuwoCatalog(), joox: new JooxCatalog(), qishui: new QishuiCatalog() }
+  const catalogs = providedCatalogs ?? { qq: new PlatformCatalog({ provider: 'qq', auth: platformAuth.qq }), ...(platformAuth.bodian ? { bodian: new BodianCatalog({ auth: platformAuth.bodian }) } : {}), ...(platformAuth.kugou ? { kugou: new KugouCatalog({ auth: platformAuth.kugou }) } : {}), kuwo: new KuwoCatalog(), joox: new JooxCatalog() }
   const platformCovers = new PlatformCoverStore()
   const downloads = providedDownloads ?? new DownloadManager({ dataDir: store.dataDir ?? dataDir })
   // 本地歌单（自建歌单能力）：只存本机，不参与云同步。
@@ -647,15 +661,24 @@ export async function createMusicServer({
       const healthFile = path.join(store.dataDir ?? dataDir, LX_HEALTH_FILE)
       let cached = null
       try { cached = JSON.parse(await fs.readFile(healthFile, 'utf-8')) } catch { /* 首次运行 */ }
-      const fresh = cached && Date.now() - Number(cached.at ?? 0) < LX_HEALTH_TTL
+      // 插件集合变了（加了/删了音源）就当作缓存失效，立即重测；
+      // 否则新插件拿不到自检评级，会一直居中排在健康源后面（见 lxPluginFingerprint 注释）。
+      const pluginPrint = lxPluginFingerprint(lxHost.sources)
+      const samePlugins = cached && cached.plugins === pluginPrint
+      const fresh = samePlugins && Date.now() - Number(cached.at ?? 0) < LX_HEALTH_TTL
       if (fresh) {
         await lxHost.importHealth(cached)
         console.log(`[LX] 用缓存的自检结果排序（${Object.values(cached.sources ?? {}).filter(s => s.ok).length} 个可用），跳过自检`)
       } else {
+        if (cached && !samePlugins) console.log('[LX] 音源插件集合有变化，重新自检')
         try {
           const report = await lxHost.selfCheck({ concurrency: 6, budgetMs: 180000, resolveId: lxResolveProbeId })
           console.log(`[LX] 首次自检完成：可用 ${report.alive}/${report.checked}，用时 ${Math.round(report.ms / 1000)}s`)
-          try { await fs.writeFile(healthFile, JSON.stringify(await lxHost.exportHealth(), null, 2), 'utf-8') }
+          try {
+            const snapshot = await lxHost.exportHealth()
+            snapshot.plugins = pluginPrint
+            await fs.writeFile(healthFile, JSON.stringify(snapshot, null, 2), 'utf-8')
+          }
           catch (err) { console.warn('[LX] 自检结果写入缓存失败：', err.message) }
         } catch (err) {
           // 自检失败不能挡住应用：标记完成，播放退化为按加载顺序试。
@@ -712,7 +735,7 @@ export async function createMusicServer({
    * fee 留着会让播放器以为还是付费曲，再去换源；换到的那边同样带 fee，
    * 于是两个音源之间无限乒乓（用户实测：一直放不出来）。
    */
-const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '波点音乐', kugou: '酷狗音乐', kuwo: '酷我音乐', joox: 'JOOX', qishui: '汽水音乐' }
+const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '波点音乐', kugou: '酷狗音乐', kuwo: '酷我音乐', joox: 'JOOX' }
 
   /**
    * 自检用的「探针曲真实 id」解析器：LX 平台键（wy/kg/kw/tx）→ 该平台的真 id。
@@ -993,7 +1016,7 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
   async function applyLxFallback(result, provider, songId, meta = null, quality = 'master') {
     // 对齐的播放决策树（backup_source.rs）：只要这首歌带付费/试听证据
     // （trial 非空，或 fee 非 0），或平台干脆没给地址，就去备用音源拿全曲。
-    // 旧实现只看 trial —— 而酷我/QQ/汽水/JOOX 的 prepare 不报 trial，只报 fee，
+    // 旧实现只看 trial —— 而酷我/QQ/JOOX 的 prepare 不报 trial，只报 fee，
     // 于是备用音源从不触发，试听片段被当全曲播放（用户实测：只能听十几秒）。
     const paidEvidence = !!result?.trial || Number(result?.fee ?? 0) !== 0
     if (result?.audioUrl && !paidEvidence) return result
@@ -1030,7 +1053,7 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
     //   ① 平台 prepare（已在调用方完成）
     //   ② 备用源三站（yy.zddyr.top → api.ygking.top → music.bxa241d4.shop）
     //   ③ 自定义音源（我们的扩展层，没有但保留）
-    //   ④ 池子（的服务器代理：酷我/汽水播放**必须**经服务端）
+    //   ④ 池子（的服务器代理：酷我播放**必须**经服务端）
     //
     // 【2026-10-16 对齐：串行，不竞速、不设总预算】
     // 顺序对齐，逐个 await；谁先给出可用地址就用谁，全都没有才报错。
@@ -1372,7 +1395,7 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
         return json(response, 200, { enabled: backupSources.enabled, sources: backupSources.status })
       }
 
-      const platformRoute = /^\/api\/online\/(qq|bodian|kugou|kuwo|joox|qishui)\/(search|playlists|cover|playlists\/([A-Za-z0-9_-]{1,64})\/tracks|songs\/([A-Za-z0-9_.-]{1,96})\/info|prepare\/([A-Za-z0-9_.-]{1,96}))$/.exec(route)
+      const platformRoute = /^\/api\/online\/(qq|bodian|kugou|kuwo|joox)\/(search|playlists|cover|playlists\/([A-Za-z0-9_-]{1,64})\/tracks|songs\/([A-Za-z0-9_.-]{1,96})\/info|prepare\/([A-Za-z0-9_.-]{1,96}))$/.exec(route)
       if (platformRoute) {
         const provider = platformRoute[1], action = platformRoute[2], catalog = catalogs[provider]
         if (!catalog) return json(response, 503, { error: '当前平台未配置。' })
@@ -1590,7 +1613,7 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
       const processed = /^\/api\/audio\/processed\/([a-zA-Z0-9-]+)$/.exec(route)
       // qishui（汽水音乐）在 catalogs 里已注册，音效应路由必须覆盖它，
       // 否则开音效时汽水的歌直接 503。
-      const processedOnline = /^\/api\/audio\/processed-online\/(netease|qq|bodian|kugou|kuwo|joox|qishui)\/([A-Za-z0-9_.-]{1,96})$/.exec(route)
+      const processedOnline = /^\/api\/audio\/processed-online\/(netease|qq|bodian|kugou|kuwo|joox)\/([A-Za-z0-9_.-]{1,96})$/.exec(route)
       if ((processed || processedOnline) && get) {
         const controller = new AbortController()
         const cancel = () => { if (!response.writableEnded) controller.abort() }
@@ -1719,7 +1742,9 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
         if (sort !== 'default' && !SORT_KEYS.includes(sort)) return json(response, 400, { error: '不支持的排序规则。' })
         return json(response, 200, localPlaylists.songs(localOne[1], {
           offset: Number(url.searchParams.get('offset') || 0),
-          limit: Number(url.searchParams.get('limit') || 100),
+          // 默认给足：原来是 100，于是不带 limit 的调用只能看到前 100 首，
+          // 看起来就像「歌单只能存 100 个」。真正的上限在 MAX_SONGS_PER_PLAYLIST。
+          limit: Number(url.searchParams.get('limit') || 1000),
           sort,
           direction: url.searchParams.get('direction') === 'descending' ? 'descending' : 'ascending',
         }))

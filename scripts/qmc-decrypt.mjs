@@ -115,14 +115,14 @@ export const PLAIN_FORMATS = new Set([
   'mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus', 'wav', 'wma', 'ape', 'dsf', 'dff', 'aiff',
 ])
 
-/** 归一化平台名（exe 用 netease/qq/kugou/kuwo/bodian/joox/qishui） */
+/** 归一化平台名（exe 用 netease/qq/kugou/kuwo/bodian/joox） */
 const PROVIDER_ALIASES = {
   wy: 'netease', netease: 'netease', 网易: 'netease', 网易云: 'netease',
   tx: 'qq', qq: 'qq',
   kg: 'kugou', kugou: 'kugou', 酷狗: 'kugou',
   kw: 'kuwo', kuwo: 'kuwo', 酷我: 'kuwo',
   bodian: 'bodian', mg: 'bodian',
-  joox: 'joox', qishui: 'qishui',
+  joox: 'joox',
 }
 
 export function normalizeProvider (provider) {

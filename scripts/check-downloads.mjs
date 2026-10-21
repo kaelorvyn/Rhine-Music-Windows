@@ -41,11 +41,20 @@ test('download flow writes atomically and records the task', async (t) => {
   const manager = new DownloadManager({ dataDir: path.join(directory, 'data'), concurrency: 0 });
   await manager.ready;
 
-  await assert.rejects(() => manager.add({ url: `${base}/ok.mp3`, title: '歌曲' }), /下载目录/, 'downloads need a configured directory');
+ // 没显式配置时**不再报错**：默认落到系统的「音乐」文件夹（defaultDownloadDirectory）。
+ // 这是用户要求的行为 —— 什么都不填也能直接下载。
+  assert.equal(manager.settings.directory, path.join(os.homedir(), 'Music'), 'unconfigured downloads fall back to ~/Music');
+  assert.equal(manager.snapshot().settings.directoryIsDefault, true, 'fallback is reported as default, not as a user choice');
   const configured = await manager.configure({ directory: settingsDir, quality: 'lossless', naming: '{artist} - {title}' });
   assert.equal(configured.settings.directory, settingsDir);
+  assert.equal(configured.settings.directoryIsDefault, false);
   await assert.rejects(() => manager.configure({ directory: '相对路径' }), /绝对路径/);
   await assert.rejects(() => manager.configure({ quality: 'super' }), /音质/);
+ // 传空 = 回到默认目录（用户清空输入框的语义），而不是报「需要绝对路径」。
+  const reset = await manager.configure({ directory: '' });
+  assert.equal(reset.settings.directory, path.join(os.homedir(), 'Music'));
+  assert.equal(reset.settings.directoryIsDefault, true);
+  await manager.configure({ directory: settingsDir, quality: 'lossless', naming: '{artist} - {title}' });
 
   let snapshot = await manager.add({ url: `${base}/ok.mp3`, title: '夜曲', artist: '周杰伦' });
   const task = snapshot.tasks[0];

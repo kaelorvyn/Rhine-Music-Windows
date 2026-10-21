@@ -162,18 +162,73 @@
   white-space: nowrap;
   font-size: 12px;
 }
-/* 歌单平台选择器（全部 / 已登录平台）：与导航按钮同观感。 */
-.music-topnav > .nav-platform-select {
-  max-width: 110px;
+/* 歌单来源选择器：自定义下拉。
+ *
+ * 原来是原生 <select>，它的展开列表由系统绘制，圆角/内边距一律改不动 ——
+ * 用户反馈「抽屉的方框太尖锐」。这里自己画一个 12px 圆角的面板，
+ * 触发按钮也跟着圆到 10px，与顶栏其它胶囊控件同一观感。 */
+.nav-platform-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+/* 同上的特异性问题：这是 <span><button> 结构，不在 `.music-topnav > button`
+   的直系里，字号会被 `.music-app button { font: inherit }` 打回 body 的 16px。 */
+.music-app .nav-platform-trigger,
+.nav-platform-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 140px;
   font: inherit;
+  /* 与 .music-topnav > button 同一个字号与行高 —— 旁边那些是裸文字，
+     这里多一圈描边，若不加对齐，同样 12px 也会显得字更小。 */
   font-size: 12px;
+  /* 15px + 上下各 1px 描边 = 17px，与旁边裸文字的按钮等高。 */
+  line-height: 15px;
   color: var(--ink);
   background: transparent;
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 3px 6px;
+  border-radius: 9px;
+  padding: 0 8px;
+  cursor: pointer;
+  transition: border-color .18s ease, background-color .18s ease;
+}
+.nav-platform-trigger:hover { background: rgba(127, 127, 127, .10); }
+.nav-platform-trigger[aria-expanded="true"] { border-color: currentColor; }
+.nav-platform-trigger i { font-style: normal; font-size: 9px; opacity: .6; }
+.nav-platform-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 152px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--panel, rgba(26, 30, 36, .97));
+  border: 1px solid var(--line, rgba(255, 255, 255, .16));
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(14px);
+}
+.nav-platform-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
   cursor: pointer;
 }
+.nav-platform-option:hover { background: rgba(127, 127, 127, .16); }
+.nav-platform-option[aria-selected="true"] { background: rgba(127, 127, 127, .22); font-weight: 600; }
 .music-topnav svg {
   width: 17px;
   height: 17px;
@@ -1180,7 +1235,14 @@
   border-bottom: 1px solid var(--line);
   padding-bottom: 4px;
 }
+/* 选择器前面必须带 .music-app：本文件上面的
+   `.music-app button, .music-app a, ... { font: inherit }` 特异性是 (0,1,1)，
+   比裸 `.text-button` 的 (0,1,0) 高，会把这里的 font-size 重置回继承值（body 的 16px）。
+   于是头像区出现「label 11px、button 16px」一大一小 —— label 不在那条规则里。
+   提到 (0,2,0) 就压得住；不删全局 inherit，因为那是刻意让控件跟随页面字体。 */
+.music-app .text-button,
 .text-button {
+  font: inherit;
   font-size: 11px;
   color: var(--accent) !important;
   margin: 10px 20px 0 0;
@@ -1334,9 +1396,13 @@
 }
 .settings-row select {
   border: 1px solid var(--line);
+  border-radius: 10px;
   padding: 5px 10px;
   background: var(--surface);
-  font-size: 11px;
+  /* 与同一行左侧的标签同字号（.settings-page .settings-row > span 是 13px）；
+     原来写死 11px，紧挨着 13px 的文字就显得"缩"了。 */
+  font: inherit;
+  font-size: 13px;
   min-width: 90px;
 }
 .settings-row input[type="checkbox"] {
@@ -2068,7 +2134,8 @@
   color: var(--ink);
   background: var(--surface);
   border-color: var(--line);
-  font-size: 11px;
+  border-radius: 10px;
+  font: inherit;
 }
 .music-panel .quality-range input {
   width: 150px;

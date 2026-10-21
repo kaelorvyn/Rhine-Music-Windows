@@ -61,7 +61,7 @@ export function validate(input) {
   const did = String(input?.did ?? '').trim();
 
   if (!token) throw new Error('密钥文件里没有 token');
-  if (!key) throw new Error('密钥文件里没有 sessionKey');
+  if (!key) throw new Error('密钥文件里没有加密密钥');
 
   // 服务地址随密钥一起走：客户端自身不含任何服务端域名。
   // 没导入密钥 → servers 为空 → 共享池整条链路不启用。
@@ -69,8 +69,6 @@ export function validate(input) {
     ? input.servers.map(s => String(s ?? '').trim()).filter(Boolean)
     : [];
 
-  // 请求签名参数同样随密钥下发：规范串版本、头版本、迁移值、UA、签名器脚本。
-  // 客户端源码里一个字都不写；没有这一段 → 只能发未签名请求，池子自然不工作。
   const sig = input?.sign ?? null;
   const sign = sig && typeof sig === 'object' ? {
     protocol: String(sig.protocol ?? '').trim(),
@@ -78,10 +76,33 @@ export function validate(input) {
     headerMigration: String(sig.headerMigration ?? '').trim(),
     userAgent: String(sig.userAgent ?? '').trim(),
     signerScript: String(sig.signerScript ?? ''),
+    emptyHash: String(sig.emptyHash ?? '').trim(),
+    nonceBytes: Number(sig.nonceBytes) > 0 ? Number(sig.nonceBytes) : 0,
+    canonical: Array.isArray(sig.canonical) ? sig.canonical.map(x => String(x)) : [],
+    headers: sig.headers && typeof sig.headers === 'object' ? { ...sig.headers } : null,
+    probeCanonical: String(sig.probeCanonical ?? ''),
   } : null;
 
+  const cryptoIn = input?.crypto ?? null;
+  const cryptoSpec = cryptoIn && typeof cryptoIn === 'object' ? {
+    cipher: String(cryptoIn.cipher ?? '').trim(),
+    ivBytes: Number(cryptoIn.ivBytes) || 0,
+    tagBytes: Number(cryptoIn.tagBytes) || 0,
+    envelope: String(cryptoIn.envelope ?? '').trim(),
+  } : null;
+
+  const apiIn = input?.api ?? null;
+  const api = apiIn && typeof apiIn === 'object'
+    ? Object.fromEntries(Object.entries(apiIn).map(([k, v]) => [k, String(v ?? '')]))
+    : null;
+
+  const sourcesIn = input?.sources ?? null;
+  const sources = sourcesIn && typeof sourcesIn === 'object' ? { ...sourcesIn } : null;
+
+  const qualities = Array.isArray(input?.qualities) ? input.qualities.map(String) : [];
+
  // did 缺失时补一个稳定默认值，不让它阻断导入
-  return { token, key, did: did || 'desktop-local', servers, sign };
+  return { token, key, did: did || 'desktop-local', servers, sign, crypto: cryptoSpec, api, sources, qualities };
 }
 
 function credentialPath(dataDir) {

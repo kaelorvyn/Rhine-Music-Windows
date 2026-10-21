@@ -122,8 +122,4 @@
 .overview-playlist-window { position: relative; min-height: 50px; }
 .overview-playlist-window > button { position: absolute; left: 0; height: 56px; }
 .overview-playlist-tracks { scrollbar-color: color-mix(in srgb, var(--ink) 30%, transparent) transparent; }
-.overview-playlist-tracks::-webkit-scrollbar { width: 5px; background: transparent; }
-.overview-playlist-tracks::-webkit-scrollbar-track { background: transparent; }
-.overview-playlist-tracks::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--ink) 30%, transparent); border-radius: 4px; }
-.overview-playlist-tracks::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 .overview-list-error:empty { display: none; }

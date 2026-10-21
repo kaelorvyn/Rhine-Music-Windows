@@ -323,7 +323,7 @@ class LxPlugin {
 
     try {
       new vm.Script(this.content, { filename: path.basename(this.filePath) })
-        .runInContext(context, { timeout: 8000 })
+        .runInContext(context, { timeout: 3000 })
     } catch (err) {
       this.loadError = err
       throw new Error(`${this.meta.name ?? path.basename(this.filePath)} 加载失败：${err.message}`)
@@ -497,7 +497,10 @@ const MUSIC_URL_TIMEOUT = 8000
 // 初始化宽限期：新版音源常常「先请求远端配置、成功后才 send(inited)」，
 // 远端慢的时候 3 秒不够（会表现为"声明源为空"），给到 10 秒。
 // 代价只在服务启动时一次性付出（有源声明就提前退出等待）。
-const INIT_GRACE = 10000
+// 3000ms：绝大多数插件在脚本执行完的同一轮事件循环里就 send(inited)，
+// 需要联网拿 init.conf 的才要等。原来给 10 秒，117 个插件叠加起来就把
+// 启动拖到几分钟 —— 用户要求「加载不出来的一律不要」，所以收紧。
+const INIT_GRACE = 3000
 /**
  * 一次取曲在所有插件上最多花多久（用户点歌不能等太久）。
  *

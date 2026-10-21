@@ -50,7 +50,11 @@ export class MusicSongView {
   private reveal = new SongTextReveal();
   private lastReduced = false;
 
-  constructor(private mini: HTMLElement, private seek: (seconds: number) => void, private reduced: () => boolean = () => false) {}
+  constructor(
+    private mini: HTMLElement,
+    private seek: (seconds: number) => void,
+    private reduced: () => boolean = () => false,
+  ) {}
 
   markup(album: MusicAlbum) {
     const track = album.tracks[0];
@@ -105,10 +109,7 @@ export class MusicSongView {
       }
       if (!root.dataset.viewToggle) {
         root.dataset.viewToggle = '1';
- // Blank-area clicks flip lyrics ⇄ song details; interactive children
- // (lyric lines, sliders, buttons) keep their own behavior.
         root.addEventListener('click', event => {
-          if ((event.target as HTMLElement).closest('button, input, select, textarea, a, [data-lyric-time]')) return;
           this.manualView = this.currentView === 'lyrics' ? 'details' : 'lyrics';
           if (this.state) this.update(this.state, this.detailActive);
         });
@@ -215,9 +216,15 @@ export class MusicSongView {
     const add = `<button type="button" class="text-button" data-action="song-add-to-playlist" aria-label="把 ${esc(track.title)} 加入歌单">加入歌单</button>`;
  // 收藏（心形，固定样式）：一键收进本地「莱茵歌单」（对照参考行为的本地收藏）。
     const fav = `<button type="button" class="text-button song-favorite" data-action="song-favorite" data-favorite-song="${esc(track.id)}" aria-pressed="false" aria-label="收藏 ${esc(track.title)}">♥</button>`;
-    online.innerHTML = `<div class="unified-song-badges"><span class="quality-tag quality-${tier}">${qualityTierLabels[tier]}</span>${original}</div>${alias}
-      <div class="song-online-actions">${fav}${mv}${add}<a class="online-source-link" href="${esc(source.pageUrl)}" target="_blank" rel="noopener noreferrer">查看 ↗</a></div>`;
+ // 音质 / 原唱 / 别名 与 ♥ / MV / 加入歌单 / 查看 原本分两排、混着 9px / 10px /
+ // 12px 三种字号，读起来是散的。合并成一排，统一到 12px 基线（chip 压到 11px
+ // 以保留「标签 < 操作」的层级），中间用一条 1px 分隔线断开信息与操作。
+    online.innerHTML = `<div class="song-detail-row">
+      <span class="quality-tag quality-${tier}">${qualityTierLabels[tier]}</span>${original}${alias}
+      <span class="song-detail-divider" aria-hidden="true"></span>
+      ${fav}${mv}${add}<a class="online-source-link" href="${esc(source.pageUrl)}" target="_blank" rel="noopener noreferrer">查看 ↗</a></div>`;
   }
+
 
   private paintLyrics(node: HTMLElement, cached: CachedSong | undefined, time: number, track: MusicTrack) {
     if (this.lyricNode !== node) {

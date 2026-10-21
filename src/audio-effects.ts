@@ -242,6 +242,17 @@ export class AudioEffectsChain {
     for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
     return Math.sqrt(sum / data.length);
   }
+ /** 频谱取样（歌曲详情页的音频条）：analyser 挂在 limiter 之后，是静音取样点，
+  * 所以读它不会影响发声。调用方自己持有 Uint8Array 复用，避免每帧分配。 */
+  readSpectrum(target: Uint8Array): void {
+    // lib.dom 把入参收窄成 Uint8Array<ArrayBuffer>；调用方传的就是普通 Uint8Array，
+    // 这里只是把 SharedArrayBuffer 那个分支排除掉，运行时无差别。
+    this.analyser.getByteFrequencyData(target as Uint8Array<ArrayBuffer>);
+  }
+  /** 分箱数量（= fftSize / 2 = 128），画几根柱子由调用方决定。 */
+  get spectrumBins(): number {
+    return this.analyser.frequencyBinCount;
+  }
   dispose(): void {
     try { this.surroundLfo.stop(); } catch { /* not started */ }
     try { this.output.disconnect(); } catch { /* already detached */ }
