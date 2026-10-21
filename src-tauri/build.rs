@@ -13,6 +13,9 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "desktop_window_state", "desktop_window_action", "desktop_pick_folder", "desktop_open_link", "desktop_open_feedback",
             "desktop_tray_preference",
+            // 自更新：漏了这两个的后果是运行时 invoke 直接被 ACL 拒，
+            // 前端只看到「Command desktop_app_info not allowed by ACL」。
+            "desktop_app_info", "desktop_update_install",
         ]),
     )).expect("desktop permission manifest");
 }

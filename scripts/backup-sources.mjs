@@ -20,7 +20,7 @@
 //
 // UA 全部: Rhine-Tauri/2.0 backup-source
 // 平台→source码（二进制原文: qqkuwokugounetease&kgkw）:
-//   qq→qq, kuwo→kuwo, kugou→kg, netease→netease, qishui→netease, bodian→kw, joox→qq
+//   qq→qq, kuwo→kuwo, kugou→kg, netease→netease, bodian→kw, joox→qq
 
 import { withHardTimeout } from './hard-timeout.mjs';
 
@@ -51,7 +51,7 @@ const PROBE_SONG_ID = '1860327';
 /** 平台→source码（严格对齐二进制: qqkuwokugounetease&kgkw） */
 const SOURCE_CODE = {
   qq: 'qq', kuwo: 'kuwo', kugou: 'kg', netease: 'netease',
-  qishui: 'netease', bodian: 'kw', joox: 'qq',
+  bodian: 'kw', joox: 'qq',
 };
 
 /** quality 值（二进制原文: standardlosslesshiresmasterdolbydts320kmp3flac128kmp3） */
@@ -67,7 +67,7 @@ export const DEFAULT_SOURCES = [
     name: 'LX Music API',
     type: 'lx-api',
     url: 'https://yy.zddyr.top/lx/api/',
-    providers: ['netease', 'qq', 'kuwo', 'kugou', 'qishui', 'bodian', 'joox'],
+    providers: ['netease', 'qq', 'kuwo', 'kugou', 'bodian', 'joox'],
   },
   {
     name: 'QQ Music API',
@@ -79,7 +79,7 @@ export const DEFAULT_SOURCES = [
     name: 'Generic Music API',
     type: 'generic-api',
     url: 'https://music.bxa241d4.shop/api/music',
-    providers: ['netease', 'qq', 'kuwo', 'kugou', 'qishui', 'bodian', 'joox'],
+    providers: ['netease', 'qq', 'kuwo', 'kugou', 'bodian', 'joox'],
   },
 ];
 

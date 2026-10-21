@@ -5,7 +5,7 @@ import { fetchOnline } from './online-debug.ts';
 /** 搜索平台页签顺序：网易云音乐 → QQ音乐 → 酷我音乐 → 酷狗音乐。
  *
  * 搜索平台行只在这 4 个里出现。
- * JOOX / 波点 / 汽水不出现在搜索平台行 —— 它们只在歌单来源下拉里可选。
+ * JOOX / 波点不出现在搜索平台行 —— 它们只在歌单来源下拉里可选。
  * 上游没有「全部」聚合页签，所以这里也不提供。 */
 export type SearchSource = Exclude<MusicProvider, 'bodian' | 'joox'>;
 export const providerOrder: SearchSource[] = ['netease', 'qq', 'kuwo', 'kugou'];

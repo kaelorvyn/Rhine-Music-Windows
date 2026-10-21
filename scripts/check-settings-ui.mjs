@@ -52,17 +52,18 @@ try {
   await page.waitForTimeout(1500);
   const categories = await page.locator('[data-action="settings-category"]').allTextContents();
   assert.deepEqual(categories,
-    ['个性化', '播放', '音频', '画面显示', '下载', '缓存', '本地歌单', '本地音乐库', '关于', '反馈', '开发者', '诊断'],
-    '12 个分类，顺序一致');
+ // 现行分类：砍掉「关于/反馈/诊断」，developer 只剩「界面维护」；「本地音乐库」
+ // 改名为「音乐与音源」，并新增「版本更新」（见 music-settings.ts 与 update-center.ts）。
+    ['个性化', '播放', '音频', '画面显示', '下载', '缓存', '本地歌单', '音乐与音源', '版本更新', '界面维护'],
+    '分类清单与顺序一致');
  // 默认落在「个性化」，并且页面真的显示出来了。
   await until(`document.querySelector('[data-settings-page="personalization"]')?.hidden === false`, 'personalization shown by default');
   assert.match(await page.locator('[data-settings-page="personalization"]').textContent(), /外观主题/, '默认页有内容');
 
- // 软件比例：滑杆 clamped 到 80–140。
-  await page.locator('#ui-scale').fill('120');
-  await page.waitForTimeout(400);
-  assert.equal((await readPrefs()).uiScale, 120, '界面比例写进 preferences');
-  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--music-ui-scale').trim()), '1.2', '界面比例落到 CSS 变量');
+ // 界面比例（uiScale）已经没有滑杆控件了，preferences 里的值仍在、CSS 变量
+ // 仍按它落地。这里只验证「变量确实存在且是合法数值」，不再假装有 #ui-scale。
+  const uiScale = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--music-ui-scale').trim());
+  assert.match(uiScale, /^\d+(\.\d+)?$/, '界面比例落到 CSS 变量');
 
  // 自动播放 / 无缝切歌：勾选走 applySetting。
   await page.locator('[data-action="settings-category"][data-category="playback"]').click();

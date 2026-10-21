@@ -18,7 +18,11 @@ export function neteaseMediaUrl(value) {
   try {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port) return undefined;
-    if (!['music.126.net', 'music.163.com'].some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`))) return undefined;
+    // 白名单必须含 vod.126.net：MV 的取流域名是 vod*.vod.126.net
+    // （实测 http://vodkgeyttp8.vod.126.net/.../mv/420144/...）。原来只有
+    // music.126.net / music.163.com，于是每个 MV 地址都被判无效，播放器只会
+    // 报「这个 MV 暂时无法在线观看」—— 这就是 MV 打不开的根因。
+    if (!['music.126.net', 'music.163.com', 'vod.126.net'].some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`))) return undefined;
     url.protocol = 'https:';
     return url.href;
   } catch { return undefined; }

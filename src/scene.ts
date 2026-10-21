@@ -2309,6 +2309,17 @@ export class ArchiveScene {
       !["archive", "presented", "hidden"].includes(this.musicPresentation.phase));
   }
   get graphicsIdentity() { return { ...this.graphicsDevice }; }
+  /**
+   * 整库预热：把所有封面的 tile 都解码出来并常驻。
+   * 用户要的「提前全部加载好、全部缓存着」靠这一条 —— 原来只前瞻 192 张，
+   * 其余靠加载时现解码，快速轮播必然追不上。
+   */
+  warmAllCovers(records: readonly (ArchiveRecord | undefined)[]) {
+    if (this.disposed || !this.covers) return;
+    this.coverPrefetchAt = Number.POSITIVE_INFINITY;
+    this.covers.prefetch(records, 3);
+  }
+
   preloadCovers(ahead: readonly (ArchiveRecord | undefined)[]) {
     this.coverPrefetchAt = 0;
     this.covers?.prefetch(ahead, 3);

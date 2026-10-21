@@ -895,6 +895,14 @@ export class MusicPlayer {
       return this.effects;
     } catch { return undefined; }
   }
+ /** 频谱取样：只读**已存在**的效果链，绝不在这里创建 AudioContext ——
+  * 详情页的音频条每帧都会问一次，没有播放时建 ctx 会撞浏览器的自动播放策略。
+  * 播放时 routeThroughEffects() 已经建过链，所以正在放歌就一定有数据。 */
+  readSpectrum(target: Uint8Array): boolean {
+    if (!this.effects) return false;
+    this.effects.readSpectrum(target);
+    return true;
+  }
   setEffects(config: EffectsConfig): void {
     const before = this.effectsConfig;
     this.effectsConfig = normalizeEffectsConfig(config);

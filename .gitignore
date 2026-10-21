@@ -57,3 +57,12 @@ music-data*/
 *.rhinekey
 pool-credential.json
 /rhine-pool.rhinekey
+
+# 汽水登录验证脚本生成的二维码等临时产物
+/outputs/
+
+# 原生签名库（汽水登录所需的 bdms.node / metasecml.dll，二进制不入库）
+/scripts/vendor/
+
+# 第三方接口调研笔记（内部资料，不公开）
+/QISHUI-API.md

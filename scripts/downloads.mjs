@@ -4,12 +4,21 @@
 // serves to the signed-in account's own playback URLs.
 import { promises as fs, createWriteStream } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 const failure = (message, status = 400) => Object.assign(new Error(message), { status });
 const MAX_BYTES = 512 * 1024 * 1024;
+/** 用户没指定下载目录时的落点：系统「音乐」文件夹。
+ *
+ * 原来默认是空字符串，于是没配置时点下载只会报「请先在设置里选择下载目录」，
+ * 而界面上那个框还是「例如 D:\\Music\\Downloads」的灰字。现在默认就落到
+ * %USERPROFILE%\\Music，用户什么都不填也能下载。 */
+export const defaultDownloadDirectory = () => {
+  try { return path.join(os.homedir(), 'Music'); } catch { return ''; }
+};
 export const namingPatterns = ['{artist} - {title}', '{title} - {artist}', '{title}'];
 // 下载音质档位 —— 7 级枚举（Standard→High→Lossless→HiRes→HiFi→Surround→Master）。
 // 这个值会原样透传给共享池的 /api/proxy/music 作为 quality 参数。
@@ -26,6 +35,9 @@ const cleanName = value => String(value ?? '').replace(/[\\/:*?"<>|\u0000-\u001f
 const FORMAT_EXTENSIONS = {
   mp3: 'mp3', m4a: 'm4a', aac: 'aac', ogg: 'ogg', wav: 'wav', wma: 'wma', ape: 'ape',
   flac: 'flac', mflac: 'mflac', mgg: 'mgg', mgg1: 'mgg1', mmp4: 'mmp4',
+  // 视频（MV）：m4a 与 mp4 同为 ISO-BMFF，只能靠声明区分。不列这里的话，
+  // 245MB 的 MV 会被命名成 .m4a —— 播放器当纯音频处理，画面就没了。
+  mp4: 'mp4',
 };
 export function extensionFor(format) {
   return FORMAT_EXTENSIONS[String(format ?? '').toLowerCase()] || 'mp3';
@@ -106,7 +118,11 @@ export class DownloadManager {
   constructor({ dataDir, directory, fetch: doFetch = globalThis.fetch, concurrency = 2, now = Date.now } = {}) {
     this.file = dataDir ? path.join(dataDir, 'download_tasks.json') : undefined;
     this.doFetch = doFetch; this.concurrency = concurrency; this.now = now;
-    this.tasks = []; this.active = 0; this.settings = { directory: directory ?? '', quality: 'master', naming: namingPatterns[0] };
+    this.tasks = []; this.active = 0;
+    // `directoryConfigured` 区分「用户自己设过」与「走默认」：设置面板据此决定
+    // 把路径填进输入框（用户设过）还是只当灰字提示显示（走默认）。
+    this.directoryConfigured = validDirectory(directory ?? '');
+    this.settings = { directory: this.directoryConfigured ? directory : defaultDownloadDirectory(), quality: 'master', naming: namingPatterns[0] };
     this.ready = this.load();
   }
   async load() {
@@ -120,7 +136,7 @@ export class DownloadManager {
         }));
       }
       if (value.settings && typeof value.settings === 'object') {
-        if (validDirectory(value.settings.directory)) this.settings.directory = value.settings.directory;
+        if (validDirectory(value.settings.directory)) { this.settings.directory = value.settings.directory; this.directoryConfigured = true; }
         if (qualityLevels.includes(value.settings.quality)) this.settings.quality = value.settings.quality;
         if (namingPatterns.includes(value.settings.naming)) this.settings.naming = value.settings.naming;
       }
@@ -135,7 +151,9 @@ export class DownloadManager {
   }
   snapshot() {
     return {
-      settings: { ...this.settings },
+      // 前端要显示「真正的落盘位置」：directory 永远是生效路径，
+      // directoryIsDefault 告诉界面该不该把它填进输入框（false = 只做灰字默认值）。
+      settings: { ...this.settings, directoryIsDefault: !this.directoryConfigured },
       tasks: this.tasks.map(({ id, title, artist, quality, status, error, bytes, target, createdAt }) =>
         ({ id, title, artist, quality, status, error, bytes, target, createdAt })),
     };
@@ -143,9 +161,13 @@ export class DownloadManager {
   async configure({ directory, quality, naming } = {}) {
     await this.ready;
     if (directory !== undefined) {
-      if (!validDirectory(directory)) throw failure('下载目录需要是绝对路径。');
-      try { await fs.mkdir(directory, { recursive: true }); } catch { throw failure('无法创建下载目录，请检查路径与权限。'); }
-      this.settings.directory = directory;
+      // 传空 = 回到默认目录，而不是报「需要是绝对路径」：用户清空输入框的
+      // 语义就是「别再问我放哪，你决定」。
+      const target = String(directory ?? '').trim() || defaultDownloadDirectory();
+      if (!validDirectory(target)) throw failure('下载目录需要是绝对路径。');
+      try { await fs.mkdir(target, { recursive: true }); } catch { throw failure('无法创建下载目录，请检查路径与权限。'); }
+      this.settings.directory = target;
+      this.directoryConfigured = String(directory ?? '').trim().length > 0;
     }
     if (quality !== undefined) {
       if (!qualityLevels.includes(quality)) throw failure('无效的下载音质。');
@@ -234,9 +256,13 @@ export class DownloadManager {
       if (!sniffed.ok) throw failure(`${sniffed.reason} 该音源可能尚未解密或格式不受支持。`, 415);
  // ★ 扩展名以**实测内容**为准，而非上游声明的 format ——
  // 上游说 mflac 而实际送来的可能是 mgg/mp3，命名错了播放器仍打不开。
+ // 例外：sniffAudio 对 ISO-BMFF 一律回 m4a（那是音频的常见后缀），但**声明
+ // 是 .mp4 的视频**要保留 mp4 —— MV 走同一条下载管线，改成 .m4a 会让播放器
+ // 把画面当成音频容器忽略掉。
       const declaredExt = path.extname(task.target);
-      if (declaredExt.toLowerCase() !== `.${sniffed.ext}`) {
-        const corrected = `${task.target.slice(0, -declaredExt.length)}.${sniffed.ext}`;
+      const sniffedExt = sniffed.kind === 'mp4' && declaredExt.toLowerCase() === '.mp4' ? 'mp4' : sniffed.ext;
+      if (declaredExt.toLowerCase() !== `.${sniffedExt}`) {
+        const corrected = `${task.target.slice(0, -declaredExt.length)}.${sniffedExt}`;
         task.target = corrected;
         task.fileName = path.basename(corrected);
       }

@@ -60,10 +60,6 @@
 .lyric-transport { margin-top: 16px; }
 .lyric-line:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
 #song-lyrics { scrollbar-color: color-mix(in srgb, var(--ink) 25%, transparent) transparent; }
-#song-lyrics::-webkit-scrollbar { width: 4px; background: transparent; }
-#song-lyrics::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--ink) 25%, transparent); border-radius: 4px; }
-#song-lyrics::-webkit-scrollbar-track { background: transparent; }
-#song-lyrics::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 
 /* Match the archive document's mask sweep. Lyrics reveal on page entry only;
    offscreen lines appear directly on later scroll / playback changes. */
@@ -87,8 +83,26 @@
 
 /* 在线歌曲信息区：音源徽标 / 音质档位 / 原唱 / 别名 / MV / 单曲换源。 */
 #song-online { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 22px; }
-.song-online-actions { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
-.song-online-actions .text-button { font-size: 12px; }
-.online-source-link { font-size: 10px; line-height: 1.4; color: var(--muted); }
-.online-source-link:hover { color: var(--accent); }
+/* 音质 / 原唱 / 别名 + ♥ / MV / 加入歌单 / 查看：合并成一排。
+   之前是 .unified-song-badges（9px chip）和 .song-online-actions（12px 按钮
+   + 10px 灰色链接）两排、三种字号，视觉上是散的。统一到 12px 基线：
+   chip 降到 11px 保留「标签 < 操作」的层级，其余同字号；链接改用 --muted
+   但字号跟随，不再比按钮小一号。 */
+.song-detail-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.song-detail-row .quality-tag { font-size: 11px; line-height: 15px; padding: 0 6px; }
+.song-detail-row .unified-song-original-tag { font-size: 10px; padding: 1px 7px; }
+.song-detail-row .unified-song-alias { font-size: 11px; color: var(--muted); }
+.song-detail-row .text-button,
+.song-detail-row .online-source-link { font-size: 12px; line-height: 1.5; }
+.song-detail-row .online-source-link { color: var(--muted); }
+.song-detail-row .online-source-link:hover { color: var(--accent); }
+.song-detail-divider { width: 1px; height: 12px; background: var(--line); flex: 0 0 auto; }
 #song-source-menu { padding-top: 10px; }

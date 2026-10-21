@@ -2,6 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import "./desktop.css";
 
 export const isDesktop = () => "__TAURI_INTERNALS__" in window;
+
+/**
+ * 在系统默认浏览器里打开一个链接。
+ *
+ * WebView 里的 `window.open` 不会交给外部浏览器 —— Tauri 没有把 `_blank`
+ * 映射到系统 shell，调用后什么都不发生，用户只看到按钮没反应。
+ * 桌面端必须走 Rust 侧的 opener（只放行 http/https）。
+ */
+export function openExternal(url: string): void {
+  if (!isDesktop()) { window.open(url, "_blank", "noopener"); return; }
+  void invoke("desktop_open_link", { url }).catch(() => window.open(url, "_blank", "noopener"));
+}
 function showError(error: unknown) {
   const toast = document.querySelector<HTMLElement>("#music-toast");
   if (!toast) return;

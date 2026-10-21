@@ -39,11 +39,10 @@
 }
 .quality-settings select {
   font: inherit;
-  font-size: 12px;
   color: #393d32;
   background: #e7e3d9;
   border: 1px solid #bdb4a1;
-  border-radius: 0;
+  border-radius: 10px;
   padding: 9px 28px 9px 12px;
   min-width: 125px;
 }

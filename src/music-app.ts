@@ -14,6 +14,10 @@ import "./music-overview.css";
 import "./music-shell.css";
 import './music-song-view.css';
 import './online-debug.css';
+// 全局滚动条放在最后引入：它的 ::-webkit-scrollbar 规则要压过各组件文件里的零散写法。
+import './scrollbar.css';
+// 原生 select 展开层的圆角（appearance: base-select），不支持的旧内核自动跳过。
+import './ui-select.css';
 import { fetchOnline, mountOnlineDebug, onlineErrorReport } from './online-debug';
 import { settingsCategories, settingsNavigation, groupSettingsContent, selectSettingsCategory, filterSettings, type SettingsCategory } from './music-settings';
 import { buildMusicFeedback, feedbackMarkup } from './music-feedback';
@@ -79,6 +83,7 @@ import { searchMusicLibrary } from "./music-search";
 import { OnlineMusicSearch } from "./online-music-search";
 import { lookupVariants, normKey, artistMembers, titleParts } from "./online-search-core";
 import { MvPlayer } from "./mv-player";
+import { UpdateCenter } from "./update-center";
 import { NeteaseLogin, type NeteaseAccount } from "./netease-login";
 import { localPlaylistName, musicPlatforms, musicProvider, playlistSourceName, type MusicProvider, type PlaylistSource } from "./music-platform";
 import { NeteasePlaylists } from './netease-playlists';
@@ -89,7 +94,7 @@ import type { LightingLabController, LightingLabSettings } from "./music-lightin
 import { setupMotionLab } from "./music-motion-lab";
 import { getMusicMotionSpeed, normalizeMusicMotionSpeed, onMusicMotionSpeedChange, setMusicMotionSpeed } from "./music-motion-settings";
 import { mountMusicWheelNavigation } from "./music-wheel-navigation";
-import { isDesktop } from "./desktop";
+import { isDesktop, openExternal } from "./desktop";
 import { RenderScheduler } from "./render-scheduler";
 import {
   FRAME_RATE_MIN, FRAME_RATE_MAX, FRAME_RATE_UNLIMITED,
@@ -114,8 +119,11 @@ const icons = {
   search: svg(
     '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   ),
+ // 设置：齿轮（螺母）形状。原来画的是「两条横线 + 两个滑块」，那是调节/混音器
+ // 的图标，用户认为它不像设置。这里换成标准的八齿齿轮 + 中心圆，描边与
+ // icons 其余图标同源（svg() 统一 1.5 描边）。
   settings: svg(
-    '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2.5" fill="var(--surface)"/><circle cx="15" cy="17" r="2.5" fill="var(--surface)"/>',
+    '<circle cx="12" cy="12" r="3"/><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>',
   ),
   folder: svg('<path d="M3 7V5h6l2 2h10v13H3Z"/>'),
  // 默认头像小人：字形 bbox（含 1.5 描边）精确居中于 24 视区
@@ -351,9 +359,9 @@ stage.innerHTML = `
     <nav class="music-topnav" aria-label="音乐终端导航">
       <button data-action="search" aria-label="搜索">${icons.search}<span>搜索</span></button>
       <button data-action="playlists" id="my-playlists-button" hidden aria-label="歌单">${icons.folder}<span>歌单</span></button>
-      <select id="playlist-platform" class="nav-platform-select" aria-label="歌单平台" hidden></select>
+      <span class="nav-platform-picker" id="playlist-platform-picker" hidden><button type="button" class="nav-platform-trigger" id="playlist-platform" aria-haspopup="listbox" aria-expanded="false" aria-label="歌单来源">全部 <i aria-hidden="true">▾</i></button><div class="nav-platform-menu" id="playlist-platform-menu" role="listbox" aria-label="歌单来源" hidden></div></span>
       <button data-action="settings" class="icon-button" aria-label="设置">${icons.settings}</button>
-      <div class="minimal-transport" role="group" aria-label="音乐播放"><button type="button" data-action="locate-playing" id="transport-track" class="transport-track" aria-label="定位当前歌曲" aria-hidden="true" disabled><span id="transport-track-label"></span></button><button data-action="play-pause" id="play-pause" aria-label="播放" aria-pressed="false"><span class="transport-glyph transport-play" aria-hidden="true">${icons.play}</span><span class="transport-glyph transport-pause" aria-hidden="true">${icons.pause}</span></button><button type="button" data-action="download-song" id="transport-download" class="transport-download" aria-label="下载当前歌曲" title="下载当前歌曲" aria-hidden="true" disabled>${svg('<path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/>')}</button><div class="mini-playback-below" id="mini-playback-below" data-song="" hidden><span data-mini-lyric></span><input class="playback-seek" type="range" min="0" max="1" value="0" step="0.1" aria-label="歌曲播放进度" disabled></div></div>
+      <div class="minimal-transport" role="group" aria-label="音乐播放"><button type="button" data-action="locate-playing" id="transport-track" class="transport-track" aria-label="定位当前歌曲" aria-hidden="true" disabled><span id="transport-track-label"></span></button><button data-action="play-pause" id="play-pause" aria-label="播放" aria-pressed="false"><span class="transport-glyph transport-play" aria-hidden="true">${icons.play}</span><span class="transport-glyph transport-pause" aria-hidden="true">${icons.pause}</span></button><div class="mini-playback-below" id="mini-playback-below" data-song="" hidden><span data-mini-lyric></span><input class="playback-seek" type="range" min="0" max="1" value="0" step="0.1" aria-label="歌曲播放进度" disabled></div></div>
       <button data-action="netease-login" id="netease-login-button" data-auth="out" aria-label="账号（未登录），打开登录面板"><span class="account-avatar" id="account-avatar"></span></button>
     </nav>
   </header>
@@ -714,6 +722,10 @@ function savePrefs() {
  */
 async function pushCacheSettings(refresh = true) {
   const applied = await syncCacheSettings(preferences.cacheLimit, preferences.cacheLocation);
+  // 把后端**真正生效**的缓存目录写回输入框的灰字提示：用户没自定义时也要
+  // 看得见缓存落在哪（原来这里只有一句「留空使用默认位置」，等于没说）。
+  const location = document.querySelector<HTMLInputElement>('#cache-location');
+  if (location && applied?.cacheDir) location.placeholder = applied.cacheDir;
   if (refresh) await refreshCacheStatus();
   return applied;
 }
@@ -901,21 +913,47 @@ const warmingCoverImages = new Set<HTMLImageElement>();
  * 这里直接用 `new Image()` 提前建连并把响应放进 HTTP 缓存；等场景真正
  * 开始解码时就是缓存命中。
  */
+/** 待建连的封面与在飞计数。全库预热有几百张，必须限流：一次 new 几百个
+ * Image 会把浏览器连接池占满，最该先到的那几张反而更慢。 */
+const warmCoverQueue: string[] = [];
+const WARM_COVER_CONCURRENCY = 8;
+let warmCoverActive = 0;
+/**
+ * 用户要求：封面**启动一开始就下**，不再等加载动画结束后一张张来。
+ *
+ * 开场动画期间三维专辑架还没进视口，浏览器不会为它建连（这正是原来
+ * `loading="lazy"` + 场景就绪后才预载造成的「动画后才一张张下」）。
+ * 这里直接用 `new Image()` 提前建连并把响应放进 HTTP 缓存；等场景真正
+ * 开始解码时就是缓存命中。
+ */
 function warmCoverUrl(url?: string) {
   if (!url || warmedCoverUrls.has(url)) return;
- // 只当书签用，别让它无限长（用户一直翻专辑时）。
-  if (warmedCoverUrls.size > 1024) warmedCoverUrls.clear();
+ // 只当书签用，别让它无限长（全库预热会把整个曲库都过一遍）。
+  if (warmedCoverUrls.size > 4096) warmedCoverUrls.clear();
   warmedCoverUrls.add(url);
-  const image = new Image();
- // 与 CoverAtlas 用同一种请求模式（crossOrigin="anonymous"），保证命中同一条
- // HTTP 缓存记录，而不是被浏览器分到另一个缓存分区。
-  image.crossOrigin = "anonymous";
-  image.decoding = "async";
-  const release = () => warmingCoverImages.delete(image);
-  image.addEventListener("load", release, { once: true });
-  image.addEventListener("error", release, { once: true });
-  warmingCoverImages.add(image);
-  image.src = url;
+  warmCoverQueue.push(url);
+  pumpWarmCovers();
+}
+/** 队列泵：始终维持至多 WARM_COVER_CONCURRENCY 个在飞的 Image。 */
+function pumpWarmCovers() {
+  while (warmCoverActive < WARM_COVER_CONCURRENCY && warmCoverQueue.length) {
+    const url = warmCoverQueue.shift()!;
+    warmCoverActive++;
+    const image = new Image();
+  // 与 CoverAtlas 用同一种请求模式（crossOrigin="anonymous"），保证命中同一条
+  // HTTP 缓存记录，而不是被浏览器分到另一个缓存分区。
+    image.crossOrigin = "anonymous";
+    image.decoding = "async";
+    const release = () => {
+      warmCoverActive--;
+      warmingCoverImages.delete(image);
+      pumpWarmCovers();
+    };
+    image.addEventListener("load", release, { once: true });
+    image.addEventListener("error", release, { once: true });
+    warmingCoverImages.add(image);
+    image.src = url;
+  }
 }
 function warmFirstScreenCovers() {
   if (!records.length) return;
@@ -926,6 +964,21 @@ function warmFirstScreenCovers() {
     for (const row of FIRST_SCREEN_COVER_ROWS)
       if (lane || row)
         warmCoverUrl(records[fileAtCell({ lane: current.lane + lane, row: current.row + row })]?.album?.coverUrl);
+}
+/** 全库封面预热：启动转圈期间就把**所有**封面建连、压进 HTTP 缓存。
+ *
+ * 用户反馈在首页快速横向/纵向切换会卡 —— 根因就是新进入视口的封面此刻才
+ * 开始下载并解码。原来只预热「选中列 ±1 × 纵向 ±4」这 27 张，其余靠
+ * loading=lazy 慢慢来，快速切换必然追赶不上。这里先保关键路径（选中 +
+ * 首屏窗口），再把剩余曲库整体排队（并发 8），切到哪张都是缓存命中。 */
+function warmAllCovers() {
+  if (!records.length) return;
+  warmFirstScreenCovers();
+  for (const record of records) warmCoverUrl(record?.album?.coverUrl);
+  // 关键一步：只建连还不够 —— 用户切过去时仍要现解码。
+  // 这里把整库交给 CoverAtlas，让它在后台把每张的 tile 都解码成 canvas 常驻，
+  // 之后无论切到哪一张都是「已解码、直接上传纹理」。
+  scene?.warmAllCovers(records);
 }
 function preloadNearbyCovers() {
  // 用户要求：这一趟要能在 boot 之前跑，所以不再拿 `!scene` 当门槛。
@@ -1133,7 +1186,8 @@ async function applyLibrary() {
     ]),
   );
  // 封面 URL 到手的最早时刻（首次启动时还在加载页/开场动画之前）：立刻建连。
-  warmFirstScreenCovers();
+ // 这里就全库排队，别等用户切到才下（切换卡顿的根因就是"此刻才开始下"）。
+  warmAllCovers();
   if (scene && ready && oldVisual !== visualKey(albums, genres)) {
     const reopen = presentation.openingOrDetail;
     cancelTrackReveal();
@@ -2052,7 +2106,8 @@ async function playPlaylistAt(row: number, song: number) {
   if (!playlist?.trackCount || !accountActive || playerState.backend !== 'browser') return;
   const generation = ++playlistPlayEpoch, position = wrap(song, playlist.trackCount);
   try {
-    const queue = await playlistLibrary.queue(row, position);
+    // 整张歌单当队列：必须全量，否则播到第 100 首就没下一首了。
+    const queue = await playlistLibrary.queue(row, position, { full: true });
     if (generation !== playlistPlayEpoch || !accountActive || frameDisposed) return;
     const track = playlistLibrary.track(row, position);
     if (!track) { notify('这首歌曲暂时不可用。'); return; }
@@ -2109,35 +2164,20 @@ function followPlaylistPlayback(state: MusicPlayerState) {
 function renderLocalPlaylistsPanel() {
   const host = document.querySelector<HTMLElement>('#local-playlists'); if (!host) return;
   const rows = localPlaylistRows;
-  const sortOptions = (Object.keys(localSortKeys) as LocalSortKey[])
-    .map(key => `<option value="${key}" ${key === preferences.playlistSort ? 'selected' : ''}>${localSortKeys[key]}</option>`).join('');
-  host.innerHTML = `<div class="local-playlist-toolbar">
-      <button class="text-button" data-action="local-playlist-create">新建歌单</button>
-      <button class="text-button" data-action="local-playlist-import">导入网络歌单</button>
-      <button class="text-button" data-action="local-playlist-batch">批量管理</button>
-      <button class="text-button" data-action="song-add-to-playlist">加入当前歌曲</button>
-    </div>
-    <div class="local-playlist-sort" role="group" aria-label="歌曲排序">
-      <label for="local-playlist-sort-key">歌曲排序</label>
-      <select id="local-playlist-sort-key" data-settings-key="playlistSort">${sortOptions}</select>
-      <select id="local-playlist-sort-direction" data-settings-key="playlistSortDirection" aria-label="排序方向">
-        <option value="ascending" ${preferences.playlistSortDirection === 'ascending' ? 'selected' : ''}>升序</option>
-        <option value="descending" ${preferences.playlistSortDirection === 'descending' ? 'selected' : ''}>降序</option>
-      </select>
-    </div>
-    ${rows.length ? `<div class="playlist-list local-playlist-list">${rows.map((item, index) => `
+ // 用户要求这一层只留「我的歌单」本身：新建/导入/批量/加入当前歌曲四个按钮、
+ // 歌曲排序与升降序、每行的「01」序号和「N 首 · 收藏」全部去掉。
+ // 相关 handler 保留 —— 详情页的「加入歌单」仍然走 song-add-to-playlist。
+  host.innerHTML = rows.length ? `<div class="playlist-list local-playlist-list">${rows.map((item) => `
       <div class="album-result local-playlist-row${item.favorites ? ' local-playlist-favorites' : ''}" data-local-playlist="${esc(item.id)}">
-        <button class="local-playlist-open" data-local-playlist-open="${esc(item.id)}" data-local-playlist-index="${index}">
-          <small>${String(index + 1).padStart(2, '0')}</small>
+        <button class="local-playlist-open" data-local-playlist-open="${esc(item.id)}">
           <strong>${esc(item.name)}</strong>
-          <small>${item.count} 首${item.favorites ? ' · 收藏' : ''}</small>
         </button>
         <span class="local-playlist-actions">
           ${item.favorites ? '' : `<button class="text-button" data-action="local-playlist-rename" data-local-playlist-id="${esc(item.id)}" data-local-playlist-name="${esc(item.name)}" aria-label="重命名歌单 ${esc(item.name)}">重命名</button>`}
           ${item.favorites ? '' : `<button class="text-button" data-action="local-playlist-remove" data-local-playlist-id="${esc(item.id)}" data-local-playlist-name="${esc(item.name)}" aria-label="删除歌单 ${esc(item.name)}">删除</button>`}
         </span>
       </div>`).join('')}</div>`
-      : '<p class="scan-status">还没有本地歌单，先「新建歌单」创建一个。</p>'}`;
+      : '<p class="scan-status">还没有本地歌单。</p>';
 }
 /** 读一次本地歌单并重画面板。 */
 async function refreshLocalPlaylistsPanel() {
@@ -2189,9 +2229,9 @@ function renderPlaylistsPanel() {
  // 勾选中的行可以一次性移出临时歌单，也可以整批加进本地歌单。
   const picked = queueSelection;
   const toolbar = `<div class="queue-toolbar">
-      <button class="text-button" data-action="queue-select-mode">${queueSelectMode ? '退出批量管理' : '批量管理'}</button>
+      <button class="text-button" data-action="queue-select-mode">${queueSelectMode ? '退出批量选择' : '批量选择'}</button>
       ${queueSelectMode ? `<button class="text-button" data-action="queue-select-all">全选</button>
-      <button class="text-button" data-action="queue-select-clear">清空选择</button>
+      <button class="text-button" data-action="queue-select-clear">清除所选</button>
       <span class="queue-selection-count">已选 ${picked.size} 首</span>
       <button class="text-button" data-action="queue-selection-remove">移出歌单</button>
       <button class="text-button" data-action="queue-selection-add">加入歌单</button>` : ''}
@@ -2200,14 +2240,12 @@ function renderPlaylistsPanel() {
     const selected = picked.has(index);
     return `<div class="album-result queue-row${track.id === playerState.currentTrack?.id ? ' queue-row-active' : ''}${selected ? ' queue-row-selected' : ''}">
       ${queueSelectMode ? `<button class="queue-select" data-queue-select="${index}" aria-pressed="${selected}" aria-label="${selected ? '取消选择' : '选择'} ${esc(track.title)}">${selected ? '✓' : ''}</button>` : ''}
-      <button class="queue-play" data-queue-play="${index}"><small>${String(index + 1).padStart(2, '0')}</small><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></button>
+      <button class="queue-play" data-queue-play="${index}"><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></button>
       <button class="text-button song-favorite" data-action="song-favorite" data-favorite-song="${esc(track.id)}" aria-pressed="${favoriteIds.has(track.id)}" aria-label="收藏 ${esc(track.title)}">${favoriteIds.has(track.id) ? '♥' : '♡'}</button>
       ${queueSelectMode ? '' : `<button class="text-button queue-remove" data-queue-remove="${index}" aria-label="从歌单移除 ${esc(track.title)}">×</button>`}
     </div>`;
   }).join('')}</div>` : '<p class="scan-status">去“我的歌单”里双击一个歌单，把它替换进临时歌单。</p>';
- // 退出多选后才显示「清空歌单」—— 批量模式下清空整张单子太危险。
-  const clearAll = queue.length && !queueSelectMode ? '<button class="text-button" data-action="queue-clear">清空歌单</button>' : '';
-  queueHost.innerHTML = `<p role="status">${queue.length ? `${queue.length} 首歌曲 · 当前模式：${playModeNames[playerState.mode]}` : '临时歌单是空的。'}</p>${toolbar}${rows}${clearAll}`;
+  queueHost.innerHTML = `<p role="status">${queue.length ? `${queue.length} 首 · 当前模式：${playModeNames[playerState.mode]}` : '临时歌单是空的。'}</p>${toolbar}${rows}`;
 }
 /** Every provider's login state: the playlist platform selector shows the
  * logged-in platforms and the sorted account set drives account-change resets. */
@@ -2235,19 +2273,57 @@ function playlistViewProviders(): PlaylistSource[] {
   return playlistPlatformView === 'local' ? ['local'] : [playlistPlatformView];
 }
 function renderPlaylistPlatformOptions() {
-  const select = $<HTMLSelectElement>('#playlist-platform'); if (!select) return;
+  const picker = document.querySelector<HTMLElement>('#playlist-platform-picker');
+  const trigger = document.querySelector<HTMLButtonElement>('#playlist-platform');
+  const menu = document.querySelector<HTMLElement>('#playlist-platform-menu');
+  if (!picker || !trigger || !menu) return;
   const providers = loggedInProviders();
   if (playlistPlatformView !== 'all' && playlistPlatformView !== 'local' && !providers.includes(playlistPlatformView)) playlistPlatformView = 'all';
  // 选择器始终显示：本地歌单不登录也在，所以不再用登录与否决定显隐。
-  select.hidden = false;
-  const platformOptions = providers
+  picker.hidden = false;
+  const options: { value: PlaylistSource | 'all'; label: string }[] = [{ value: 'all', label: '全部' }];
+ // 用户要求：网易云 → 酷狗 → QQ → 莱茵（最后）。莱茵音乐固定垫底。
+  providers
     .map((provider, index) => ({ provider, index, rank: playlistSourceRank[provider] ?? 3 }))
     .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .map(({ provider }) =>
-      `<option value="${provider}" ${provider === playlistPlatformView ? 'selected' : ''}>${musicPlatforms[provider]}</option>`).join('');
- // 用户要求：网易云 → 酷狗 → QQ → 莱茵（最后）。莱茵音乐固定垫底。
-  select.innerHTML = `<option value="all">全部</option>${platformOptions}<option value="local" ${playlistPlatformView === 'local' ? 'selected' : ''}>${localPlaylistName}</option>`;
+    .forEach(({ provider }) => options.push({ value: provider, label: musicPlatforms[provider] }));
+  options.push({ value: 'local', label: localPlaylistName });
+  const current = options.find(item => item.value === playlistPlatformView) ?? options[0];
+  trigger.innerHTML = `${esc(current.label)} <i aria-hidden="true">▾</i>`;
+  menu.innerHTML = options.map(item =>
+    `<button type="button" role="option" class="nav-platform-option" data-platform="${item.value}" aria-selected="${item.value === current.value}">${esc(item.label)}</button>`).join('');
 }
+/** 自定义下拉的交互：点箭头展开、选一项写回、点别处收起。
+ *
+ * 为什么不用原生 `<select>`：它的展开列表由系统绘制，圆角/间距一律改不动，
+ * 用户反馈那个「抽屉的方框太尖锐」。这里自己画一个 12px 圆角的面板。 */
+function mountPlaylistPlatformPicker(): void {
+  document.addEventListener('click', event => {
+    const target = event.target as HTMLElement;
+    const menu = document.querySelector<HTMLElement>('#playlist-platform-menu');
+    const trigger = document.querySelector<HTMLButtonElement>('#playlist-platform');
+    if (!menu || !trigger) return;
+    const option = target.closest<HTMLElement>('[data-platform]');
+    if (option && menu.contains(option)) {
+      playlistPlatformView = option.dataset.platform as PlaylistSource | 'all';
+      menu.hidden = true; trigger.setAttribute('aria-expanded', 'false');
+      renderPlaylistPlatformOptions();
+      applyPlaylistPlatformView();
+      return;
+    }
+    if (target.closest('#playlist-platform')) {
+      menu.hidden = !menu.hidden;
+      trigger.setAttribute('aria-expanded', String(!menu.hidden));
+      return;
+    }
+    if (!menu.hidden && !menu.contains(target)) {
+      menu.hidden = true; trigger.setAttribute('aria-expanded', 'false');
+    }
+  });
+}
+// 启动即建好下拉并填一次选项：默认显示「全部」，不需要先登录。
+mountPlaylistPlatformPicker();
+renderPlaylistPlatformOptions();
 function applyPlaylistPlatformView() {
   paintOverviewHeading();
   playlistLibrary.setProviders(playlistViewProviders());
@@ -2257,9 +2333,9 @@ function applyPlaylistPlatformView() {
   void playlistLibrary.load().then(() => { if (key === accountKey && accountActive && accountView) void playlistLibrary.window(firstPlayablePlaylist(), 0); });
 }
 function paintOverviewHeading() {
-  $('.overview-heading h2').textContent = accountView
-    ? (playlistPlatformView === 'all' ? '我的歌单' : `我的歌单 · ${playlistSourceName(playlistPlatformView)}`)
-    : `${sortLabel.name}浏览收藏`;
+ // 用户要求：这一页就是「我的歌单」，不要再拼来源（原来会变成
+ // 「我的歌单 · 网易云音乐」，看起来像只显示了一个平台的歌单）。
+  $('.overview-heading h2').textContent = accountView ? '我的歌单' : `${sortLabel.name}浏览收藏`;
 }
 function onlineAccountChanged(provider: MusicProvider, account: NeteaseAccount) {
   accountStates[provider] = account;
@@ -2344,6 +2420,8 @@ const onlineSearch = new OnlineMusicSearch((track, queue) => {
 // 搜索行每次重画后回填 ♥ 的收藏态（异步取一次收藏表）。
 onlineSearch.onRender = () => refreshFavoriteHearts();
 const mvPlayer = new MvPlayer();
+/** 版本更新：启动后异步检查 GitHub，之后每小时一次（见 update-center.ts）。 */
+const updateCenter = new UpdateCenter();
 function detailOnlineTrack(): MusicTrack | undefined {
   return currentAlbum()?.tracks[0]?.onlineSource ? currentAlbum()?.tracks[0] : undefined;
 }
@@ -2360,7 +2438,24 @@ async function openSongMv(track: MusicTrack) {
       src = value.url;
     }
     if (!src) throw new Error('这个 MV 暂时无法在线观看。');
-    mvPlayer.open({ title: track.title, artist: track.artist, src });
+ // 下载走与歌曲同一条 /api/downloads 队列：MV 是 ISO-BMFF 视频，format 用
+ // mp4（下载器会按 ftyp 魔数校验并保留 .mp4 后缀）。标题加「 MV」，
+ // 免得和同名歌曲的文件撞名被覆盖。
+    const mvUrl = src;
+    mvPlayer.open({
+      title: track.title,
+      artist: track.artist,
+      src: mvUrl,
+      download: async () => {
+        const reply = await fetch('/api/downloads', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: mvUrl, title: `${track.title} MV`, artist: track.artist, format: 'mp4' }),
+        });
+        const body = await reply.json().catch(() => ({})) as { error?: string };
+        if (!reply.ok) throw new Error(body.error || '无法加入下载队列。');
+        return '已加入下载队列，可在下载面板查看进度。';
+      },
+    });
   } catch (error) {
     notify(error instanceof Error ? error.message : 'MV 加载失败，可能是网络或音源限制。');
   }
@@ -2514,9 +2609,18 @@ function normalizeDownloadTier(raw: string): QualityTier | null {
 async function hydrateDownloadSettings(): Promise<void> {
   try {
     const response = await fetch('/api/downloads');
-    const value = await response.json() as { settings: { directory?: string; quality?: string; naming?: string } };
+    const value = await response.json() as { settings: { directory?: string; quality?: string; naming?: string; directoryIsDefault?: boolean } };
     const directory = document.querySelector<HTMLInputElement>('#download-directory');
-    if (directory && !directory.value) directory.value = value.settings.directory ?? '';
+    if (directory) {
+      // 用户自己设过的路径填进输入框；走默认目录时输入框留空，只把真正的
+      // 落盘位置写进 placeholder（灰字）—— 不填也要看得出文件会存到哪。
+      if (value.settings.directoryIsDefault) {
+        directory.value = '';
+        if (value.settings.directory) directory.placeholder = value.settings.directory;
+      } else {
+        directory.value = value.settings.directory ?? '';
+      }
+    }
     const quality = document.querySelector<HTMLSelectElement>('#download-quality');
     if (quality) quality.value = value.settings.quality ?? 'master';
     const naming = document.querySelector<HTMLSelectElement>('#download-naming');
@@ -2865,11 +2969,13 @@ function openPanel(next: Panel) {
   $<HTMLButtonElement>('[data-action="overview"]').inert = true;
   stage.querySelectorAll<HTMLElement>(".lighting-lab").forEach((debugPanel) => { debugPanel.inert = true; });
   const titles = {
-    library: ["MUSIC LIBRARY", "本地音乐库"],
+    library: ["MUSIC LIBRARY", "音乐与音源"],
     search: ["FIND MUSIC", "搜索专辑与歌曲"],
     settings: ["SYSTEM SETTINGS", "设置"],
     'netease-login': ["MUSIC ACCOUNT", "音乐账号"],
-    playlists: ['MY PLAYLISTS', `我的${musicPlatforms[activeProvider]}歌单`],
+ // 用户要求：这里就是「我的歌单」，不要带上平台名（原来会拼成
+ // 「我的网易云音乐歌单」，看着像只显示那一个平台的歌单）。
+    playlists: ['MY PLAYLISTS', '我的歌单'],
   };
   const settingsWindow = next === "settings" || next === "library";
  // 「本地音乐库」这个入口落在本地歌单/音乐库这一组上。
@@ -3033,15 +3139,13 @@ function renderSettingsPanel() {
     `<section class="panel-section" data-settings-group="personalization"><h3>外观主题</h3><div class="theme-cards">${(["day", "night", "dusk"] as Theme[]).map((t) => `<button data-theme="${t}" aria-pressed="${preferences.theme === t}" class="${t}"><i></i><strong>${themeNames[t]}</strong><span>${t === "day" ? "暖白玻璃与日光" : t === "dusk" ? "冷调薄雾与雾蓝玻璃" : "极简星空与透光白卡"}</span></button>`).join("")}</div></section>
 
     <section class="panel-section" data-settings-group="playback"><h3>播放</h3><label class="settings-row"><span>进入软件自动播放</span><input type="checkbox" id="autoplay-setting" data-settings-key="autoplay" ${preferences.autoplay ? "checked" : ""}></label></section>
-    <section class="panel-section" data-settings-group="cache"><h3>缓存</h3><label class="settings-row"><span>缓存上限</span><input type="range" id="cache-limit" data-settings-key="cacheLimit" min="64" max="8192" step="64" value="${preferences.cacheLimit}" aria-label="缓存上限"></label><p class="scan-status" id="cache-limit-status" role="status">${preferences.cacheLimit} MB</p><label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" data-settings-key="cacheLocation" placeholder="留空使用默认位置" aria-label="缓存位置" value="${esc(preferences.cacheLocation)}"></label><button class="text-button" data-action="cache-clear">清理缓存 ↗</button><p class="scan-status" id="cache-status" role="status" aria-live="polite"></p></section>
+    <section class="panel-section" data-settings-group="cache"><h3>缓存</h3><label class="settings-row"><span>缓存上限</span><input type="range" id="cache-limit" data-settings-key="cacheLimit" min="64" max="8192" step="64" value="${preferences.cacheLimit}" aria-label="缓存上限"></label><p class="scan-status" id="cache-limit-status" role="status">${preferences.cacheLimit} MB</p><label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" data-settings-key="cacheLocation" placeholder="读取中…" aria-label="缓存位置" value="${esc(preferences.cacheLocation)}"></label><button class="text-button" data-action="cache-clear">清理缓存 ↗</button><p class="scan-status" id="cache-status" role="status" aria-live="polite"></p></section>
     <section class="panel-section" data-settings-group="library"><h3>共享音源</h3><p class="scan-status" id="pool-credential-status" role="status" aria-live="polite">检查中…</p><div class="pool-credential-actions"><button class="text-button" data-action="pool-credential-import">导入密钥文件 ↗</button><button class="text-button" data-action="pool-credential-export">导出密钥 ↗</button><button class="text-button" data-action="pool-credential-clear">移除 ↗</button></div><input type="file" id="pool-credential-file" accept=".rhinekey,.json" hidden><p class="scan-status">密钥由你自己提供，程序不内置任何凭据。没导入时只使用备用音源。</p></section>
     <section class="panel-section" data-settings-group="display"><h3>窗口</h3><label class="settings-row"><span>关闭窗口时最小化到托盘</span><input type="checkbox" id="minimize-to-tray" data-settings-key="minimizeToTray" ${preferences.minimizeToTray ? "checked" : ""}></label></section>
     <section class="panel-section" data-settings-group="personalization"><h3>账号头像</h3><div class="avatar-settings"><span class="account-avatar avatar-large" id="avatar-preview"></span><label class="text-button" for="avatar-upload">上传头像 ↗</label><input type="file" id="avatar-upload" accept="image/png,image/jpeg,image/webp" hidden><button class="text-button" data-action="avatar-reset">恢复默认头像</button></div><p class="scan-status">未上传时使用默认头像。</p></section>
     <section class="panel-section" data-settings-group="local"><h3>音乐库排列</h3><label class="settings-row"><span>排列方式</span><select id="music-sort" aria-label="音乐库排列方式">${(["genre", "artist", "album"] as MusicSortMode[]).map((value) => `<option value="${value}" ${preferences.sortMode === value ? "selected" : ""}>${sortLabels[value].name}</option>`).join("")}</select></label></section>
-    <section class="panel-section" data-settings-group="download"><h3>歌曲下载</h3><label class="settings-row"><span>下载目录</span><input type="text" id="download-directory" placeholder="例如 D:\\Music\\Downloads" aria-label="下载目录"></label><label class="settings-row"><span>下载音质</span><select id="download-quality" aria-label="下载音质"><option value="lossless">无损</option><option value="master">母带</option><option value="surround">环绕</option><option value="hifi">HiFi</option><option value="hires">Hi-Res</option><option value="high">高品</option><option value="standard">标准</option></select></label><label class="settings-row"><span>文件命名</span><select id="download-naming" aria-label="文件命名"><option value="{artist} - {title}">歌手 - 歌名</option><option value="{title} - {artist}">歌名 - 歌手</option><option value="{title}">仅歌名</option></select></label><p class="scan-status" id="download-settings-status" role="status">下载仅保存平台提供给当前账号的音源，请遵守平台协议与版权法。</p></section>
-    <section class="panel-section" id="lx-sources-settings" data-settings-group="library"><h3>自定义音源</h3><p class="scan-status">加载 LX Music 音源插件（.js），为平台只肯给试听的歌曲补上完整音源。插件由你自己提供与维护。</p><label class="settings-row"><span>音源目录</span><input type="text" id="lx-sources-dir" placeholder="例如 E:\\音源" aria-label="自定义音源目录"></label><label class="settings-row"><span>启用自定义音源</span><input type="checkbox" id="lx-sources-enabled"></label><button class="primary-button" data-action="lx-sources-save">保存并重新加载 ↗</button><p class="scan-status" id="lx-sources-status" role="status" aria-live="polite"></p></section>
-    <section class="panel-section" id="introduction-settings" data-settings-group="library"><h3>专辑介绍</h3><p id="introduction-coverage"></p><button class="primary-button" id="introduction-refresh" data-action="introductions-library">查询 / 更新专辑介绍 ↗</button><progress id="introduction-progress" aria-label="专辑介绍查询进度" max="1" value="0" hidden></progress><p id="introduction-status" class="scan-status" role="status" aria-live="polite"></p><details id="introduction-missing" hidden><summary></summary><ul></ul></details></section>
-    <section class="panel-section" id="credits-settings" data-settings-group="library"><h3>制作信息</h3><p id="credits-coverage"></p><button class="primary-button" id="credits-refresh" data-action="credits-library">查询缺失的制作信息 ↗</button><progress id="credits-progress" aria-label="制作信息查询进度" max="1" value="0" hidden></progress><p id="credits-status" class="scan-status" role="status" aria-live="polite"></p></section>
+    <section class="panel-section" data-settings-group="download"><h3>歌曲下载</h3><label class="settings-row"><span>下载目录</span><input type="text" id="download-directory" placeholder="读取中…" aria-label="下载目录"></label><label class="settings-row"><span>下载音质</span><select id="download-quality" aria-label="下载音质"><option value="lossless">无损</option><option value="master">母带</option><option value="surround">环绕</option><option value="hifi">HiFi</option><option value="hires">Hi-Res</option><option value="high">高品</option><option value="standard">标准</option></select></label><label class="settings-row"><span>文件命名</span><select id="download-naming" aria-label="文件命名"><option value="{artist} - {title}">歌手 - 歌名</option><option value="{title} - {artist}">歌名 - 歌手</option><option value="{title}">仅歌名</option></select></label><p class="scan-status" id="download-settings-status" role="status">下载仅保存平台提供给当前账号的音源，请遵守平台协议与版权法。</p></section>
+    <section class="panel-section" id="lx-sources-settings" data-settings-group="library"><h3>自定义音源</h3><p class="scan-status">加载 LX Music 音源插件（.js），为平台只肯给试听的歌曲补上完整音源。插件由你自己提供与维护。</p><label class="settings-row"><span>音源目录</span><input type="text" id="lx-sources-dir" placeholder="选择音源目录，或留空只使用内置音源"  aria-label="自定义音源目录"></label><label class="settings-row"><span>启用自定义音源</span><input type="checkbox" id="lx-sources-enabled"></label><button class="primary-button" data-action="lx-sources-save">保存并重新加载 ↗</button><p class="scan-status" id="lx-sources-status" role="status" aria-live="polite"></p></section>
     <section class="panel-section" data-settings-group="local"><h3>高级设置 · 专辑阵列</h3><label class="settings-row"><span>专辑列显示</span><select id="music-array-mode" aria-label="专辑列显示方式"><option value="filled" ${preferences.arrayMode === "filled" ? "selected" : ""}>填充画面</option><option value="realistic" ${preferences.arrayMode === "realistic" ? "selected" : ""}>真实专辑列</option></select></label><label class="settings-row"><span>保留每列浏览位置</span><input type="checkbox" id="remember-column-position" ${preferences.rememberColumnPosition ? "checked" : ""}></label></section>
     <section class="settings-audio" data-settings-group="audio">${audioOutputMarkup()}</section>
     <section class="panel-section" data-settings-group="display"><h3>渲染画质</h3><label class="quality-control"><span>画质选择</span><select id="quality-mode"><option value="auto" ${preferences.qualityMode === 'auto' ? 'selected' : ''}>自动适配</option><option value="manual" ${preferences.qualityMode === 'manual' ? 'selected' : ''}>手动设置</option></select></label>
@@ -3049,9 +3153,8 @@ function renderSettingsPanel() {
     ${qualityMarkup(renderQuality)}</section>
     <section class="panel-section" data-settings-group="display"><h3>界面帧率</h3><label class="settings-row"><span>帧率上限</span><input type="range" id="frame-rate" data-settings-key="frameRate" min="${FRAME_RATE_MIN}" max="${FRAME_RATE_UNLIMITED}" step="1" value="${sliderFromFrameRate(preferences.frameRate)}" aria-label="界面帧率上限" aria-describedby="frame-rate-status"></label><p class="quality-note" id="frame-rate-status" role="status">${frameRateLabel(preferences.frameRate)}</p><p class="quality-note">拖动到最右为「无限制」（跟随显示器刷新率）。降低帧率可减少发热与耗电。</p></section>
     <section class="panel-section" data-settings-group="display"><h3>玻璃遮挡优化</h3><label class="settings-row"><span>可见区域绘制</span><select id="glass-occlusion" aria-label="玻璃遮挡优化"><option value="on" ${glassOcclusionMode === "on" ? "selected" : ""}>开启遮挡优化</option><option value="off" ${glassOcclusionMode === "off" ? "selected" : ""}>关闭 · Perf6 对照</option><option value="debug" ${glassOcclusionMode === "debug" ? "selected" : ""}>三类区域调试</option></select></label><button class="text-button" data-action="copy-performance">复制性能诊断 ↗</button></section>
-    <section class="panel-section" data-settings-group="personalization"><h3>动效与显示</h3><label class="settings-row"><span>减少动态效果</span><input type="checkbox" id="reduced-motion" ${preferences.reduced ? "checked" : ""}></label></section><section class="panel-section" data-settings-group="display"><h3>窗口</h3><button class="text-button" data-action="fullscreen">最大化 / 还原 ↗</button></section><section class="panel-section" data-settings-group="developer"><h3>界面维护</h3><button class="text-button" data-action="replay-boot">重播开场 ↗</button><button class="text-button" data-action="reload-interface">重新载入界面 ↻</button></section>
-    <section class="panel-section" data-settings-group="audio"><h3>声音</h3><label class="settings-row"><span>歌曲音量</span><input type="range" id="volume" aria-label="歌曲音量" min="0" max="100" value="${Math.round(preferences.volume * 100)}"></label><label class="settings-row"><span>歌曲衔接</span><select id="song-fade-setting" aria-label="歌曲衔接方式"><option value="fade-out" ${preferences.songTransition === "fade-out" ? "selected" : ""}>淡出但不淡入</option><option value="fade-in-out" ${preferences.songTransition === "fade-in-out" ? "selected" : ""}>淡出淡入</option><option value="gapless" ${preferences.songTransition === "gapless" ? "selected" : ""}>无缝播放</option></select></label><label class="settings-row"><span>界面音效</span><input type="checkbox" id="sound-setting" ${preferences.sound ? "checked" : ""}></label><label class="settings-row"><span>音效音量</span><input type="range" id="sound-volume" aria-label="音效音量" min="0" max="100" value="${Math.round(preferences.soundVolume * 100)}"></label><label class="settings-row"><span>氛围 BGM</span><input type="checkbox" id="bgm-setting" ${preferences.bgm ? "checked" : ""}></label><label class="settings-row"><span>BGM 音量</span><input type="range" id="bgm-volume" aria-label="BGM 音量" min="0" max="100" value="${Math.round(preferences.bgmVolume * 100)}"></label><button class="text-button" data-action="sound-preview">试听界面音效 ↗</button></section>
-    <details class="panel-section" id="musicbrainz-settings" data-settings-group="library"><summary>高级设置 · MusicBrainz</summary><button data-action="enrich-library" class="text-button">补充缺失的在线资料 ↗</button><div id="online-config"></div></details>`;
+    <section class="panel-section" data-settings-group="display"><h3>动效与显示</h3><label class="settings-row"><span>减少动态效果</span><input type="checkbox" id="reduced-motion" ${preferences.reduced ? "checked" : ""}></label></section><section class="panel-section" data-settings-group="display"><h3>窗口</h3><button class="text-button" data-action="fullscreen">最大化 / 还原 ↗</button></section><section class="panel-section" data-settings-group="developer"><h3>界面维护</h3><button class="text-button" data-action="replay-boot">重播开场 ↗</button><button class="text-button" data-action="reload-interface">重新载入界面 ↻</button></section>
+    <section class="panel-section" data-settings-group="audio"><h3>声音</h3><label class="settings-row"><span>歌曲音量</span><input type="range" id="volume" aria-label="歌曲音量" min="0" max="100" value="${Math.round(preferences.volume * 100)}"></label><label class="settings-row"><span>歌曲衔接</span><select id="song-fade-setting" aria-label="歌曲衔接方式"><option value="fade-out" ${preferences.songTransition === "fade-out" ? "selected" : ""}>淡出但不淡入</option><option value="fade-in-out" ${preferences.songTransition === "fade-in-out" ? "selected" : ""}>淡出淡入</option><option value="gapless" ${preferences.songTransition === "gapless" ? "selected" : ""}>无缝播放</option></select></label><label class="settings-row"><span>界面音效</span><input type="checkbox" id="sound-setting" ${preferences.sound ? "checked" : ""}></label><label class="settings-row"><span>音效音量</span><input type="range" id="sound-volume" aria-label="音效音量" min="0" max="100" value="${Math.round(preferences.soundVolume * 100)}"></label><label class="settings-row"><span>氛围 BGM</span><input type="checkbox" id="bgm-setting" ${preferences.bgm ? "checked" : ""}></label><label class="settings-row"><span>BGM 音量</span><input type="range" id="bgm-volume" aria-label="BGM 音量" min="0" max="100" value="${Math.round(preferences.bgmVolume * 100)}"></label><button class="text-button" data-action="sound-preview">试听界面音效 ↗</button></section>${updateCenter.settingsMarkup()}`;
   $('#panel-body').insertAdjacentHTML('afterbegin', '<section class="panel-section" data-settings-group="local"><h3>音乐库</h3><button data-action="library" class="primary-button">管理音乐库 ↗</button></section>');
  // 用户要求删掉「关于 / 反馈 / 开发者 / 诊断」四类，只保留界面维护里的
  // 「重播开场 / 重新载入界面」（它们不是诊断入口）。
@@ -3216,7 +3319,8 @@ function playAlbum(id?: string) {
 async function replaceQueueWithPlaylist(row: number) {
   const playlist = playlistLibrary.playlists[row]; if (!playlist) return;
   try {
-    const queue = await playlistLibrary.queue(row, 0);
+    // 点开歌单＝要听整张，全量取下来（原来只取 100 首）。
+    const queue = await playlistLibrary.queue(row, 0, { full: true });
     if (!queue.length) { notify('这个歌单还没有歌曲。'); return; }
     playlistPlayEpoch++; playlistQueuePending = false;
     playlistPlaybackId = playlist.id; playlistPlaybackSong = 0; followedPlaylistTrack = undefined;
@@ -3634,7 +3738,7 @@ document.addEventListener("click", (e) => {
       pickPoolCredentialFile();
       break;
     case "pool-credential-export":
-      window.open(poolCredentialExportUrl(), "_blank");
+      openExternal(poolCredentialExportUrl());
       break;
     case "pool-credential-clear":
       void removePoolCredential();
@@ -3687,9 +3791,6 @@ document.addEventListener("click", (e) => {
       if (accountView) closePanel(() => void openMyPlaylistsOverview());
       else openPanel('search');
       break;
-    case 'queue-clear':
-      player.setQueue([]);
-      break;
     case 'play-mode':
       player.setMode(nextPlayMode(playerState.mode));
       break;
@@ -3698,6 +3799,13 @@ document.addEventListener("click", (e) => {
       break;
     case 'download-song':
       downloadPanel.open(currentDownloadTarget(), listDownloadOptions, downloadCurrentSong);
+      break;
+   // 版本更新：主动检查一定给回音（已是最新 / 查不到 / 有新版本都提示）。
+    case 'update-check':
+      void updateCenter.check(true);
+      break;
+    case 'update-repo':
+      openExternal('https://github.com/kaelorvyn/Rhine-Music-Windows/releases');
       break;
     case "play-pause":
       playerState.currentTrack ? void player.toggle() : playAlbum();
@@ -3844,11 +3952,8 @@ document.addEventListener("change", (e) => {  const el = e.target as HTMLInputEl
   if (el.classList.contains('playback-seek')) {
     songView.commitSeek(el); updateSongTransport(); return;
   }
-  if (el.id === "playlist-platform") {
-    playlistPlatformView = el.value as PlaylistSource | 'all';
-    applyPlaylistPlatformView();
-    return;
-  }
+  // 歌单来源选择器已换成自定义下拉（见 mountPlaylistPlatformPicker），
+  // 不再走 select 的 change 事件。
  // 通用设置项：任何带 data-settings-key 的控件都走这里（第五步设置面板会大量复用）。
   const settingsKey = el.dataset.settingsKey;
   if (settingsKey) { applySetting(settingsKey, el); return; }
@@ -4223,15 +4328,18 @@ async function start() {
  // 先把托盘偏好同步给 Rust，再干别的：用户上次若关掉了「最小化到托盘」，
  // 本次启动点关闭就该真退出，不能还拦回托盘（那样找不到退出入口）。
   syncTrayPreference(preferences.minimizeToTray);
+ // 版本更新：这里只发起一次后台 fetch，**不 await** —— 检测慢或失败都不该
+ // 拖住进入应用的路径；之后每小时复查一次由 UpdateCenter 自己排。
+  updateCenter.start();
  // 用户要求：封面不要等开场动画跑完才一张张下。先把首屏那几张的请求发出去
  // （此刻 records 还是内置档案，通常没封面，纯属不放过任何一次提前建连的机会）。
   warmFirstScreenCovers();
   await loadLibrary(true);
   if (frameDisposed) return;
  // 真正的第一枪：曲库到手、封面 URL 已知，立刻在加载页/动画期间建连 + 进 HTTP 缓存，
- // 不等 boot.start()，更不等动画结束。preloadNearbyCovers 顺带把附近几张也压下
- // （场景还没建时它只热 HTTP 缓存，不会白算）。
-  warmFirstScreenCovers();
+ // 不等 boot.start()，更不等动画结束。这里直接预热**全库**（前台优先 + 并发 8），
+ // 否则快速切换时新进视口的封面才开始下载，必然卡。
+  warmAllCovers();
   preloadNearbyCovers();
   if (frameDisposed) return;
   try {

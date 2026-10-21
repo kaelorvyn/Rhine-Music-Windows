@@ -141,7 +141,7 @@ export class LocalPlaylists {
   async songs(id: string, options: { offset?: number; limit?: number; sort?: LocalSortKey; direction?: 'ascending' | 'descending' } = {}) {
     const query = new URLSearchParams({
       offset: String(options.offset ?? 0),
-      limit: String(options.limit ?? 500),
+      limit: String(options.limit ?? 1000),
       sort: options.sort ?? 'default',
       direction: options.direction ?? 'ascending',
     });

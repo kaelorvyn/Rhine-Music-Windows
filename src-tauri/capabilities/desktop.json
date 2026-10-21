@@ -4,5 +4,16 @@
   "description": "Only the owned loopback music window receives desktop capabilities.",
   "windows": ["main"],
   "remote": { "urls": ["http://127.0.0.1:*/*"] },
-  "permissions": ["core:default", "core:window:allow-start-dragging", "allow-desktop-window-state", "allow-desktop-window-action", "allow-desktop-pick-folder", "allow-desktop-open-link", "allow-desktop-open-feedback", "allow-desktop-tray-preference"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "allow-desktop-window-state",
+    "allow-desktop-window-action",
+    "allow-desktop-pick-folder",
+    "allow-desktop-open-link",
+    "allow-desktop-open-feedback",
+    "allow-desktop-tray-preference",
+    "allow-desktop-app-info",
+    "allow-desktop-update-install"
+  ]
 }

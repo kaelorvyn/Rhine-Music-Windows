@@ -1,0 +1,58 @@
+/* 全局滚动条：细、内嵌、半透明。
+ *
+ * 用户反馈「右边那个上下拉的滑块在外面太丑，一条白条」——根因是每个容器各自
+ * 写 scrollbar-width: thin，webkit 那半边零散甚至没写，于是 track 落到系统默认
+ * 的白底方槽上。
+ *
+ * 这里只写一份：thumb 用 --ink 的半透明色（三套主题自动跟着变），track 全透明，
+ * 两端箭头隐藏，宽度 6px 且不再占额外留白（配合 scrollbar-gutter: stable 让内容
+ * 不左右跳）。各文件里零散的 ::-webkit-scrollbar 覆盖一并删掉，避免再打架。
+ */
+
+.music-app,
+.music-app * {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 20%, transparent) transparent;
+}
+
+.music-app *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background: transparent;
+}
+
+.music-app *::-webkit-scrollbar-track {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.music-app *::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ink) 20%, transparent);
+  border: 0;
+  border-radius: 999px;
+  /* 短列表里也要看得见、抓得住。 */
+  min-height: 28px;
+}
+
+.music-app *::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ink) 34%, transparent);
+}
+
+.music-app *::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--ink) 46%, transparent);
+}
+
+/* 系统那对上下/左右箭头与右下角的接缝块：全部去掉，否则圆角条两侧会露出方角。 */
+.music-app *::-webkit-scrollbar-button,
+.music-app *::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+
+/* 横滑容器（歌单封面条、时间轴）沿用同一套观感，但更矮，避免压住内容。 */
+.music-app *::-webkit-scrollbar:horizontal {
+  height: 4px;
+}

@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import esbuild from 'esbuild';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const target = path.join(root, 'desktop-runtime');
@@ -40,8 +41,23 @@ async function collectRuntimeModules(dir) {
 
 const runtimeModules = await collectRuntimeModules(path.join(root, 'scripts'));
 await fs.mkdir(path.join(target, 'scripts'), { recursive: true });
+
+const MODULE_OPTS = {
+  loader: 'js', format: 'esm', target: 'node20', charset: 'utf8',
+  minifyWhitespace: true, minifySyntax: true,
+};
+
+async function emitModule(name) {
+  const from = path.join(root, 'scripts', name);
+  const to = path.join(target, 'scripts', name);
+  if (!name.endsWith('.mjs')) { await fs.copyFile(from, to); return; }
+  const src = await fs.readFile(from, 'utf8');
+  const code = esbuild.transformSync(src, MODULE_OPTS).code;
+  await fs.writeFile(to, code, 'utf8');
+}
+
 for (const name of runtimeModules) {
-  await fs.copyFile(path.join(root, 'scripts', name), path.join(target, 'scripts', name));
+  await emitModule(name);
 }
 // ── 按路径字符串加载的运行时文件（不在 import 图里，必须显式列出）─────
 //
@@ -63,7 +79,26 @@ for (const name of RUNTIME_EXTRA_FILES) {
     console.warn('警告：运行时依赖缺失 ' + name);
     continue;
   }
-  await fs.copyFile(from, path.join(target, 'scripts', name));
+  await emitModule(name);
+}
+
+// ── vendor/：原生模块目录，运行时按路径 require，import 图同样看不见 ──
+//
+// （还要同目录的 metasecml.dll 才跑得起来），这两个文件不是 ES 模块，
+// 不会出现在 import 图里。漏掉的后果不是报错而是**静默降级**：
+//
+// 文件缺失时不终止打包（开源仓库不含这两个二进制，贡献者本机通常也没有），
+// 但会明确告警，避免打出一个"看起来正常、实际不能播整首"的包。
+const RUNTIME_EXTRA_DIRS = [];
+
+for (const name of RUNTIME_EXTRA_DIRS) {
+  const from = path.join(root, 'scripts', name);
+  if (!(await fs.stat(from).catch(() => null))) {
+    console.warn('警告：运行时目录缺失 scripts/' + name);
+    continue;
+  }
+  await fs.cp(from, path.join(target, 'scripts', name), { recursive: true });
+  console.log('原生目录：scripts/' + name);
 }
 
 // ── lx-sources/：随包分发的音源插件目录，必须整目录带过去 ────────────
@@ -106,6 +141,14 @@ for (const name of ['package.json', 'package-lock.json', 'LICENSE', 'NOTICE.md',
 const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
 const child = spawnSync(process.execPath, [npmCli, 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: target, stdio: 'inherit' });
 if (child.status !== 0) throw new Error('Could not prepare locked production dependencies');
+
+  // 运行时不执行任何 npm script；把开发期的 scripts / devDependencies 字段
+  // 从发布包里抹掉，只留 Node 解析模块需要的三项。
+  {
+    const pkgPath = path.join(target, 'package.json');
+    const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
+    await fs.writeFile(pkgPath, JSON.stringify({ name: pkg.name, version: pkg.version, type: pkg.type }, null, 2), 'utf8');
+  }
 // Optional user-supplied FFmpeg binaries. Their licenses must accompany them.
 const bin = path.join(root, 'desktop-binaries');
 try {

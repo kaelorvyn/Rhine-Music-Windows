@@ -1,5 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// 应用自更新：下载 GitHub Release 的便携包，退出后替换自身再拉起。
+mod update;
+
+// 必须把命令**导入到顶层**再注册：`generate_handler![update::desktop_app_info]`
+// 会让 Tauri 2 把命令名取成带模块路径的 `update::desktop_app_info`，而前端
+// `invoke('desktop_app_info')` 用的是裸名 —— 结果每次调用都失败，而前端又把
+// 错误 catch 掉了，表现就是「版本读不出来、点更新没反应」。
+use update::{desktop_app_info, desktop_update_install};
+
 use std::{io::{BufRead, BufReader, Write}, path::PathBuf, process::{Child, Command, Stdio}, sync::{atomic::{AtomicBool, Ordering}, Mutex}, time::{Duration, Instant}};
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri::menu::{Menu, MenuItem};
@@ -219,7 +228,7 @@ fn main() {
                 | tauri_plugin_window_state::StateFlags::POSITION
                 | tauri_plugin_window_state::StateFlags::MAXIMIZED)
             .build())
-        .invoke_handler(tauri::generate_handler![desktop_window_action, desktop_window_state, desktop_pick_folder, desktop_open_link, desktop_open_feedback, desktop_tray_preference])
+        .invoke_handler(tauri::generate_handler![desktop_window_action, desktop_window_state, desktop_pick_folder, desktop_open_link, desktop_open_feedback, desktop_tray_preference, desktop_app_info, desktop_update_install])
         .setup(|app| {
             let (service, url) = start_service(app.handle())?;
             app.manage(service);
