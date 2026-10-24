@@ -1,4 +1,5 @@
 import http from 'node:http'
+import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promises as fs, createReadStream } from 'node:fs'
@@ -22,9 +23,10 @@ import { LocalPlaylists, SORT_KEYS } from './local-playlists.mjs'
 import { SourceLog } from './source-log.mjs'
 import { diagnoseOnlineFailure, onlineDiagnostic, onlineRouteContext } from './online-diagnostics.mjs'
 import { withHardTimeout } from './hard-timeout.mjs'
-import { resolveSongBest as poolResolve, loadFromImportedKey, configureServerLines, credentialsReady as poolCredentialsReady, serverLineState as poolLineState, probeServerLinesShared as poolProbeLines, SERVER_LINES as POOL_SERVER_LINES } from './shared-pool.mjs'
+import { resolveSongBest as poolResolve, loadFromImportedKey, configureServerLines, resetPoolRuntime, invalidatePoolUrlCache, credentialsReady as poolCredentialsReady, serverLineState as poolLineState, probeServerLinesShared as poolProbeLines, probeUpstreams as poolProbeUpstreams, SERVER_LINES as POOL_SERVER_LINES } from './shared-pool.mjs'
 import * as poolCredential from './pool-credential.mjs'
 import { decryptOrFallback, cacheKeyFor, QmcError, PLAINTEXT_FALLBACK_QUALITY, isEncrypted, QMC_ERRORS } from './qmc-decrypt.mjs'
+import { OnlineAudioRelay } from './online-audio-relay.mjs'
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -36,7 +38,33 @@ const qmcPending = new Map()
 const QMC_PENDING_TTL_MS = 30 * 60 * 1000
 const QMC_CACHE_DIR = path.join(PROJECT_DIR, '.cache', 'decoded-audio')
 const qmcInFlight = new Map()
+// 在线音频同源中转（音浪取数的前提）：Web Audio 对跨域媒体源会输出静音，
+// 播放地址必须换成本机票据地址才能接分析旁支。见 online-audio-relay.mjs。
+const audioRelay = new OnlineAudioRelay()
+/** sameOrigin 请求：把 audioUrl 换成同源票据地址。平台域名校验不过就原样返回 ——
+ *  宁可这一首没波形，也不能因为中转影响发声。 */
+function relayedSameOrigin (prepared, provider, body) {
+  if (body?.sameOrigin !== true || !prepared?.audioUrl) return prepared
+  try { return { ...prepared, audioUrl: audioRelay.register(provider, prepared.audioUrl) } }
+  catch { return prepared }
+}
 
+/** 用 FFmpeg showspectrumpic 画整轨频谱图（256 时间列 × 64 频带，灰度 PNG）。 */
+async function renderSpectrumPng(ffmpeg, input, out) {
+  const { spawn } = await import('node:child_process');
+  await new Promise((resolve, reject) => {
+    const child = spawn(ffmpeg, [
+      '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+      '-i', String(input),
+      '-lavfi', 'showspectrumpic=s=256x64:legend=0:scale=log:fscale=log,format=gray',
+      '-frames:v', '1', out,
+    ], { windowsHide: true, shell: false });
+    let err = '';
+    child.stderr?.on('data', (d) => { err += d; });
+    child.on('error', reject);
+    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(err || ('ffmpeg 退出码 ' + code))));
+  });
+}
 function qmcPrunePending () {
   const now = Date.now()
   for (const [k, v] of qmcPending) if (now - v.at > QMC_PENDING_TTL_MS) qmcPending.delete(k)
@@ -423,8 +451,13 @@ async function serveFile(request, response, descriptor, { cache = 'no-cache' } =
   stream.pipe(response)
 }
 
-/** LX 音源插件的用户配置：插件目录 + 总开关，落在数据目录里 */
+/** LX 音源插件的用户配置：只记「停用了哪些」，落在数据目录里。
+ *  有源即启用 —— 用户要求删掉那个总开关。 */
 const LX_CONFIG_FILE = 'lx-config.json'
+/** 用户自己添加的音源落在这里；内置目录在项目里，只读。 */
+const LX_USER_SOURCES_DIR = 'lx-sources-user'
+/** 自检单个音源的硬上限：10 秒内不出歌就算超时（用户要求）。 */
+const LX_SELFCHECK_CALL_TIMEOUT_MS = 10000
 async function readLxConfig(dataDir) {
   try { return JSON.parse(await fs.readFile(path.join(dataDir, LX_CONFIG_FILE), 'utf-8')) }
   catch { return {} }
@@ -497,7 +530,24 @@ const LX_URL_CACHE_FILE = 'lx-url-cache.json'
  * 用户等多久。与已删的 FALLBACK_BUDGET_MS 的区别：那个是"所有阶段共享
  * 一个总池"，这个是"这一站自己的超时"，各站互不占用。
  */
-const LX_FALLBACK_BUDGET_MS = 2000
+const BACKUP_LEGACY_TIMEOUT_MS = 1200 // 三个第三方车站的内层封顶（实测全死，只是兜底）
+
+/**
+ * 备用音源这一跳向本地源要的起始档位。
+ *
+ * 实测（2026-10-23，同一首 VIP《夜曲》）：
+ *   · 起点 `master`     → 阶梯里只有 master 一档，极少数源才支持，2500ms 0 命中；
+ *   · 起点 `flac24bit`  → 5 秒还空手（高档位插件要么超时要么空回）；
+ *   · 起点 `flac`       → **944ms 命中**（VIP 整首 FLAC）。
+ * 兜底场景的首要目标是「能出声」，所以统一从 flac 起步；实际拿到哪一档由返回值的
+ * quality 字段如实回报（前端音质徽章用它，不靠猜）。
+ */
+function lxFallbackTier(quality) {
+  const mapped = LX_QUALITY_OF_TIER[quality] ?? 'flac'
+  return ['master', 'atmos', 'atmos_plus', 'hires', 'flac24bit'].includes(mapped) ? 'flac' : mapped
+}
+
+const LX_FALLBACK_BUDGET_MS = 2500
 
 // 串行链每一步的外层硬超时（兜住组件内部预算失灵）。各步互不占用 —— 这是
 // 「每一步都有自己的上限」，不是已删的那种「全链共享一个总预算」。
@@ -546,8 +596,7 @@ const LX_STEP_TIMEOUT_MS = 2500     // LX 不遵守 budgetMs，只能靠外层�
  *  备用三站在它那里是**已失效的历史分支**，LX 则是我们后加的扩展。让主链路
  *  对齐（池子优先、命中即止），把无效分支降级到链尾，才是的真实行为。
  */
-const BACKUP_TAIL_TIMEOUT_MS = 1200 // 备用源兜底总预算（三站串行）
-const LX_TAIL_TIMEOUT_MS = 800      // LX 兜底单跳上限（历史 0 命中，不值得多等）
+const BACKUP_TAIL_TIMEOUT_MS = 3000   // 备用音源一站总预算（本地源 + 第三方三站并跑）
 /** 启动预热时等 LX 自检就绪的上限；到点还没就绪就跳过预热（宁慢不误判）。 */
 const LX_WARMUP_WAIT_MS = 60_000
 
@@ -607,6 +656,14 @@ export async function createMusicServer({
   // code:500 要授权、api.ygking.top SSL 握手失败、music.bxa241d4.shop 超时）。
   // 插件跑在 worker 线程里，坏插件不能拖死曲库服务主线程。
   const lxHost = new LxSourceHost()
+  // 【2026-10-23 自检隔离】`selfCheck` 会把 worker 占满几分钟：期间同一个 worker 上的
+  // `resolveForProvider` 根本回不来（实测备用音源整站干等到硬超时，用户前 3 分钟点播放
+  // 拿不到地址）。所以自检单独开一个宿主/worker，结果用 importHealth 同步给播放宿主。
+  const lxCheckHost = new LxSourceHost()
+  const ensureCheckHost = async () => {
+    await lxCheckHost.loadDirectories(sortedSourceDirs)
+    if (disabledPlugins.length) await lxCheckHost.setDisabled(disabledPlugins).catch(() => {})
+  }
   const lxConfig = await readLxConfig(store.dataDir ?? dataDir)
   // 音源自检是否已就绪：front-end 的加载页据此决定「能不能进应用」。
   // 首次运行会一直是 false，直到自检跑完（用户要求：首次要卡在加载页等它）。
@@ -615,7 +672,11 @@ export async function createMusicServer({
   // 跑）回退到仓库内的 scripts/lx-sources。
   const bundledSources = [path.join(PROJECT_DIR, 'lx-sources'), path.join(PROJECT_DIR, 'scripts', 'lx-sources')]
     .find(dir => { try { return fsSync.statSync(dir).isDirectory() } catch { return false } })
-  const sourceDirs = [lxConfig.dir, bundledSources].filter(Boolean)
+  const userSourcesDir = path.join(store.dataDir ?? dataDir, LX_USER_SOURCES_DIR)
+  // 顺序即优先级：内置在最前，用户目录在最后（同名文件以用户那份为准）。
+  const sortedSourceDirs = [bundledSources, lxConfig.dir, userSourcesDir].filter(Boolean)
+  const sourceDirs = sortedSourceDirs
+  const disabledPlugins = Array.isArray(lxConfig.disabled) ? lxConfig.disabled : []
   // 【2026-10-16 启动提速：插件加载不再挡在服务监听之前】
   //
   // 实测 `lxHost.loadDirectory()`（worker 里加载 18 个插件）独占约 **15.9s**
@@ -630,14 +691,19 @@ export async function createMusicServer({
   // 所以这里保留依赖链、只移除阻塞：把加载过程记成一个 promise，
   // 由 `startLxSelfCheck` 在自检前 await 它。顺序与语义完全不变
   // （插件就绪 → 自检 → 放行进主界面），但服务可以立刻监听。
-  const lxPluginsLoaded = lxConfig.enabled === false ? Promise.resolve() : (async () => {
-    for (const dir of sourceDirs) {
-      try {
-        await lxHost.loadDirectory(dir)
-        console.log(`[LX] 音源插件就绪：${lxHost.pluginCount} 个（${dir}）`)
-      } catch (err) {
-        console.warn('[LX] 音源目录加载失败：', dir, err.message)
+  const lxPluginsLoaded = (async () => {
+    try {
+      // 配置里明确停用就别加载：hermetic 测试与"我自己有音源"的用户都不该付这份网络代价。
+      if (lxConfig.enabled === false) {
+        console.log('[LX] 配置里已停用音源插件，跳过加载')
+        return
       }
+      // 一次性加载所有根目录：内置先、用户目录后，同名以用户目录为准。
+      await lxHost.loadDirectories(sortedSourceDirs)
+      if (disabledPlugins.length) await lxHost.setDisabled(disabledPlugins)
+      console.log(`[LX] 音源插件就绪：${lxHost.pluginCount} 个（内置 ${bundledSources ?? '无'}）`)
+    } catch (err) {
+      console.warn('[LX] 音源目录加载失败：', err.message)
     }
   })()
   // 开机自检（用户要求）：应用打开后，在**转圈的加载页**上逐个音源试取地址，
@@ -672,10 +738,13 @@ export async function createMusicServer({
       } else {
         if (cached && !samePlugins) console.log('[LX] 音源插件集合有变化，重新自检')
         try {
-          const report = await lxHost.selfCheck({ concurrency: 6, budgetMs: 180000, resolveId: lxResolveProbeId })
+          await ensureCheckHost()
+          const report = await lxCheckHost.selfCheck({ concurrency: 10, budgetMs: 300000, resolveId: lxResolveProbeId })
           console.log(`[LX] 首次自检完成：可用 ${report.alive}/${report.checked}，用时 ${Math.round(report.ms / 1000)}s`)
           try {
-            const snapshot = await lxHost.exportHealth()
+            const snapshot = await lxCheckHost.exportHealth()
+            // 把自检评级同步给播放宿主：排序/健康标记都在它身上生效。
+            await lxHost.importHealth(snapshot)
             snapshot.plugins = pluginPrint
             await fs.writeFile(healthFile, JSON.stringify(snapshot, null, 2), 'utf-8')
           }
@@ -744,19 +813,40 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
    * 拿假 id 会报 unknow error，把好源误判成死源（实测踩过 17 个源全判死）。
    * 这里只用**免登录**的平台搜索，所以自检不需要用户登录任何账号。
    */
-  async function lxResolveProbeId(lxKey, keyword) {
-    const provider = { wy: 'netease', kg: 'kugou', kw: 'kuwo', tx: 'qq' }[lxKey]
-    if (!provider) return null
-    try {
-      const catalog = catalogs[provider]
-      if (!catalog?.search) return null
-      const found = await catalog.search(keyword, 1)
-      const first = (found?.tracks ?? [])[0]
-      const id = first?.onlineSource?.id
-      if (!id) return null
-      return { id, songmid: id, mid: id, hash: id, name: first.title ?? '', singer: first.artist ?? '' }
-    } catch { return null }
-  }
+async function lxResolveProbeId(lxKey, keyword) {
+  const provider = { wy: 'netease', kg: 'kugou', kw: 'kuwo', tx: 'qq' }[lxKey]
+  if (!provider) return null
+  try {
+    const catalog = catalogs[provider]
+    if (!catalog?.search) return null
+    const found = await catalog.search(keyword, 1)
+    const first = (found?.tracks ?? [])[0]
+    const raw = String(first?.onlineSource?.id ?? '')
+    if (!raw) return null
+    const album = String(first?.onlineSource?.albumId ?? '')
+    const base = { name: first.title ?? '', singer: first.artist ?? '', albumName: first.onlineSource?.albumTitle ?? '' }
+    // 【2026-10-23 修自检误判】库里的 id 是「展示用」形态，插件要的是平台原生字段：
+    //   酷我   MUSIC_228908      → rid 228908（纯数字），另给 albumId
+    //   酷狗   <hash>.<albumId>  → hash 与 albumId 拆开
+    //   QQ     songmid 本身即可   → 另给 albumMid
+    //   网易   纯数字 id           → 另给 albumId
+    // 之前四种都塞同一个字符串，插件一律报「缺少 songId/songmid/hash」，
+    // 20 个源里 14 个被误判成坏源。
+    if (provider === 'kuwo') {
+      const rid = raw.replace(/^MUSIC_/i, '')
+      return { ...base, id: rid, rid, songmid: rid, mid: rid, hash: rid, albumId: album || undefined }
+    }
+    if (provider === 'kugou') {
+      const [hash, albumId] = raw.split('.')
+      return { ...base, id: hash, hash, songmid: hash, mid: hash, albumId: albumId || album || undefined }
+    }
+    if (provider === 'qq') {
+      return { ...base, id: raw, songmid: raw, mid: raw, hash: raw, albumId: album || undefined, albumMid: album || undefined }
+    }
+    return { ...base, id: raw, songmid: raw, mid: raw, hash: raw, albumId: album || undefined }
+  } catch { return null }
+}
+
 
   /**
    * 启动预热：把"备用源探测"和"末端 LX 一跳是否可用"提前跑掉。
@@ -1000,7 +1090,7 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
       sourceLog.record({
         provider, songId, title, artist, quality,
         // 命中的跳名（对应 resolveSerial 里的 step.name），空 = 全链未命中
-        source: kind === 'pool' ? '共享池' : kind === 'backup' ? (winner?.found?.backupSource || '备用音源') : kind === 'lx' ? '自定义音源' : '',
+        source: kind === 'pool' ? '共享池' : kind === 'backup' ? (winner?.found?.backupSource || '备用音源') : kind === 'lx' ? '备用音源' : '',
         ok: Boolean(winner),
         totalMs: Date.now() - (startedAt || Date.now()),
         attempts: attempts.map(a => ({
@@ -1118,37 +1208,29 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
         },
       },
       {
+        // 【2026-10-23 合并】原来是两站：『备用音源』= 三个第三方接口，实测全死
+        // （api.ygking.top DNS 失效 / music.bxa241d4.shop 443 不通 / yy.zddyr.top 2.5s 超时，
+        // 25 次真实请求 0 命中）；『自定义音源』= 本地音源插件，实测 122–294ms 就取到
+        // VIP 整首 25.45MB FLAC。现在合并成**一站『备用音源』**：两组来源并发，
+        // 谁先出地址用谁，对外只有一个名字，内部仍按 kind 记真实来源。
         name: '备用音源',
-        // 三站串行。预算从 8500ms 收到 1200ms：实测 25 次真实请求 **0 命中**
-        // （`yy.zddyr.top` 要第三方授权、`api.ygking.top` DNS 失效、
-        //  `music.bxa241d4.shop` 挂死），历史命中率 0% 的分支不值得让用户等 8.5s。
-        // 现在它只在共享池失败后作为兜底快速试一次，失败路径因此缩短 ~7s。
         timeoutMs: BACKUP_TAIL_TIMEOUT_MS,
-        run: () => (backupSources.enabled
-          ? backupSources.resolve(provider, songId, { quality: BACKUP_QUALITY_OF_TIER[quality] ?? quality, title, artist })
-            .then(found => (found?.audioUrl ? { kind: 'backup', found } : null))
-          : Promise.resolve(null)),
-      },
-      {
-        name: '自定义音源',
-        // 同理收到 800ms：18 个插件实测要 9.5~11s 才失败、真实播放样本 0 命中，
-        // 而原版**没有这一跳**（它是我们后加的扩展）。留 800ms 是给它
-        // 「本地已缓存结果」时的一次快速命中机会，不再让它吃掉 2.5s。
-        timeoutMs: LX_TAIL_TIMEOUT_MS,
-        // 【2026-10-16】等插件目录加载完再问 LX —— 加载已不挡服务启动
-        // （见 lxPluginsLoaded 注释），但**取源必须等它**：否则冷启动第一次
-        // 播放会因为 `lxHost.enabled` 还是 false 而直接跳过这一跳，
-        // 白白少一个音源（实测 t16 首个请求因此失败）。
-        // 池子/备用源不受影响（它们不等），所以命中速度不变。
-        run: () => (lxPluginsLoaded.then(() => (lxHost.enabled
-          // LX 内部默认 RESOLVE_BUDGET = 9000ms，那是它自己"档位×插件"的
-          // 总预算。它排在串行链末端，9 秒会把失败路径拖到十几秒
-          // （实测：不加限制时整条链 17922ms）。这里收到 3000ms，与"单源
-          // 2–3s"的约定一致，同时留给插件初始化足够余量（冷启动 1.9~3.0s，
-          // 见 check-source-speed 的冷启动用例）。
-          ? lxHost.resolveForProvider(provider, songId, { quality: LX_QUALITY_OF_TIER[quality] ?? quality, name: title, singer: artist, budgetMs: LX_FALLBACK_BUDGET_MS })
-            .then(found => (found?.audioUrl ? { kind: 'lx', found } : null))
-          : Promise.resolve(null)))),
+        run: () => firstHit([
+          // 第三方三站两死一挂（2026-10-23 实测），给 1200ms 内层封顶，不拖死整站预算。
+          backupSources.enabled
+            ? withHardTimeout(backupSources.resolve(provider, songId, { quality: BACKUP_QUALITY_OF_TIER[quality] ?? quality, title, artist }), BACKUP_LEGACY_TIMEOUT_MS)
+              .then(found => (found?.audioUrl ? { kind: 'backup', found } : null))
+              .catch(() => null)
+            : Promise.resolve(null),
+          // ⚠️ 不能无条件 await lxPluginsLoaded：插件目录加载实测 ~15.9s，硬等它会让
+          // 前 16 秒的每次播放都把这一站预算耗光。有界等待 700ms，没就绪就快速放弃。
+          Promise.race([lxPluginsLoaded, new Promise(r => setTimeout(r, 700))])
+            .then(() => (lxHost.enabled
+              ? lxHost.resolveForProvider(provider, songId, { quality: lxFallbackTier(quality), name: title, singer: artist, budgetMs: LX_FALLBACK_BUDGET_MS })
+                .then(found => (found?.audioUrl ? { kind: 'lx', found } : null))
+              : null))
+            .catch(() => null),
+        ]),
       },
     ])
     if (winner?.kind === 'pool') {
@@ -1179,25 +1261,24 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
         ...(honest.downgraded ? { degradedFrom: found.actualQuality ?? quality } : {}),
       }
     }
-    if (winner?.kind === 'backup') {
+    if (winner?.kind === 'backup' || winner?.kind === 'lx') {
       const { found } = winner
-      // 这条结果已进 lxHost 的内存缓存（若是 LX）或 backup 自己的链路；
-      // 统一在这里安排一次落盘，让"下次开机"也能命中（见 flushUrlCache）。
+      // 合并后两类来源对外统一叫「备用音源」；backupSource 记真实命中者（第三方站名或插件名）。
       scheduleUrlCacheFlush()
       forgetResolveFailure(failureKey)
       logResolve({ provider, songId, title, artist, quality, attempts, winner, startedAt: resolveStartedAt })
-      return { ...result, audioUrl: found.audioUrl, trial: undefined, fee: 0, backupSource: found.backupSource }
-    }
-    if (winner?.kind === 'lx') {
-      const { found } = winner
-      scheduleUrlCacheFlush()
-      forgetResolveFailure(failureKey)
-      logResolve({ provider, songId, title, artist, quality, attempts, winner, startedAt: resolveStartedAt })
-      // t10 第 4 项：actualQuality 必须落在**顶层**（平台 prepare 的结果没有
-      // onlineSource）。LX 的 `found.quality` 是它实际命中那一档（自回落后），
-      // 翻译成我们的 7 档枚举交给前端徽章；识别不了就不编。
-      const actualQuality = TIER_OF_LX_QUALITY[String(found.quality ?? '').toLowerCase()]
-      return { ...result, audioUrl: found.audioUrl, trial: undefined, fee: 0, lxSource: found.source, lxPlugin: found.plugin, ...(actualQuality ? { actualQuality } : {}) }
+      // 本地源命中的 quality 是它实际那一档（自回落后），翻译成 7 档枚举交给音质徽章。
+      const actualQuality = winner.kind === 'lx'
+        ? TIER_OF_LX_QUALITY[String(found.quality ?? '').toLowerCase()]
+        : undefined
+      return {
+        ...result,
+        audioUrl: found.audioUrl,
+        trial: undefined,
+        fee: 0,
+        backupSource: found.backupSource ?? found.plugin ?? found.source,
+        ...(actualQuality ? { actualQuality } : {}),
+      }
     }
 
     // 全都没给出地址：把"问过哪些备用源"按的文案形态附在错误上，
@@ -1229,6 +1310,21 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
       const route = decodeURIComponent(url.pathname)
       if (route.includes('\0') || route.includes('\\')) return json(response, 400, { error: '无效路径' })
       const get = request.method === 'GET' || request.method === 'HEAD'
+      // 同源音源票据流（音浪）：/api/online/audio/<token>，token 只由 prepare 签发。
+      const relayedAudio = /^\/api\/online\/audio\/([a-f0-9]{48})$/.exec(route)
+      if (relayedAudio && (request.method === 'GET' || request.method === 'HEAD')) {
+        try { return await audioRelay.serve(relayedAudio[1], request, response) }
+        catch (error) {
+      // 上游说这条直链不能用了（403/404/410）：立刻把该平台的直链缓存作废，
+      // 下一次播放会重新取源，而不是继续发同一条死链（用户要求：坏条目不许留在缓存里）。
+      const code = error?.status ?? 502
+      if ([403, 404, 410, 502].includes(code)) {
+        const provider = audioRelay.providerOf?.(relayedAudio[1]) ?? ''
+        if (provider) invalidatePoolUrlCache(provider)
+      }
+      return json(response, code, { error: error?.message || '音频转发失败' })
+    }
+      }
       if (route === '/api/health' && get) return json(response, 200, { service: 'rhine-local-music', projectDir: PROJECT_DIR, pid: process.pid, lxReady })
       const platformLogin = /^\/api\/online\/(qq|bodian|kugou)\/auth\/(status|start|poll|cancel|logout)$/.exec(route)
       if (platformLogin) {
@@ -1243,10 +1339,15 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
       }
       // ─── LX 音源插件：状态 / 搜索 / 取曲 / 配置 ──────────────────────────
       if (route === '/api/lx/status' && get) {
+        const plugins = await lxHost.listPlugins()
         return json(response, 200, {
           enabled: lxHost.enabled,
-          dir: lxConfig.dir ?? null,
           pluginCount: lxHost.pluginCount,
+          plugins,
+          counts: {
+            total: plugins.length,
+            loaded: plugins.filter((plugin) => plugin.enabled).length,
+          },
           sources: lxHost.sources,
           report: lxHost.report,
         })
@@ -1275,20 +1376,78 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
         const result = trackId
           ? await lxHost.resolveTrackId(trackId, options)
           : await lxHost.resolveForProvider(String(body.provider ?? ''), String(body.songId ?? ''), options)
-        if (!result?.audioUrl) return json(response, 404, { error: result?.error ?? '没有可用的自定义音源能解析这首歌。' })
+        if (!result?.audioUrl) return json(response, 404, { error: result?.error ?? '没有可用的备用音源能解析这首歌。' })
         return json(response, 200, result)
       }
-      if (route === '/api/lx/config' && request.method === 'POST') {
+      // ─── 自定义音源管理：添加 / 移除 / 停用 / 重新自检 ─────────────────
+      //
+      // 「有源即启用」：没有总开关，也没有目录输入框。用户点「添加音源」选文件，
+      // 这里写进用户音源目录再加载；内置源可以被停用，但不能移除。
+      if (route === '/api/lx/sources/add' && request.method === 'POST') {
         const body = await bodyJson(request)
-        lxConfig.dir = body.dir ?? lxConfig.dir ?? null
-        lxConfig.enabled = body.enabled !== false
-        await writeLxConfig(store.dataDir ?? dataDir, lxConfig)
-        await lxHost.clear()
-        if (lxConfig.enabled && lxConfig.dir) {
-          try { await lxHost.loadDirectory(lxConfig.dir) }
-          catch (err) { return json(response, 400, { error: `音源目录加载失败：${err.message}` }) }
+        const files = Array.isArray(body.files) ? body.files : []
+        if (!files.length) return json(response, 400, { error: '没有收到音源文件' })
+        await fs.mkdir(userSourcesDir, { recursive: true })
+        const added = []
+        for (const file of files) {
+          const name = path.basename(String(file?.name ?? '')).replace(/[^\w.\-\u4e00-\u9fa5]/g, '_')
+          if (!/\.js$/i.test(name)) continue
+          const text = String(file?.text ?? '')
+          if (!text.trim()) continue
+          await fs.writeFile(path.join(userSourcesDir, name), text, 'utf-8')
+          added.push(name)
         }
-        return json(response, 200, { enabled: lxHost.enabled, dir: lxConfig.dir, pluginCount: lxHost.pluginCount, sources: lxHost.sources, report: lxHost.report })
+        if (!added.length) return json(response, 400, { error: '这些文件不是 .js 音源插件' })
+        try { await lxHost.loadDirectories(sourceDirs) } catch (err) { return json(response, 400, { error: `音源加载失败：${err.message}` }) }
+        await lxHost.setDisabled(disabledPlugins)
+        const plugins = await lxHost.listPlugins()
+        return json(response, 200, { added, plugins, counts: { total: plugins.length, loaded: plugins.filter((plugin) => plugin.enabled).length } })
+      }
+      if (route === '/api/lx/sources/remove' && request.method === 'POST') {
+        const body = await bodyJson(request)
+        const id = String(body.id ?? '')
+        const target = (await lxHost.listPlugins()).find((plugin) => plugin.id === id)
+        if (!target) return json(response, 404, { error: '没有这个音源' })
+        if (target.builtin) return json(response, 403, { error: '内置音源不能移除，只能停用' })
+        await fs.rm(path.join(userSourcesDir, target.file), { force: true })
+        try { await lxHost.loadDirectories(sourceDirs) } catch { /* 单个坏文件不影响其它源 */ }
+        await lxHost.setDisabled(disabledPlugins.filter((item) => item !== id))
+        const plugins = await lxHost.listPlugins()
+        return json(response, 200, { plugins, counts: { total: plugins.length, loaded: plugins.filter((plugin) => plugin.enabled).length } })
+      }
+      if (route === '/api/lx/sources/toggle' && request.method === 'POST') {
+        const body = await bodyJson(request)
+        const id = String(body.id ?? '')
+        const enabled = body.enabled !== false
+        const plugins = await lxHost.listPlugins()
+        if (!plugins.some((plugin) => plugin.id === id)) return json(response, 404, { error: '没有这个音源' })
+        const next = new Set(disabledPlugins)
+        if (enabled) next.delete(id); else next.add(id)
+        lxConfig.disabled = [...next]
+        await writeLxConfig(store.dataDir ?? dataDir, lxConfig)
+        await lxHost.setDisabled(lxConfig.disabled)
+        const after = await lxHost.listPlugins()
+        return json(response, 200, { plugins: after, counts: { total: after.length, loaded: after.filter((plugin) => plugin.enabled).length } })
+      }
+      if (route === '/api/lx/selfcheck' && request.method === 'POST') {
+        if (!lxHost.enabled) return json(response, 409, { error: '还没有加载任何音源' })
+        // 和开机自检同一条链路：先按平台搜索解析出真实 id 再测。
+        // 少了 resolveId 时，只认平台 id 的音源（HHYW/Hei/TuneFlow 一大批）
+        // 会统一报「缺少歌曲ID」，界面再把任意失败显示成「超时」——用户实测
+        // 「明明有些能用，一直显示超时」就是这条。
+    try {
+      await ensureCheckHost()
+      await lxCheckHost.selfCheck({ concurrency: 10, budgetMs: 300000, resolveId: lxResolveProbeId })
+      // 【2026-10-23】手动重测原来只跑 checkHost：既不 import 给播放宿主、也不落盘，
+      // 界面点「测试连通性」后列表纹丝不动（等于按钮白按）。补齐与开机自检一致的三步。
+      const snapshot = await lxCheckHost.exportHealth()
+      await lxHost.importHealth(snapshot)
+      snapshot.plugins = lxPluginFingerprint(lxHost.sources)
+      await fs.writeFile(path.join(store.dataDir ?? dataDir, LX_HEALTH_FILE), JSON.stringify(snapshot, null, 2), 'utf-8')
+    }
+        catch (err) { return json(response, 500, { error: `自检失败：${err.message}` }) }
+        const plugins = await lxHost.listPlugins()
+        return json(response, 200, { plugins, counts: { total: plugins.length, loaded: plugins.filter((plugin) => plugin.enabled).length } })
       }
 
       // 备用音源 API（backup_source.rs 等价物）
@@ -1304,12 +1463,22 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
       // 池子双线路状态（对齐 src\server_line.rs 的字段与语义）
       if (route === '/api/pool/lines' && get) {
         return json(response, 200, {
-          configured: POOL_SERVER_LINES.map(l => ({ id: l.id, label: l.label, baseUrl: l.baseUrl })),
+          configured: POOL_SERVER_LINES.map(l => ({ id: l.id, label: l.label, baseUrl: l.baseUrl, host: l.host })),
           ...poolLineState(),
         })
       }
+      // 连通性检测：scope=all（默认）| lines | upstreams。
+      // 线路用签名探测，平台上游各发一次最小取源；两边互不影响。
       if (route === '/api/pool/lines/probe' && request.method === 'POST') {
-        return json(response, 200, await poolProbeLines())
+      if (!poolReady) return json(response, 200, { results: [], upstreams: [], note: '未导入密钥，没有可检测的线路' })
+        const scope = url.searchParams.get('scope') || 'all'
+        const wantLines = scope === 'all' || scope === 'lines'
+        const wantUpstreams = scope === 'all' || scope === 'upstreams'
+        const [lineState, upstream] = await Promise.all([
+          wantLines ? poolProbeLines() : Promise.resolve(poolLineState()),
+          wantUpstreams ? poolProbeUpstreams().catch(() => ({ upstreams: [] })) : Promise.resolve(null),
+        ])
+        return json(response, 200, { ...lineState, upstreams: upstream?.upstreams ?? [] })
       }
 
       // ── 共享池密钥：用户自己导入，客户端不内置任何凭据 ──────────────
@@ -1334,6 +1503,12 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
             // 否则 resolveSongBest 永远返回 pool_disabled（导入完不重启就不生效）。
             configureServerLines(imported.servers)
             poolReady = true
+          } else {
+            // 没有密钥 = 这个功能整块下线：令牌、线路表、上次探测结果全部作废。
+            // （2026-10-23：原来只删磁盘文件，内存里的 token 与线路表还在，
+            //   于是「移除密钥」之后照样能点亮延迟、照样能取源。）
+            resetPoolRuntime()
+            poolReady = false
           }
         } catch (error) {
           console.log('[shared-pool] 密钥应用失败:', error.message)
@@ -1347,15 +1522,19 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
 
       if (route === '/api/pool/credential/import' && request.method === 'POST') {
         const body = await bodyJson(request)
-        let parsed
         try {
-          // 允许直接传文件原文（.rhinekey / .json），也允许传已解析的对象
-          parsed = typeof body.payload === 'string' ? JSON.parse(body.payload) : (body.payload ?? body)
-        } catch {
-          return json(response, 400, { error: '密钥文件不是合法的 JSON' })
-        }
-        try {
-          poolCredential.write(credDir, parsed)
+          // data 是密钥文件的原始字节（base64）。加密信封与老明文都由
+          // keyfile-envelope 自己识别，这里不再假设文件是 JSON。
+          if (typeof body.data === 'string' && body.data) {
+            poolCredential.importKeyFile(credDir, Buffer.from(body.data, 'base64'))
+          } else if (typeof body.payload === 'string') {
+            // 兼容旧前端：直接传文件原文
+            poolCredential.importKeyFile(credDir, Buffer.from(body.payload, 'utf8'))
+          } else if (body.payload && typeof body.payload === 'object') {
+            poolCredential.write(credDir, body.payload)
+          } else {
+            return json(response, 400, { error: '没有收到密钥文件' })
+          }
         } catch (error) {
           return json(response, 400, { error: error.message })
         }
@@ -1364,12 +1543,13 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
 
       if (route === '/api/pool/credential/export' && get) {
         try {
-          const text = poolCredential.exportKeyFile(credDir)
+          const buffer = poolCredential.exportKeyFile(credDir)
           response.writeHead(200, {
-            'content-type': 'application/json; charset=utf-8',
-            'content-disposition': 'attachment; filename="rhine-pool.rhinekey"',
+            'content-type': 'application/octet-stream',
+            'content-length': buffer.length,
+            'content-disposition': 'attachment; filename="Rhine-Music.rhinekey"',
           })
-          return response.end(text)
+          return response.end(buffer)
         } catch (error) {
           return json(response, 404, { error: error.message })
         }
@@ -1407,7 +1587,10 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
           // ★ 解密能力开机即知（QMC_UNRESOLVED），所以加密档**在取源前**就落到明文档，
           //   整条链只跑一次 —— 而不是取回 mflac 再重跑一遍（那会让冷启动首个请求翻倍，
           //   实测 1597–3787ms，超过 t9 合同 <1s）。`wantedQuality` 仍保留用于回报真实档位。
-          const fetchQuality = playableQuality(wantedQuality)
+          // 下载链显式带 allowEncrypted：允许直接取加密容器 + ekey（下载器落盘前
+          // 解密成真母带）。播放链不带该标记，仍按明文档位取源（浏览器放不了 mflac）。
+          const allowEncrypted = prepareBody?.allowEncrypted === true && provider === 'kuwo'
+          const fetchQuality = allowEncrypted ? wantedQuality : playableQuality(wantedQuality)
           // 平台 prepare 失败时（版权拒绝、接口异常）不能直接把错误抛给前端：
           // 的做法是照样去备用音源问一次，拿到全曲就播它。
           const info = await catalog.songInfo(songId).catch(() => null)
@@ -1437,15 +1620,19 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
           // —— 加密结果本就是池子给的（直连 kuwo 协议对这首歌取不到），
           // 只重跑池子那层才拿得到它的明文版本；单独调 catalog.prepare 会报
           // 「无效的酷我歌曲标识」。
-          const playable = await degradeEncrypted(resolved, q =>
+          const playable = allowEncrypted
+            ? resolved
+            : await degradeEncrypted(resolved, q =>
             applyLxFallback(result, provider, songId, meta, q).catch(() => null))
           // 用户要的是加密档（如 master）但实际给的是明文档 → 如实回报，前端徽章照此显示。
-          return json(response, 200, {
+          const prepared = {
             ...playable,
             ...(fetchQuality !== wantedQuality && !playable.degradedFrom
               ? { requestedQuality: wantedQuality, degradedFrom: 'mflac', degradedReason: QMC_ERRORS.EKEY_UNRESOLVED }
               : {}),
-          })
+          }
+          // sameOrigin：换成本机票据地址，前端才能安全接 Web Audio 分析旁支（音浪）。
+          return json(response, 200, relayedSameOrigin(prepared, provider, prepareBody))
         }
         if (request.method !== 'GET') return json(response, 405, { error: '请求方法不支持' })
         if (action === 'search') return json(response, 200, await catalog.search(url.searchParams.get('q'), Number(url.searchParams.get('offset') || 0)))
@@ -1510,12 +1697,13 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
         }
         // 同平台路由：兜底降级 + 如实回报真实档位。
         const playable = await degradeEncrypted(rescued, q => online.prepare(onlinePrepare[1], { quality: q }).catch(() => null))
-        return json(response, 200, {
+        const prepared = {
           ...playable,
           ...(fetchQuality !== wantedQuality && !playable.degradedFrom
             ? { requestedQuality: wantedQuality, degradedFrom: 'mflac', degradedReason: QMC_ERRORS.EKEY_UNRESOLVED }
             : {}),
-        })
+        }
+        return json(response, 200, relayedSameOrigin(prepared, 'netease', prepareBody))
       }
       // 歌词统一入口：本源优先，缺歌词时跨源按 歌名+歌手+时长 匹配（scripts/lyrics.mjs）
       if (route === '/api/lyrics' && get) {
@@ -1661,6 +1849,49 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
           }
           return await serveFile(request, response, decoded, { cache: 'private, no-cache' })
         } finally { response.removeListener('close', cancel) }
+      }
+      // ── 音浪频谱图：整轨一张 PNG（服务端 FFmpeg showspectrumpic，按身份缓存）──
+      // 前端按播放位置取列驱动音浪。真数据来自音频本身，与 WebView2 的
+      // Web Audio / captureStream 通路完全无关，任何播放路径都能对上。
+      const spectrumLocal = /^\/api\/audio\/spectrum\/([a-zA-Z0-9-]+)$/.exec(route);
+      const spectrumOnline = /^\/api\/audio\/spectrum-online\/(netease|qq|bodian|kugou|kuwo|joox|qishui)\/([A-Za-z0-9_.-]{1,96})$/.exec(route);
+      if ((spectrumLocal || spectrumOnline) && get) {
+        const identity = spectrumLocal
+          ? 'local-' + spectrumLocal[1]
+          : 'online-' + spectrumOnline[1] + '-' + spectrumOnline[2];
+        const png = path.join(decoder.cacheDir, 'spectrum-' + crypto.createHash('sha1').update(identity).digest('hex') + '.png');
+        try {
+          if (!fsSync.existsSync(png)) {
+            let input;
+            const srcParam = url.searchParams.get('src');
+            if (srcParam && /^https?:\/\//i.test(srcParam)) {
+              // 前端把播放器手里解析成功的直链递过来：不重新走取源链
+              //（共享池/备用源失败缓存期间重新解析必然失败，波形就永远没数据）。
+              input = srcParam;
+            } else if (spectrumLocal) {
+              input = store.trackFile(spectrumLocal[1]);
+            } else {
+              const provider = spectrumOnline[1], id = spectrumOnline[2];
+              const source = provider === 'netease' ? online : catalogs[provider];
+              if (!source?.prepare) throw Object.assign(new Error('当前平台未配置。'), { status: 503 });
+              const requestedQuality = url.searchParams.get('quality');
+              const wantedQuality = POOL_QUALITIES.includes(requestedQuality)
+                ? (ENCRYPTED_TIERS.has(requestedQuality) ? 'lossless' : requestedQuality)
+                : 'lossless';
+              let prepared = await source.prepare(id, { quality: wantedQuality }).catch(() => null);
+              prepared = await applyLxFallback(prepared, provider, id, null, wantedQuality).catch(() => prepared);
+              if (!prepared?.audioUrl) throw Object.assign(new Error('未取到可播放地址'), { status: 422 });
+              input = prepared.audioUrl;
+            }
+            await decoder.init();
+            if (!decoder.ffmpeg) throw Object.assign(new Error('未找到 FFmpeg，无法生成频谱图'), { status: 503 });
+            await renderSpectrumPng(decoder.ffmpeg, input, png);
+          }
+          return await serveFile(request, response, { path: png, allowedRoot: decoder.cacheDir, mime: 'image/png' },
+            { cache: 'private, max-age=86400' });
+        } catch (error) {
+          return json(response, 500, { error: '频谱图生成失败：' + error.message });
+        }
       }
       if (route === '/api/output/state' && get) return json(response, 200, await output.command({ action: 'state' }))
       if (route === '/api/output/command' && request.method === 'POST') return json(response, 200, await output.command(await bodyJson(request)))
@@ -1826,9 +2057,83 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
         response.end(Buffer.from(await upstream.arrayBuffer()))
         return
       }
+      // ── 更新查询（渲染进程不能直连 GitHub：无 CORS 头的 403 会直接抛 Failed to fetch）
+      // 三条通道逐级降级，全部不依赖匿名 API 配额：
+      //   1. api.github.com（信息最全，但有 60 次/小时的匿名限流）
+      //   2. github.com/<repo>/releases/latest 的 302 跳转（无配额，只需读 location）
+      //   3. releases.atom（无配额，最稳）
+      if (route === '/api/update/check' && get) {
+        const repo = 'kaelorvyn/Rhine-Music-Windows';
+        const portable = (version) =>
+          `https://github.com/${repo}/releases/download/v${version}/Rhine-Music-${version}-Portable.zip`;
+        const answer = (tag, extra = {}) => {
+          const version = String(tag || '').replace(/^v/i, '');
+          if (!version) return null;
+          return {
+            version,
+            tag: 'v' + version,
+            htmlUrl: `https://github.com/${repo}/releases/tag/v${version}`,
+            assetUrl: portable(version),
+            ...extra,
+          };
+        };
+        const tryFetch = async (url, init = {}) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 12000);
+          try {
+            return await fetch(url, { ...init, signal: controller.signal });
+          } finally {
+            clearTimeout(timer);
+          }
+        };
+        // 1) API
+        try {
+          const reply = await tryFetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+            headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'rhine-music-windows' },
+          });
+          if (reply.ok) {
+            const value = await reply.json();
+            const asset = (value.assets || []).find((item) => /-portable\.zip$/i.test(item.name));
+            const payload = answer(value.tag_name, {
+              notes: String(value.body || '').slice(0, 400),
+              htmlUrl: value.html_url || undefined,
+              assetUrl: asset?.browser_download_url,
+              assetSize: asset?.size,
+              source: 'api',
+            });
+            if (payload) return json(response, 200, payload);
+          }
+        } catch {}
+        // 2) 302 跳转
+        try {
+          const reply = await tryFetch(`https://github.com/${repo}/releases/latest`, {
+            redirect: 'manual',
+            headers: { 'User-Agent': 'rhine-music-windows' },
+          });
+          const location = reply.headers.get('location') || '';
+          const tag = /\/releases\/tag\/([^/?#]+)/.exec(location)?.[1];
+          const payload = answer(tag, { notes: '', source: 'redirect' });
+          if (payload) return json(response, 200, payload);
+        } catch {}
+        // 3) atom
+        try {
+          const reply = await tryFetch(`https://github.com/${repo}/releases.atom`, {
+            headers: { 'User-Agent': 'rhine-music-windows' },
+          });
+          if (reply.ok) {
+            const text = await reply.text();
+            const tag = /\/releases\/tag\/([^"?#]+)/.exec(text)?.[1];
+            const payload = answer(tag, { notes: '', source: 'atom' });
+            if (payload) return json(response, 200, payload);
+          }
+        } catch {}
+        return json(response, 502, { error: '更新通道都不可用' });
+      }
+
       if (route.startsWith('/api/')) return json(response, 404, { error: 'API 不存在或请求方法不支持' })
       if (!get) return json(response, 405, { error: '只接受 GET/HEAD' })
-      const asset = path.resolve(distDir, `.${route === '/' ? '/index.html' : route}`)
+
+const asset = path.resolve(distDir, `.${route === '/' ? '/index.html' : route}`)
       return await serveFile(request, response, { path: asset, allowedRoot: distDir }, { cache: route.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache' })
     } catch (error) {
       const context = onlineRouteContext(request.url)
@@ -1837,7 +2142,7 @@ const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '�
       else response.destroy()
     }
   })
-  server.once('close', () => { decoder.dispose(); output.dispose() })
+  server.once('close', () => { audioRelay.dispose(); decoder.dispose(); output.dispose() })
   server.requestTimeout = 30_000
   if (autoScan) server.once('listening', () => { void store.scan().catch(() => {}) })
   // 自检挂在 listening 之后：服务一监听就立刻上报就绪（桌面端 main.rs 只等

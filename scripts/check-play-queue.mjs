@@ -11,6 +11,9 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'rhine-queue-ui-'));
+// hermetic：关掉音源插件与第三方备用站，别让 UI 测试走真网络（会被慢源拖到超时）
+await fs.writeFile(path.join(directory, 'lx-config.json'), JSON.stringify({ enabled: false }))
+await fs.writeFile(path.join(directory, 'backup-sources-config.json'), JSON.stringify({ enabled: false }))
 let base;
 let account = { loggedIn: false }, qrState = 'waiting';
 const tracks = Array.from({ length: 80 }, (_, index) => ({ id: `netease-${1000 + index}`, albumId: `album-${Math.floor(index / 3)}`, title: `合成歌曲 ${index + 1}`, artist: '测试歌手', duration: 120, format: '在线音频', browserPlayable: true, audioUrl: '', relativePath: '',
@@ -67,7 +70,7 @@ try {
   await page.locator('.music-view-toggle').click();
   await page.waitForFunction(() => document.querySelector('#stage').dataset.overview === 'true');
   await page.locator('button.overview-column-label[aria-label="歌单：<我的长歌单>"]').dblclick();
-  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.queue.length === 100, undefined, { timeout: 30000 });
+  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.queue.length === 120, undefined, { timeout: 30000 });
   const afterReplace = await page.evaluate(() => ({ first: window.rhineMusic.player.queue[0].id, current: window.rhineMusic.player.currentTrack?.id }));
   assert.equal(afterReplace.current, afterReplace.first, 'queue replacement starts at the first song');
   await page.locator('.overview-return').click();
@@ -75,12 +78,12 @@ try {
  // The 歌单 button opens the temporary queue panel; rows play and remove.
   await page.locator('#my-playlists-button').click();
   await page.locator('.queue-row').first().waitFor();
-  assert.equal(await page.locator('.queue-row').count(), 100, 'the queue panel lists every queued song');
-  assert.match(await page.locator('#panel-body [role="status"]').textContent(), /100 首歌曲 · 当前模式：顺序播放/);
+  assert.equal(await page.locator('.queue-row').count(), 120, 'the queue panel lists every queued song (full playlist, no 100 cap)');
+  assert.match(await page.locator('#panel-body [role="status"]').textContent(), /120 首 · 当前模式：顺序播放/);
   await page.locator('[data-queue-play="5"]').click();
   await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === window.rhineMusic.player.queue[5].id && window.rhineMusic.player.playing);
   await page.locator('[data-queue-remove="0"]').click();
-  await page.waitForFunction(() => window.rhineMusic.player.queue.length === 99);
+  await page.waitForFunction(() => window.rhineMusic.player.queue.length === 119);
   assert.equal(await page.evaluate(() => window.rhineMusic.player.currentTrack?.id), await page.evaluate(() => window.rhineMusic.player.queue[4].id), 'removing an earlier row keeps the playing song');
   await page.locator('[data-action="close-panel"]').click();
 
@@ -152,12 +155,7 @@ try {
   assert.equal(await page.evaluate(() => window.rhineMusic.player.queue.length), queueLength, 'the temporary queue survives a reload');
   assert.equal(await page.evaluate(() => window.rhineMusic.player.playing), false, 'restoring the queue never auto-plays');
 
- // 清空 empties the temporary queue.
-  await page.locator('#my-playlists-button').click();
-  await page.locator('[data-action="queue-clear"]').click();
-  await page.waitForFunction(() => window.rhineMusic.player.queue.length === 0);
-  assert.match(await page.locator('#panel-body [role="status"]').textContent(), /临时歌单是空的/);
-
+// 「清空队列」按钮已移除（逐项移除保留），这一段契约作废。
   assert.deepEqual(errors, []);
   console.log('Temporary queue: double-click replacement, panel listing/play/remove/clear, mode cycling, single repeat, loop wrap, shuffle skips and reload persistence passed.');
 } catch (failure) {

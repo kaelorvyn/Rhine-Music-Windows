@@ -520,7 +520,7 @@ const RESOLVE_BUDGET = 9000
 
 /** 自检里单次调用与尝试次数的上限（自检是批量任务，不能让单个坏源拖垮整轮） */
 const SELFCHECK_CALL_TIMEOUT = 8000
-const MAX_SELFCHECK_ATTEMPTS = 6
+const MAX_SELFCHECK_ATTEMPTS = 4
 
 /**
  * 自检探针曲：每个平台一首**确定存在的经典免费曲**。
@@ -585,6 +585,8 @@ export class LxSourceRuntime {
      * 自检没跑完时是空 Map，取曲逻辑自动退化为「按加载顺序试」。
      */
     this.health = new Map()
+    /** 正在跑自检的 `id|平台` 键：界面据此显示「测试中」。 */
+    this.inFlight = new Set()
     this.selfCheckReport = null
     if (guardRejections) LxSourceRuntime.installRejectionGuard()
     void fetchFn
@@ -606,8 +608,12 @@ export class LxSourceRuntime {
    * 不阻塞启动：由调用方以 background 方式跑（见 music-server），自检期间
    * 播放照常可用（退化顺序试）。
    */
-  async selfCheck({ probes = DEFAULT_PROBES, concurrency = 6, budgetMs = 120000, onProgress, resolveId } = {}) {
+  async selfCheck({ probes = DEFAULT_PROBES, concurrency = 6, budgetMs = 120000, callTimeoutMs = SELFCHECK_CALL_TIMEOUT, onProgress, resolveId } = {}) {
     const started = Date.now()
+    // 新一轮自检从零开始：清掉上一轮的结论/in-flight，界面才能按
+    // 「等待中 → 测试中 → 延迟/超时」如实推进（不留旧数字冒充新结果）。
+    this.health.clear()
+    this.inFlight.clear()
     // 进度状态：前端加载页据此画进度条（首次启动时会等它跑完才进应用）。
     this.selfCheckState = { running: true, done: 0, total: 0, alive: 0, startedAt: started, finishedAt: null }
     const publish = () => {
@@ -646,6 +652,7 @@ export class LxSourceRuntime {
         if (!job) return
         const { id, plugin, probe } = job
         const healthKey = `${id}|${probe.source}`
+        this.inFlight.add(healthKey)
         const t0 = Date.now()
         const result = { ok: false, quality: null, attempts: 0, ms: 0, at: Date.now(), error: '', source: probe.source }
         // 候选 id：三类音源实现都要覆盖（实测三类都存在）
@@ -664,6 +671,7 @@ export class LxSourceRuntime {
           result.error = '探针曲未取到可用 id'
           result.ms = Date.now() - t0
           this.health.set(healthKey, result)
+          this.inFlight.delete(healthKey)
           done++
           continue
         }
@@ -684,7 +692,7 @@ export class LxSourceRuntime {
             used++
             result.attempts++
             try {
-              const url = await withTimeout(plugin.musicUrl(probe.source, { ...c.info }, tier), SELFCHECK_CALL_TIMEOUT, 'musicUrl')
+              const url = await withTimeout(plugin.musicUrl(probe.source, { ...c.info }, tier), callTimeoutMs, 'musicUrl')
               if (!url) { lastError = '未返回地址'; continue }
               const verified = await this._verifyUrl(url)
               if (verified.ok) {
@@ -698,9 +706,18 @@ export class LxSourceRuntime {
             }
           }
         }
-        if (!result.ok) result.error = lastError
+        if (!result.ok && /请先配置|配置.{0,6}(API|Key)|API ?Key/i.test(String(lastError))) {
+        // 要用户自己填 key 的源：不是坏源，是没配置。
+        result.error = '需要配置 API Key'
+        result.needsConfig = true
+      } else if (!result.ok && /缺少(ID|参数|歌曲ID)|songId|songmid|\bhash\b|无法获取.{0,4}ID|歌曲ID不存在|unknown (id|error)|no id|unsupported src/i.test(String(lastError))) {
+        // 「缺 id / 缺参数」不是源坏了：真实播放时平台会给出 id，这里只是自检没拿到。
+        result.error = '需要歌曲ID（自检拿不到真实 id）'
+        result.needsId = true
+      } else if (!result.ok) result.error = lastError
         result.ms = Date.now() - t0
         this.health.set(healthKey, result)
+        this.inFlight.delete(healthKey)
         done++
         if (this.selfCheckState) this.selfCheckState.done = done
         publish()
@@ -722,6 +739,7 @@ export class LxSourceRuntime {
     }
     // 自检后重排：健康源在前，且能给的音质越高越前
     this._rankSources()
+    this.inFlight.clear()
     if (this.selfCheckState) {
       this.selfCheckState.running = false
       this.selfCheckState.done = this.selfCheckState.total
@@ -907,35 +925,55 @@ export class LxSourceRuntime {
 
   /** 递归扫目录，按文件名去重（后者覆盖前者，V2603 优先于 v2602） */
   async loadDirectory(dir, { dedupe = true } = {}) {
+    return this.loadDirectories([dir], { dedupe })
+  }
+
+  /**
+   * 多个根目录一起加载：第一个是内置目录，后面的（用户目录）同名覆盖内置。
+   * 插件记下自己来自哪个根，界面据此区分「内置不可移除」与「用户可移除」。
+   */
+  async loadDirectories(dirs, { dedupe = true } = {}) {
+    const roots = dirs.filter(Boolean).map((dir) => path.resolve(dir))
+    this.builtinDir = roots[0] ?? null
     const found = []
-    const walk = async (current) => {
+    const walk = async (current, root) => {
       let entries
       try { entries = await fs.readdir(current, { withFileTypes: true }) }
-      catch (err) { throw new Error(`无法读取音源目录：${err.message}`) }
+      catch (err) {
+        // 用户目录不存在是正常状态（还没添加过音源），内置目录读不到才算错。
+        if (root !== this.builtinDir) return
+        throw new Error(`无法读取音源目录：${err.message}`)
+      }
       for (const entry of entries) {
         const full = path.join(current, entry.name)
-        if (entry.isDirectory()) await walk(full)
-        else if (entry.isFile() && /\.js$/i.test(entry.name)) found.push(full)
+        if (entry.isDirectory()) await walk(full, root)
+        else if (entry.isFile() && /\.js$/i.test(entry.name)) found.push({ filePath: full, root })
       }
     }
-    await walk(path.resolve(dir))
+    for (const root of roots) await walk(root, root)
 
     const byName = new Map()
-    for (const filePath of found) {
-      const base = path.basename(filePath, path.extname(filePath))
-      if (dedupe) byName.set(base, filePath)
-      else byName.set(`${filePath}`, filePath)
+    for (const item of found) {
+      const base = path.basename(item.filePath, path.extname(item.filePath))
+      const key = dedupe ? base : item.filePath
+      // 后面的根覆盖前面的：用户目录里的同名文件优先。
+      byName.set(key, item)
     }
 
     // 并发加载：每个插件的初始化宽限期互相重叠，否则几十个插件串行
     // 干等会把启动拖到几分钟。vm 同步段仍是顺序执行，不会互相抢。
-    const entries = [...byName.entries()]
-    const tasks = entries.map(async ([name, filePath]) => {
+    const entries = [...byName.entries()].map(([name, item]) => [name, item.filePath, item.root])
+    const tasks = entries.map(async ([name, filePath, root]) => {
       let content
       try { content = await fs.readFile(filePath, 'utf-8') }
       catch (err) { return { name, filePath, ok: false, error: `读取失败：${err.message}` } }
-      const id = `lx-${Buffer.from(name).toString('hex').slice(0, 16)}`
+      // id 必须全场唯一：原来取 hex(文件名).slice(0,16) 只覆盖前 8 个字节，
+      // 而内置源文件名大多以 "[V2602] "/"[ZIP] " 开头 → 前缀相同 → 同一 id，
+      // Map 后写覆盖前写，108 个文件只剩 22 个（用户看到的"22 个共享源"）。
+      const id = `lx-${crypto.createHash('sha1').update(name).digest('hex').slice(0, 16)}`
       const plugin = new LxPlugin({ id, filePath, content })
+      plugin.root = root
+      plugin.builtin = root === this.builtinDir
       try { await plugin.load() }
       catch (err) { return { name, filePath, ok: false, error: err.message } }
       return { name, filePath, ok: true, plugin, id }
@@ -958,7 +996,7 @@ export class LxSourceRuntime {
      */
     const report = []
     settled.forEach((item, index) => {
-      const [name, filePath] = entries[index]
+      const [name, filePath, root] = entries[index]
       if (item.status !== 'fulfilled') {
         report.push({ name, filePath, ok: false, error: item.reason?.message ?? '加载失败' })
         return
@@ -967,19 +1005,78 @@ export class LxSourceRuntime {
       if (!entry.ok) { report.push(entry); return }
       const { plugin, id } = entry
       this.plugins.set(id, plugin)
-      for (const key of plugin.sources.keys()) {
-        if (!this.bySource.has(key)) this.bySource.set(key, [])
-        this.bySource.get(key).push(id)
-      }
       report.push({
-        name: entry.name, filePath: entry.filePath, ok: true,
+        name: entry.name, filePath: entry.filePath, root, builtin: root === this.builtinDir, ok: true,
         sources: [...plugin.sources.keys()],
         qualitys: [...plugin.sources.values()].flatMap((s) => s.qualitys),
         actions: [...plugin.sources.values()].flatMap((s) => s.actions),
       })
     })
     this.loadReport = report
+    this._rebuildBySource()
     return report
+  }
+
+  /** 停用集合 → 重建「平台 → 插件」索引。停用的源在搜索/取源里整体不存在。 */
+  _rebuildBySource() {
+    this.bySource.clear()
+    for (const [id, plugin] of this.plugins) {
+      if (this.disabled?.has(id)) continue
+      for (const key of plugin.sources.keys()) {
+        if (!this.bySource.has(key)) this.bySource.set(key, [])
+        this.bySource.get(key).push(id)
+      }
+    }
+    this._rankSources()
+  }
+
+  /** 设置停用清单（id 数组）。 */
+  setDisabled(ids) {
+    this.disabled = new Set((ids ?? []).filter(Boolean))
+    this._rebuildBySource()
+    return this.listPlugins()
+  }
+
+  /** 界面清单：每个插件一行，带内置标记、启用状态和最好的一条自检结果。 */
+  listPlugins() {
+    const rows = []
+    for (const [id, plugin] of this.plugins) {
+      const keys = [...plugin.sources.keys()]
+      let best = null
+      for (const key of keys) {
+        const health = this.health.get(`${id}|${key}`)
+        if (!health) continue;
+        const better = !best
+          || (health.ok && !best.ok)
+          || (health.ok === best.ok && (health.ms ?? Infinity) < (best.ms ?? Infinity))
+        if (better) best = { ...health, source: key }
+      }
+      rows.push({
+        id,
+        name: plugin.meta.name ?? path.basename(plugin.filePath, path.extname(plugin.filePath)),
+        version: plugin.meta.version ?? '',
+        file: path.basename(plugin.filePath),
+        builtin: Boolean(plugin.builtin),
+        enabled: !this.disabled?.has(id),
+        platforms: keys,
+        testing: keys.some((key) => this.inFlight.has(`${id}|${key}`)),
+        selfCheckRunning: Boolean(this.selfCheckState?.running),
+        health: best ? {
+          ok: Boolean(best.ok), ms: best.ms ?? null,
+          quality: best.quality ?? null, source: best.source ?? null,
+          error: best.error || '',
+        } : null,
+      })
+    }
+    // 排序：内置 → 启用 → 可用 → **音质高的在前** → 延迟低的在前 → 名字。
+    // 用户要求「音质最好的放最上面」，所以不能只按名字排。
+    const tierOf = (row) => QUALITY_TIERS.indexOf(row.health?.quality ?? '')
+    return rows.sort((a, b) => Number(b.builtin) - Number(a.builtin)
+      || Number(b.enabled) - Number(a.enabled)
+      || Number(Boolean(b.health?.ok)) - Number(Boolean(a.health?.ok))
+      || tierOf(b) - tierOf(a)
+      || (a.health?.ms ?? 1e9) - (b.health?.ms ?? 1e9)
+      || String(a.name).localeCompare(String(b.name), 'zh-CN'))
   }
 
   /** 对外的源清单 */

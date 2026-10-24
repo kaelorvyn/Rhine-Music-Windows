@@ -1,5 +1,5 @@
 import "./music-boot.css";
-import { MusicBootFrameClock, MUSIC_BOOT_END_TIME, MUSIC_BOOT_SCENE_REVEAL_TIME, musicBootSceneTime } from "./music-boot-timing.ts";
+import { MusicBootFrameClock, MUSIC_BOOT_END_TIME, MUSIC_BOOT_SCENE_REVEAL_TIME, MUSIC_BOOT_SCENE_START, musicBootSceneTime } from "./music-boot-timing.ts";
 import { MusicOpening, MUSIC_OPENING_SLOGAN, musicOpeningFrame } from "./music-opening";
 
 const REVEAL_DURATION = 720;
@@ -42,6 +42,9 @@ export class MusicBoot {
   private disposed = false;
   private siblings: SavedSibling[] = [];
   private opener: HTMLElement | null = null;
+  // 只放专辑阵列波浪、不放口号片：预览版 0.4.x 的进入顺序就是这样
+  // （开机胶片放完直接接场景波浪，中间没有第二段 DOM 片）。
+  private sceneOnly = false;
 
   constructor(private parent: HTMLElement, private options: MusicBootOptions = {}) {
     this.root = document.createElement("section");
@@ -83,6 +86,8 @@ export class MusicBoot {
   }
   get active() { return this.running || this.revealing; }
 
+  startScene(nowSeconds = performance.now() / 1000) { this.sceneOnly = true; this.start(nowSeconds); }
+
   start(nowSeconds = performance.now() / 1000, _forceMotion = false) {
     if (this.disposed) return;
     if (!Number.isFinite(nowSeconds)) nowSeconds = performance.now() / 1000;
@@ -110,8 +115,10 @@ export class MusicBoot {
     this.running = true;
     this.endpointRendered = false;
     this.parent.dataset.musicBoot = "running";
-    this.frameClock.reset(nowSeconds);
+    this.frameClock.reset(nowSeconds, this.sceneOnly ? MUSIC_BOOT_SCENE_START : 0);
     this.opening.update(0);
+    // 场景模式没有口号片：DOM 片层直接藏起来，由 3D 阵列自己演。
+    this.opening.root.hidden = this.sceneOnly;
     this.root.hidden = false;
     this.root.setAttribute("aria-label", `音乐开场：${MUSIC_OPENING_SLOGAN}`);
     this.skipButton.hidden = false;
@@ -138,7 +145,7 @@ export class MusicBoot {
     if (this.endpointRendered) { this.finish("complete"); return; }
     const appTime = this.frameClock.update(nowSeconds);
     this.endpointRendered = appTime === MUSIC_BOOT_END_TIME;
-    this.opening.update(appTime);
+    if (!this.sceneOnly) this.opening.update(appTime);
     const sceneTime = musicBootSceneTime(appTime);
     const phase = sceneTime >= 25.68 ? "select" : musicOpeningFrame(appTime).phase;
     this.root.dataset.phase = phase;

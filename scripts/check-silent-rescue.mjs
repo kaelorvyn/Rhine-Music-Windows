@@ -112,10 +112,13 @@ try {
   await searchFor();
   await startSampling();
   await playRow('netease-1');
-  await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === 'qq-2' && window.rhineMusic.player.playing, undefined, { timeout: 40000 });
+  // 换源成功的判定看「真正发声的音源」，不是队列项的 id：视觉身份按用户要求保持不变。
+  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.currentTrack?.onlineSource?.provider === 'qq', undefined, { timeout: 40000 });
   await page.waitForTimeout(1500);
-  const switched = await page.evaluate(() => ({ samples: window.__samples, notices: window.__notices.slice(), error: window.rhineMusic.player.error, transport: window.rhineMusic.player.transport, track: window.rhineMusic.player.currentTrack?.id }));
-  assert.equal(switched.track, 'qq-2', '跨源同曲接手播放');
+  const switched = await page.evaluate(() => ({ samples: window.__samples, notices: window.__notices.slice(), error: window.rhineMusic.player.error, transport: window.rhineMusic.player.transport, track: window.rhineMusic.player.currentTrack?.id, provider: window.rhineMusic.player.currentTrack?.onlineSource?.provider }));
+  // 用户定：换源是后台的事，画面不许动 —— 队列项视觉 id 保持原曲，只有音源换家。
+  assert.equal(switched.track, 'netease-1', '视觉身份保持原曲（不闪封面、不换卡）');
+  assert.equal(switched.provider, 'qq', '真正发声的音源已换到 qq');
   assert.equal(switched.transport, 'playing', '换源结束后落在播放态');
   assert.equal(switched.error, null, '静默换源不得写 state.error');
   assert.equal(switched.samples.some(sample => sample.transport === 'error'), false, '换源链路上不得出现 error 传输态');

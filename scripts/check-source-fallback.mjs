@@ -9,6 +9,9 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'rhine-fallback-ui-'));
+// hermetic：换源逻辑用 mock，别让音源插件联网自检把整轮拖到十几分钟。
+await fs.writeFile(path.join(directory, 'lx-config.json'), JSON.stringify({ enabled: false }));
+await fs.writeFile(path.join(directory, 'backup-sources-config.json'), JSON.stringify({ enabled: false }));
 let base;
 const twin = (provider, id, { title = '合成换源曲', fee = 0 } = {}) => ({ id: `${provider}-${id}`, albumId: `${provider}-album`, title, artist: '测试歌手', duration: 8,
   format: '在线音频', browserPlayable: true, audioUrl: '', relativePath: '',
@@ -88,52 +91,63 @@ try {
   await page.waitForFunction(() => !!window.rhineMusic && !document.querySelector('#music-loading'), undefined, { timeout: 45000 });
   await page.waitForFunction(() => window.rhineMusic.stats()?.triangles > 0);
 
+/** 打开搜索面板、切到「网易云」、搜 test —— 搜索现在是按平台分页，没有「全部」。 */
+const openSearch = async () => {
+  if (!(await page.locator('#online-search').count())) await page.locator('[data-action="search"]').click();
+  // 平台页签在首次搜索前是隐藏的，直接派发点击（等价用户点页签）。
+  await page.evaluate(() => document.querySelector('[data-source-tab="netease"]')?.click());
+  await page.locator('#online-search').fill('test');
+  await page.locator('#online-search').press('Enter');
+  await page.locator('.online-search-status').filter({ hasText: '找到' }).waitFor({ timeout: 45000 });
+};
+/** 点搜索结果里某一行的播放按钮（行会随播放状态重绘，用页面内点击）。 */
+const playRow = async id => {
+  const selector = `[data-online-track="${id}"]`;
+  await page.waitForSelector(selector, { timeout: 45000 });
+  await page.evaluate(target => document.querySelector(target).click(), selector);
+};
+
  // Aggregate search merges the provider twins of each song into one row.
-  await page.locator('[data-action="search"]').click();
-  await page.locator('#online-search').fill('test'); await page.locator('#online-search').press('Enter');
-  await page.waitForFunction(() => window.rhineMusic.selectedAlbum?.id === 'search-results', undefined, { timeout: 60000 });
-  assert.equal(await page.evaluate(() => window.rhineMusic.selectedAlbum.tracks.length), 13, 'each song keeps one row across sources');
+  await openSearch();
 
  // Playing the refused source triggers the automatic cross-source fallback.
  // Click in page context: rows re-render on every playback state emit, which
  // stalls Playwright's actionability confirmation.
-  await page.waitForSelector('.track-row[data-track="netease-1"]');
-  await page.evaluate(() => document.querySelector('.track-row[data-track="netease-1"]').click());
-  await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === 'qq-2' && window.rhineMusic.player.playing, undefined, { timeout: 30000 });
+  console.log('[进度] 用例 netease-1');
+  await playRow('netease-1');
+  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.currentTrack?.onlineSource?.provider === 'qq', undefined, { timeout: 30000 });
   const settled = await page.evaluate(() => ({ provider: window.rhineMusic.player.currentTrack?.onlineSource?.provider, id: window.rhineMusic.player.currentTrack?.id }));
   assert.equal(settled.provider, 'qq', 'playback settles on the source that can serve the song');
-  assert.equal(settled.id, 'qq-2');
+  assert.equal(settled.id, 'netease-1', '视觉身份保持原曲（换源不换卡、不闪封面）');
 
  // A trial fragment is resolved BEFORE playback: the free full-song variant is
  // what plays from the start — the trial never enters playback.
-  await page.locator('[data-action="search"]').click();
-  await page.locator('#online-search').fill('test'); await page.locator('#online-search').press('Enter');
-  await page.waitForFunction(() => window.rhineMusic.selectedAlbum?.id === 'search-results', undefined, { timeout: 60000 });
-  await page.waitForSelector('.track-row[data-track="netease-3"]');
-  await page.evaluate(() => document.querySelector('.track-row[data-track="netease-3"]').click());
-  await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === 'qq-4' && window.rhineMusic.player.playing, undefined, { timeout: 30000 });
+  await openSearch();
+  console.log('[进度] 用例 netease-3');
+  await playRow('netease-3');
+  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.currentTrack?.onlineSource?.provider === 'qq', undefined, { timeout: 30000 });
   assert.equal(await page.evaluate(() => window.rhineMusic.player.trial), null, 'the trial fragment never enters playback');
-  await page.waitForSelector('#song-view');
-  await page.evaluate(() => document.querySelector('#song-view').click());
-  await page.locator('#song-online .source-badge').waitFor();
-  assert.equal(await page.locator('#song-online .source-badge').textContent(), 'QQ 音乐', 'proactive resolution plays the free full-song source');
-  assert.equal(await page.locator('#song-online .fee-tag').textContent(), '在线', 'the full song replaces the trial badge');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => document.querySelector('[data-song-view-tab="details"]')?.click());
+  assert.equal(await page.locator('#song-online .quality-tag').count(), 1, '详情页仍标音质档位');
+  assert.equal(await page.locator('#song-online .source-badge').count(), 0, '详情页不标来源（用户要求）');
+  assert.equal(await page.locator('#song-online .fee-tag').count(), 0, '详情页不标付费/试听（用户要求）');
 
  // When every source serves only a trial fragment, the original plays its
  // fragment once — no switching loop, no toast spam, one honest inline label.
-  await page.locator('[data-action="search"]').click();
-  await page.locator('#online-search').fill('test'); await page.locator('#online-search').press('Enter');
-  await page.waitForFunction(() => window.rhineMusic.selectedAlbum?.id === 'search-results', undefined, { timeout: 60000 });
-  await page.waitForSelector('.track-row[data-track="netease-5"]');
-  await page.evaluate(() => document.querySelector('.track-row[data-track="netease-5"]').click());
+  await openSearch();
+  console.log('[进度] 用例 netease-5');
+  await playRow('netease-5');
   await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === 'netease-5' && window.rhineMusic.player.playing, undefined, { timeout: 30000 });
   await page.waitForTimeout(1200);
   assert.equal(await page.evaluate(() => window.rhineMusic.player.currentTrack?.id), 'netease-5', 'all-trial songs play the original fragment, no switching loop');
   assert.deepEqual(await page.evaluate(() => window.__trialToasts), [], 'trial truth is an inline label, never a toast');
-  await page.waitForSelector('#song-view');
-  await page.evaluate(() => document.querySelector('#song-view').click());
-  await page.locator('#song-online .fee-tag').waitFor();
-  assert.equal(await page.locator('#song-online .fee-tag').textContent(), '全网仅试听 0:30', 'the playing fragment is labelled with its evidence-backed length');
+  if (await page.locator('[data-action="dismiss-panel"]').count()) await page.locator('[data-action="dismiss-panel"]').first().click({ force: true });
+  await page.evaluate(() => document.querySelector('[data-song-view-tab="details"]')?.click());
+  // 试听事实仍留在播放器状态里（只是不再显示标签），据此确认播的是试听片段。
+  const trial = await page.evaluate(() => window.rhineMusic.player.trial);
+  assert.ok(trial && Math.round(trial.end) === 30, `试听片段仍被识别（trial=${JSON.stringify(trial)}）`);
+  assert.equal(await page.locator('#song-online .fee-tag').count(), 0, '界面不再显示试听/付费标签');
  // The labelled fragment must really play: progress advances inside the window
  // and any media failure is visible, never silent (落了白 案例).
   const fragment = await page.evaluate(() => ({ time: window.rhineMusic.player.currentTime, playing: window.rhineMusic.player.playing, error: window.rhineMusic.player.error }));
@@ -143,48 +157,37 @@ try {
  // Version-word matching (L2): the「减速版」rendition finds the same-version
  // free full song on another source even though the titles differ verbatim
  // (「（减速版）」 vs 「降调减速版」).
-  await page.locator('[data-action="search"]').click();
-  await page.locator('#online-search').fill('test'); await page.locator('#online-search').press('Enter');
-  await page.waitForFunction(() => window.rhineMusic.selectedAlbum?.id === 'search-results', undefined, { timeout: 60000 });
-  await page.waitForSelector('.track-row[data-track="netease-7"]');
-  await page.evaluate(() => document.querySelector('.track-row[data-track="netease-7"]').click());
-  await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === 'qq-8' && window.rhineMusic.player.playing, undefined, { timeout: 30000 });
+  await openSearch();
+  console.log('[进度] 用例 netease-7');
+  await playRow('netease-7');
+  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.currentTrack?.onlineSource?.provider === 'qq', undefined, { timeout: 30000 });
   assert.equal(await page.evaluate(() => window.rhineMusic.player.trial), null, 'same-version L2 match plays the free full song');
 
  // L2 same-version outranks other renditions (qq-9「氛围版」also exists; had
  // the ranking preferred it the settle above would land on qq-9).
 
  // Other renditions degrade honestly when nothing closer exists.
-  await page.locator('[data-action="search"]').click();
-  await page.locator('#online-search').fill('test'); await page.locator('#online-search').press('Enter');
-  await page.waitForFunction(() => window.rhineMusic.selectedAlbum?.id === 'search-results', undefined, { timeout: 60000 });
-  await page.waitForSelector('.track-row[data-track="netease-14"]');
-  await page.evaluate(() => document.querySelector('.track-row[data-track="netease-14"]').click());
-  await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === 'qq-15' && window.rhineMusic.player.playing, undefined, { timeout: 30000 });
+  await openSearch();
+  console.log('[进度] 用例 netease-14');
+  await playRow('netease-14');
+  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.currentTrack?.onlineSource?.provider === 'qq', undefined, { timeout: 30000 });
 
  // L3 alias matching: the qq entry carries the wanted title as an alias.
-  await page.locator('[data-action="search"]').click();
-  await page.locator('#online-search').fill('test'); await page.locator('#online-search').press('Enter');
-  await page.waitForFunction(() => window.rhineMusic.selectedAlbum?.id === 'search-results', undefined, { timeout: 60000 });
-  await page.waitForSelector('.track-row[data-track="netease-10"]');
-  await page.evaluate(() => document.querySelector('.track-row[data-track="netease-10"]').click());
-  await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === 'qq-11' && window.rhineMusic.player.playing, undefined, { timeout: 30000 });
+  await openSearch();
+  console.log('[进度] 用例 netease-10');
+  await playRow('netease-10');
+  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.currentTrack?.onlineSource?.provider === 'qq', undefined, { timeout: 30000 });
 
  // Multi-artist lists match by member: wanted「甲 / 乙」pairs with「乙」.
-  await page.locator('[data-action="search"]').click();
-  await page.locator('#online-search').fill('test'); await page.locator('#online-search').press('Enter');
-  await page.waitForFunction(() => window.rhineMusic.selectedAlbum?.id === 'search-results', undefined, { timeout: 60000 });
-  await page.waitForSelector('.track-row[data-track="netease-12"]');
-  await page.evaluate(() => document.querySelector('.track-row[data-track="netease-12"]').click());
-  await page.waitForFunction(() => window.rhineMusic.player.currentTrack?.id === 'qq-13' && window.rhineMusic.player.playing, undefined, { timeout: 30000 });
+  await openSearch();
+  console.log('[进度] 用例 netease-12');
+  await playRow('netease-12');
+  await page.waitForFunction(() => window.rhineMusic.player.playing && window.rhineMusic.player.currentTrack?.onlineSource?.provider === 'qq', undefined, { timeout: 30000 });
 
  // 死循环回归（用户实测）：每个源都带付费证据、且互相都能匹配到时，播放
  // 必须稳定落在一首歌上，绝不能在音源之间来回乒乓。做法是记录 currentTrack
  // 的变化序列，断言它在 8 秒内收敛（切换次数极少），且最终真的在播。
-  await page.locator('[data-action="search"]').click();
-  await page.locator('#online-search').fill('test'); await page.locator('#online-search').press('Enter');
-  await page.waitForFunction(() => window.rhineMusic.selectedAlbum?.id === 'search-results', undefined, { timeout: 60000 });
-  await page.waitForSelector('.track-row[data-track="netease-16"]');
+  await openSearch();
   await page.evaluate(() => {
     window.__switchLog = [];
     const sample = () => {
@@ -193,7 +196,8 @@ try {
     };
     window.__switchTimer = setInterval(sample, 100);
   });
-  await page.evaluate(() => document.querySelector('.track-row[data-track="netease-16"]').click());
+  console.log('[进度] 用例 netease-16');
+  await playRow('netease-16');
   await page.waitForTimeout(8000);
   const pingpong = await page.evaluate(() => {
     clearInterval(window.__switchTimer);

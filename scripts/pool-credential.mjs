@@ -18,8 +18,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { decode, encode } from './keyfile-envelope.mjs';
 
-export const CREDENTIAL_FILE = 'pool-credential.json';
+export const CREDENTIAL_FILE = 'pool-credential.dat';
+const LEGACY_FILE = 'pool-credential.json';
 const FORMAT = 1;
 
 /** 密钥文件的扩展名（用户导入时用这个）。 */
@@ -105,18 +107,45 @@ export function validate(input) {
   return { token, key, did: did || 'desktop-local', servers, sign, crypto: cryptoSpec, api, sources, qualities };
 }
 
-function credentialPath(dataDir) {
-  return path.join(dataDir, CREDENTIAL_FILE);
+function credentialPath(dataDir, name = CREDENTIAL_FILE) {
+  return path.join(dataDir, name);
+}
+
+/** 解密一份凭据信封；老明文 JSON 也认，读出来由调用方决定是否迁移。 */
+function readCredentialFile(file) {
+  const raw = fs.readFileSync(file);
+  const { value, plaintext } = decode(raw);
+  if (value?.format !== FORMAT) return null;
+  return { raw: value, plaintext };
 }
 
 /** 读取已导入的凭据。没有就返回 null（不是错误 —— 这是正常状态）。 */
 export function read(dataDir) {
   if (!dataDir) return null;
+  const current = credentialPath(dataDir);
   try {
-    const raw = JSON.parse(fs.readFileSync(credentialPath(dataDir), 'utf8'));
+    const parsed = readCredentialFile(current);
+    if (!parsed) return null;
+    // 读到的是老明文（.dat 里却是明文：只会在迁移失败时出现），顺手补一次加密。
+    if (parsed.plaintext) {
+      try { write(dataDir, { ...parsed.raw }); } catch { /* 迁移失败不影响这次读取 */ }
+    }
+    const cred = validate(parsed.raw);
+    return { ...cred, importedAt: parsed.raw.importedAt ?? null };
+  } catch { /* 当前文件坏了再看老文件 */ }
+
+  try {
+    const legacy = credentialPath(dataDir, LEGACY_FILE);
+    if (!fs.existsSync(legacy)) return null;
+    const raw = JSON.parse(fs.readFileSync(legacy, 'utf8'));
     if (raw?.format !== FORMAT) return null;
     const cred = validate(raw);
-    return { ...cred, importedAt: raw.importedAt ?? null };
+    const migrated = { ...cred, importedAt: raw.importedAt ?? null };
+    try {
+      write(dataDir, migrated);
+      fs.rmSync(legacy, { force: true });
+    } catch { /* 迁移失败就下次再说 */ }
+    return migrated;
   } catch {
     return null;
   }
@@ -128,11 +157,17 @@ export function write(dataDir, input) {
   fs.mkdirSync(dataDir, { recursive: true });
   const payload = {
     format: FORMAT,
-    importedAt: new Date().toISOString(),
+    importedAt: input?.importedAt ?? new Date().toISOString(),
     ...cred,
   };
- // 0600：仅当前用户可读写。Windows 上 mode 被忽略，靠目录 ACL。
-  fs.writeFileSync(credentialPath(dataDir), JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
+  // 0600：仅当前用户可读写。Windows 上 mode 被忽略，靠目录 ACL。
+  // 内容走 AES-256-GCM 信封，落盘不是可读 JSON —— 记事本打开是乱码。
+  const buffer = encode(payload);
+  const target = credentialPath(dataDir);
+  const staging = `${target}.tmp`;
+  fs.writeFileSync(staging, buffer, { mode: 0o600 });
+  fs.renameSync(staging, target);
+  fs.rmSync(credentialPath(dataDir, LEGACY_FILE), { force: true });
   return payload;
 }
 
@@ -141,6 +176,7 @@ export function clear(dataDir) {
   if (!dataDir) return false;
   try {
     fs.rmSync(credentialPath(dataDir), { force: true });
+    fs.rmSync(credentialPath(dataDir, LEGACY_FILE), { force: true });
     return true;
   } catch {
     return false;
@@ -153,19 +189,18 @@ export function status(dataDir) {
   if (!cred) {
     return {
       configured: false,
-      account: null,
       expiresAt: null,
       importedAt: null,
  // 明确告诉前端当前处于降级状态，好显示提示条
       note: '未导入密钥，当前只使用备用音源',
     };
   }
+  // 只透露到期时间。账号名不进 UI —— 截图分享不会带出任何身份信息。
   const info = describe(cred.token);
   const expiresAt = info.expiresAt;
   const expired = expiresAt ? new Date(expiresAt).getTime() < Date.now() : false;
   return {
     configured: !expired,
-    account: info.account,
     expiresAt,
     importedAt: cred.importedAt,
     note: expired ? '密钥已过期，请重新导入' : null,
@@ -176,5 +211,12 @@ export function status(dataDir) {
 export function exportKeyFile(dataDir) {
   const cred = read(dataDir);
   if (!cred) throw new Error('还没有导入密钥');
-  return JSON.stringify({ format: FORMAT, ...cred }, null, 2);
+  return encode({ format: FORMAT, ...cred });
+}
+
+/** 从一份密钥文件的原始字节导入（自动识别加密信封与老明文）。 */
+export function importKeyFile(dataDir, buffer) {
+  const { value } = decode(buffer);
+  if (!value || typeof value !== 'object') throw new Error('这不是有效的密钥文件');
+  return write(dataDir, value);
 }

@@ -160,7 +160,7 @@ export async function findPlayableVariant(
  // ① 平台 prepare：能直接给全曲就赢。
       const prepared = await fetchOnline(provider, 'playback',
         `/api/online/${provider}/prepare/${encodeURIComponent(candidate.onlineSource.id)}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal });
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sameOrigin: true }), signal });
       const result = await prepared.json().catch(() => null) as
         { audioUrl?: string; trial?: { start: number; end: number } } | null;
       if (prepared.ok && result?.audioUrl && !result.trial) return candidate;

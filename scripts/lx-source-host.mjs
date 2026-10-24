@@ -20,7 +20,7 @@ export class LxSourceHost {
     this.callTimeout = callTimeout
     // 自检是批量任务（几十个源各试一次），要单独给宽超时，否则会被普通调用的
     // 45s 上限打断，导致 worker 被误判为卡死而重建。
-    this._selfCheckTimeout = 180000
+    this._selfCheckTimeout = 300000
     this.restartOnTimeout = restartOnTimeout
     this._worker = null
     this._pending = new Map()
@@ -99,10 +99,28 @@ export class LxSourceHost {
   }
 
   async loadDirectory(dir) {
-    this._lastDir = dir
-    const report = await this._call('loadDirectory', [dir])
+    return this.loadDirectories([dir])
+  }
+
+  /** 内置目录 + 用户目录一起加载；后者同名覆盖前者。 */
+  async loadDirectories(dirs) {
+    this._lastDir = dirs
+    const report = await this._call('loadDirectories', [dirs])
     this._snapshot = await this._call('snapshot', [])
     return report
+  }
+
+  /** 停用清单（id 数组）。停用的插件不参与搜索与取源。 */
+  async setDisabled(ids) {
+    const plugins = await this._call('setDisabled', [ids])
+    this._snapshot = await this._call('snapshot', [])
+    return plugins
+  }
+
+  /** 界面清单（内置标记 / 启用状态 / 自检延迟）。 */
+  async listPlugins() {
+    if (!this.enabled) return []
+    try { return await this._call('listPlugins', []) } catch { return [] }
   }
 
   async clear() {

@@ -139,7 +139,6 @@ export async function readAudioCacheUsage(): Promise<{ files: number; bytes: num
 export interface PoolCredentialStatus {
   configured: boolean;
   poolEnabled: boolean;
-  account: string | null;
   expiresAt: string | null;
   importedAt: string | null;
   note: string | null;
@@ -153,17 +152,17 @@ export async function readPoolCredential(): Promise<PoolCredentialStatus | null>
   } catch { return null; }
 }
 
-/** 导入密钥文件内容（.rhinekey 的原文）。返回 null 表示请求失败。 */
-export async function importPoolCredential(payload: string): Promise<{ ok: boolean; status?: PoolCredentialStatus; error?: string }> {
+/** 导入密钥文件（.rhinekey 的原始字节，base64 传输）。 */
+export async function importPoolCredential(encoded: string): Promise<{ ok: boolean; status?: PoolCredentialStatus; error?: string }> {
   try {
     const response = await fetch('/api/pool/credential/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ payload }),
+      body: JSON.stringify({ data: encoded }),
     });
-    const data = await response.json() as PoolCredentialStatus & { error?: string };
-    if (!response.ok) return { ok: false, error: data.error ?? "导入失败" };
-    return { ok: true, status: data };
+    const body = await response.json() as PoolCredentialStatus & { error?: string };
+    if (!response.ok) return { ok: false, error: body.error ?? "导入失败" };
+    return { ok: true, status: body };
   } catch { return { ok: false, error: "无法连接本地服务" }; }
 }
 

@@ -193,14 +193,55 @@ button {
   display: inline-block;
   margin-left: 11px;
 }
+/* ── 启动动画主题色 ────────────────────────────────────────────
+   启动层（.rhine-loading）挂在 #stage 外面、与 .music-app 是兄弟节点，
+   吃不到 .music-app 的主题变量；按 desktop.css 的先例用 html:has 跟随主题。
+   day 的值 = 原设计的暖灰系，逐值对应，不改变白天观感。 */
+.rhine-loading {
+  --boot-bg1: #e7e7e1; --boot-bg2: #e3e1dc; --boot-bg3: #e4dfdb;
+  --boot-chip: #282b26; --boot-chip-dark: #080a08; --boot-chip-ink: #ece9e4;
+  --boot-line-bright: #f7f5f0; --boot-line-soft: #aaa9a0;
+  --boot-gold: #e7c69b; --boot-gold-glow: #ddb788;
+  --boot-muted: #66645f; --boot-hover: #9b7247; --boot-keyline: #a6a49c;
+  --boot-rule: #504b41; --boot-rule-dot: #282a24;
+  --boot-flash: #fff; --boot-scan-ink: #080a08; --boot-scan-line: #fff;
+  --boot-texture: #fff;
+  --boot-bg-root: #e4e2dc; --boot-ink: #080a08; --boot-accent: #c16c30;
+  --boot-chrome: #42473f; --boot-status: #55574e;
+}
+html:has(.music-app[data-theme="night"]) .rhine-loading {
+  --boot-bg1: #0d1a2b; --boot-bg2: #091322; --boot-bg3: #060e1a;
+  --boot-chip: #c9d6e4; --boot-chip-dark: #e9eef2; --boot-chip-ink: #0b1420;
+  --boot-line-bright: #e9eef2; --boot-line-soft: #7d8fa3;
+  --boot-gold: #d9ad7d; --boot-gold-glow: #d9ad7d;
+  --boot-muted: #8fa0b3; --boot-hover: #d9ad7d; --boot-keyline: rgba(208, 226, 243, .3);
+  --boot-rule: #2a3c52; --boot-rule-dot: #c9d6e4;
+  --boot-flash: #dfe8f0; --boot-scan-ink: #02060c; --boot-scan-line: #e9eef2;
+  --boot-texture: #9fc3e8;
+  --boot-bg-root: #091322; --boot-ink: #e9eef2; --boot-accent: #d9ad7d;
+  --boot-chrome: #b5bfcc; --boot-status: #8fa0b3;
+}
+html:has(.music-app[data-theme="dusk"]) .rhine-loading {
+  --boot-bg1: #ccd7df; --boot-bg2: #c2cdd6; --boot-bg3: #b8c4ce;
+  --boot-chip: #4e6270; --boot-chip-dark: #1d2830; --boot-chip-ink: #eef4f7;
+  --boot-line-bright: #f0f5f8; --boot-line-soft: #7f94a3;
+  --boot-gold: #4e7588; --boot-gold-glow: #6d94a8;
+  --boot-muted: #5f7280; --boot-hover: #4e7588; --boot-keyline: rgba(32, 53, 68, .35);
+  --boot-rule: #93a4b1; --boot-rule-dot: #2a3742;
+  --boot-flash: #f2f7fa; --boot-scan-ink: #2a3742; --boot-scan-line: #f0f5f8;
+  --boot-texture: #fff;
+  --boot-bg-root: #c2cdd6; --boot-ink: #24313b; --boot-accent: #4e7588;
+  --boot-chrome: #5f7280; --boot-status: #5f7280;
+}
+
 .boot-background {
   position: absolute;
   inset: 0;
   background: radial-gradient(
     ellipse at 51% 48%,
-    #e7e7e1 0%,
-    #e3e1dc 76%,
-    #e4dfdb 100%
+    var(--boot-bg1) 0%,
+    var(--boot-bg2) 76%,
+    var(--boot-bg3) 100%
   );
   transition: none;
   pointer-events: none;
@@ -247,7 +288,7 @@ button {
 .auth-status i {
   width: 3px;
   height: 22px;
-  background: #282b26;
+  background: var(--boot-chip);
   animation: blink 0.8s steps(1) infinite;
 }
 .access-text {
@@ -284,11 +325,11 @@ button {
   font-size: 25px;
 }
 .scan-track {
-  stroke: #f7f5f0;
+  stroke: var(--boot-line-bright);
   stroke-width: 8;
 }
 .scan-ring {
-  stroke: #aaa9a0;
+  stroke: var(--boot-line-soft);
   stroke-width: 8;
   transform-origin: center;
   stroke-dasharray: 2400 900;
@@ -302,14 +343,14 @@ button {
   animation: orbit 4s linear infinite reverse;
 }
 .ring-three {
-  stroke: #f4f3eb;
+  stroke: var(--boot-line-bright);
   stroke-width: 3;
   stroke-dasharray: 600 200;
   animation: orbit 16s linear infinite;
 }
 .scan-nodes {
-  fill: #e7c69b;
-  filter: drop-shadow(0 0 15px #ddb788);
+  fill: var(--boot-gold);
+  filter: drop-shadow(0 0 15px var(--boot-gold-glow));
   transform-origin: center;
   animation: orbit 8s linear infinite;
 }
@@ -330,8 +371,8 @@ button {
 }
 .welcome strong {
   display: inline-block;
-  background: #080a08;
-  color: #ece9e4;
+  background: var(--boot-chip-dark);
+  color: var(--boot-chip-ink);
   padding: 4px 10px 6px;
   font-size: 51px;
   line-height: 1;
@@ -373,7 +414,7 @@ button {
   width: 100%;
   font-size: 22px;
   text-align: center;
-  color: #66645f;
+  color: var(--boot-muted);
   opacity: 0.75;
   pointer-events: none;
 }
@@ -399,7 +440,7 @@ button {
   gap: 12px;
 }
 .system-nav button:hover {
-  color: #9b7247;
+  color: var(--boot-hover);
 }
 .nav-glyph {
   width: 23px;
@@ -407,7 +448,7 @@ button {
 }
 .key {
   font-size: 11px;
-  border: 1px solid #a6a49c;
+  border: 1px solid var(--boot-keyline);
   display: inline-flex;
   justify-content: center;
   align-items: center;
@@ -438,7 +479,7 @@ button {
   font-size: 12px;
   letter-spacing: 1.3px;
   margin-bottom: 22px;
-  color: #77756d;
+  color: var(--boot-muted);
   opacity: 0;
   transition: opacity 0.7s;
 }
@@ -468,7 +509,7 @@ button {
 }
 .callout-rule {
   height: 1px;
-  background: #504b41;
+  background: var(--boot-rule);
   margin-left: 57px;
   margin-top: 55px;
   position: relative;
@@ -482,7 +523,7 @@ button {
   top: -3px;
   width: 6px;
   height: 6px;
-  background: #282a24;
+  background: var(--boot-rule-dot);
   opacity: 0;
 }
 .file-summary {
@@ -502,7 +543,7 @@ button {
 .file-summary > span:last-child {
   font-size: 11px;
   letter-spacing: 1px;
-  color: #666257;
+  color: var(--boot-muted);
 }
 .read-file {
   display: flex;
@@ -2053,7 +2094,7 @@ button {
 .boot-white {
   position: absolute;
   inset: 0;
-  background: #fff;
+  background: var(--boot-flash);
   opacity: 0;
 }
 .scan {

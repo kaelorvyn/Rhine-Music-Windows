@@ -45,6 +45,9 @@ export interface GaplessCallbacks {
 export class BrowserGaplessPlayer {
   private readonly context: AudioContext;
   private readonly gain: GainNode;
+  /** 音浪取样点：gain 之后的静默旁路，只读数据不参与输出。 */
+  private readonly analyser: AnalyserNode;
+  private spectrumBuffer = new Uint8Array(1024);
   private current?: Slot;
   private next?: Slot;
   private nextAbort?: AbortController;
@@ -63,11 +66,31 @@ export class BrowserGaplessPlayer {
     this.context = context ?? new AudioContext();
     this.gain = this.context.createGain();
     this.gain.connect(output ?? this.context.destination);
+    // 音浪的真频谱就从这里出：这条链才是实际发声的图（<audio> 元素在
+    // 无缝模式下不出声，captureStream 捕获它只能拿到静音，波形就变成瞎跳）。
+    this.analyser = this.context.createAnalyser();
+    this.analyser.fftSize = 2048;              // 1024 bins，正好对齐音浪的采样缓冲
+    this.analyser.smoothingTimeConstant = 0.72;
+    this.analyser.minDecibels = -95;
+    this.analyser.maxDecibels = -25;
+    this.gain.connect(this.analyser);          // 只接 analyser，不接输出，不影响发声
     this.context.addEventListener?.("statechange", this.onStateChange);
   }
 
  /** Call synchronously from the user play gesture, before any fetch or BGM wait. */
   unlock(): Promise<void> { return this.context.resume(); }
+  get sampleRate(): number | undefined { return this.context?.sampleRate; }
+  /** 音浪取样：从正在发声的图上读一帧真频谱。 */
+  readSpectrum(target: Uint8Array): boolean {
+    const analyser = this.analyser;
+    if (!analyser) return false;
+    const size = analyser.frequencyBinCount;
+    if (this.spectrumBuffer.length !== size) this.spectrumBuffer = new Uint8Array(size);
+    analyser.getByteFrequencyData(this.spectrumBuffer as Uint8Array<ArrayBuffer>);
+    if (target.length === size) target.set(this.spectrumBuffer);
+    else target.set(this.spectrumBuffer.subarray(0, Math.min(size, target.length)));
+    return true;
+  }
   volume(value: number): void { this.gain.gain.value = Math.max(0, Math.min(1, value)); }
   get trackId(): string | undefined { this.sync(); return this.current?.track.id; }
   get position(): number {

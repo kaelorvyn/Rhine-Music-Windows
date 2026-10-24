@@ -35,6 +35,8 @@ export interface LocalSong {
   playCount: number;
   duration?: number;
   qualityRank?: number;
+  /** 封面地址快照：收藏进歌单后列表里也要能显示封面。 */
+  cover?: string;
 }
 
 /** 排序规则（对齐上游 playlist.sort.*）。 */
@@ -63,6 +65,7 @@ export function localSongToTrack(song: LocalSong): MusicTrack {
     duration: song.duration ?? 0,
     format: '在线',
     browserPlayable: true,
+    ...(song.cover ? { coverUrl: song.cover } : {}),
     audioUrl: '',
     relativePath: '',
     onlineSource: {
@@ -95,7 +98,13 @@ export function trackToLocalSong(track: MusicTrack): LocalSong {
     playCount: 0,
     ...(track.duration ? { duration: track.duration } : {}),
     qualityRank: qualityRankOf(track),
+    ...(coverOf(track) ? { cover: coverOf(track) } : {}),
   };
+}
+
+/** 曲目封面的取值顺序：轨道自带 → 在线源快照。 */
+function coverOf(track: MusicTrack): string {
+  return track.onlineSource?.coverUrl || '';
 }
 
 const base = '/api/playlists';

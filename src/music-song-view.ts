@@ -61,12 +61,17 @@ export class MusicSongView {
     if (!track) return '';
     return `<section id="song-view" data-song="${esc(track.id)}">
       <div class="song-view-heading"><button type="button" data-action="song-toggle-play" id="song-toggle-play">${play}<span data-song-reveal>开始播放</span></button><div class="song-step-buttons"><button type="button" data-action="playing-prev" aria-label="上一首（详情）">${previousArrow}<span data-song-reveal>上一首</span></button><button type="button" data-action="playing-next" aria-label="下一首（详情）"><span data-song-reveal>下一首</span>${nextArrow}</button></div></div>
+      <nav class="song-view-tabs" role="tablist" aria-label="歌曲内容">
+        <button type="button" role="tab" id="song-tab-lyrics" data-song-view-tab="lyrics" aria-controls="song-lyric-view">歌词</button>
+        <button type="button" role="tab" id="song-tab-info" data-song-view-tab="details" aria-controls="song-info">歌曲详情</button>
+      </nav>
       <section id="song-info" aria-label="歌曲资料"><div id="song-online"></div><dl id="song-facts"></dl><p id="song-description" data-song-reveal></p><p id="song-metadata-error" data-song-reveal role="status"></p></section>
-      <section id="song-lyric-view" aria-label="歌词" hidden><div id="song-lyrics" role="region" aria-label="同步歌词"></div>
-        <div class="lyric-transport">
+      <section id="song-lyric-view" aria-label="歌词" hidden><div id="song-lyrics" role="region" aria-label="同步歌词"></div></section>
+      <div class="lyric-transport">
           <input class="playback-seek" type="range" min="0" max="1" value="0" step="0.1" aria-label="歌曲播放进度" disabled><div class="song-time"><span data-elapsed data-song-reveal>0:00</span><span data-duration data-song-reveal>${clock(track.duration)}</span></div>
           <div class="song-action-cluster"><button type="button" data-action="play-mode" id="play-mode-button" class="song-mode-button" title="播放模式"></button><button type="button" data-action="audio-effects" id="audio-effects-button" class="song-mode-button" title="音效"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="1.8"/><circle cx="15" cy="12" r="1.8"/><circle cx="8" cy="17" r="1.8"/></svg></button><button type="button" data-action="download-song" id="download-button" class="song-mode-button" title="下载"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg></button><label class="song-volume" title="音量"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg><input class="volume-range" type="range" min="0" max="1" step="0.01" value="0.7" aria-label="音量大小"></label></div>
-        </div></section><p id="song-view-error" data-song-reveal role="status"></p></section>`;
+        </div>
+      <p id="song-view-error" data-song-reveal role="status"></p></section>`;
   }
 
   mount(album: MusicAlbum, state: MusicPlayerState, detailActive: boolean) {
@@ -109,8 +114,14 @@ export class MusicSongView {
       }
       if (!root.dataset.viewToggle) {
         root.dataset.viewToggle = '1';
+        // 只有标签栏能切。之前整页点空白都算切换，误触极高 ——
+        // 拖进度条、点收藏、选播放模式都会顺手把视图翻掉。
         root.addEventListener('click', event => {
-          this.manualView = this.currentView === 'lyrics' ? 'details' : 'lyrics';
+          const tab = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-song-view-tab]');
+          if (!tab) return;
+          const next = tab.dataset.songViewTab === 'lyrics' ? 'lyrics' : 'details';
+          if (next === this.currentView) return;
+          this.manualView = next;
           if (this.state) this.update(this.state, this.detailActive);
         });
       }
@@ -124,6 +135,11 @@ export class MusicSongView {
       if (viewChanged) revealChanged = true;
       root.querySelector<HTMLElement>('#song-info')!.hidden = showLyrics;
       root.querySelector<HTMLElement>('#song-lyric-view')!.hidden = !showLyrics;
+      for (const tab of root.querySelectorAll<HTMLElement>('[data-song-view-tab]')) {
+        const selected = (tab.dataset.songViewTab === 'lyrics') === showLyrics;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      }
       const error = root.querySelector<HTMLElement>('#song-view-error')!, errorText = state.currentTrack?.id === detailTrack.id ? state.error || state.transitionWarning || '' : '';
       if (error.textContent !== errorText) { error.textContent = errorText; revealChanged = true; }
       const lyricContent = root.querySelector<HTMLElement>('#song-lyrics')!.dataset.content;

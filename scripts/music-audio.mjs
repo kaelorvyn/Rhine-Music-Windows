@@ -51,10 +51,35 @@ export async function checkedSource(descriptor) {
   if (!stat.isFile()) throw failure('音频文件不存在', 404)
   return { file, stat }
 }
+/** 给 FFmpeg 子进程用的环境：去掉所有代理变量，保证联网行为与本机代理状态无关。 */
+export function proxyFreeEnv(base = process.env) {
+  const env = { ...base }
+  for (const key of Object.keys(env)) {
+    const name = key.toLowerCase()
+    if (name === 'http_proxy' || name === 'https_proxy' || name === 'all_proxy'
+      || name === 'ftp_proxy' || name === 'no_proxy'
+      || name === 'http_proxy_user' || name === 'http_proxy_pass') delete env[key]
+  }
+  return env
+}
+
 export function runProcess(binary, args, { signal, timeout = 120000, stdio } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(aborted())
-    const child = spawn(binary, args, { stdio: stdio ?? ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false })
+    // 【2026-10-24 修「本机开不开代理都得能放」】
+    //
+    // FFmpeg 会读 http_proxy / https_proxy / all_proxy 这些环境变量，一旦有值就
+    // 把 http 输入包成它内部的 httpproxy 协议去连代理。于是同一份代码：
+    //   · 没开代理 → 直连，正常；
+    //   · 开了代理 → 走代理，代理不通/规则不放行就整首放不了；
+    //   · 代理变量还留着但程序已退出 → 直接连不上。
+    // 音频是公网 CDN 的直链，走不走代理都不该由用户的 Clash 状态决定，
+    // 所以对子进程一律剥掉代理变量，永远直连。用户在系统层面对代理的
+    // 其他配置不受影响 —— 这里只作用于 FFmpeg / ffprobe 这两个子进程。
+    const child = spawn(binary, args, {
+      stdio: stdio ?? ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false,
+      env: proxyFreeEnv(),
+    })
     let output = '', errors = '', timedOut = false, forceKill
     const kill = () => { child.kill('SIGTERM'); forceKill = setTimeout(() => child.kill('SIGKILL'), 2000); forceKill.unref() }
     const timer = setTimeout(() => { timedOut = true; kill() }, timeout)
@@ -261,7 +286,17 @@ export class AudioDecoder {
     const locator = urlPathOf(sourceUrl)
     const key = createHash('sha256').update(`url:${identityKey}:${locator}:pcm-v4${fx ? `:fx-${fx}` : ''}`).digest('hex')
     const target = path.join(this.cacheDir, `${key}.wav`)
-    return await this.decode(sourceUrl, target, signal, undefined, filter, 'file,pipe,http,https,tcp,tls')
+    // 【2026-10-24 修「开了音效网易云一律放不了」】
+    //
+    // 本机有 http_proxy/https_proxy 环境变量（Clash 之类）时，FFmpeg 会把
+    // http 输入包成自己的内部协议 httpproxy 走代理。原来白名单写死
+    // 'file,pipe,http,https,tcp,tls'，于是每首歌都死在：
+    //
+    //   Protocol 'httpproxy' not on whitelist 'file,pipe,http,https,tcp,tls'!
+    //
+    // 现象是「音效一开全平台都加载失败」，而关掉音效/浏览器直连一切正常。
+    // 白名单补上 httpproxy 即可（其余协议维持最小集合）。
+    return await this.decode(sourceUrl, target, signal, undefined, filter, 'file,pipe,http,https,tcp,tls,httpproxy')
   }
   /** 本地文件的缓存身份：只取路径无关的部分。
    *

@@ -29,12 +29,20 @@ const EMPTY = () => ({ version: 1, playlists: [], favorites: { songs: [] } })
 const clean = (value, max) => String(value ?? '').replace(/[\r\n\t]/g, ' ').trim().slice(0, max)
 
 /** 一首歌在歌单里的样子：身份 + 元数据快照 + 统计。 */
+/** 封面只接受 http(s) 与 data:image，长度设上限，避免被塞进任意内容。 */
+function cleanCover(value) {
+  const text = String(value ?? '').trim().slice(0, 600)
+  if (!text) return ''
+  return /^(https?:\/\/|data:image\/)/i.test(text) ? text : ''
+}
+
 function normalizeSong(input) {
   const song = {
     id: clean(input?.id, MAX_SONG_FIELD),
     title: clean(input?.title, MAX_SONG_FIELD),
     artist: clean(input?.artist, MAX_SONG_FIELD),
     album: clean(input?.album, MAX_SONG_FIELD),
+    cover: cleanCover(input?.cover),
     provider: clean(input?.provider, 40),
     onlineSourceId: clean(input?.onlineSourceId, MAX_SONG_FIELD),
     addedAt: Number.isFinite(input?.addedAt) ? Number(input.addedAt) : Date.now(),

@@ -145,11 +145,20 @@ export class MusicPlayer {
   private effects?: AudioEffectsChain;
   private effectsContext?: AudioContext;
  /**
- * 已经接过音效链的音频元素。createMediaElementSource 对同一元素只能调一次
+ * 已经接进 Web Audio 的音频元素。createMediaElementSource 对同一元素只能调一次
  * （重复调用抛 InvalidStateError，会让这一路播放失效），所以记下来防重复。
  */
   private routedSongs = new WeakSet<HTMLAudioElement>();
+  /** 音浪分析旁支（照抄 0.4.1 预览版接法）：媒体元素只有一条可听输出路线
+   *  （MediaElementSource → destination），analyser 只是旁支取数，不接输出。
+   *  跨源媒体绝不接线 —— 规范会把整条图输出静音（旧的两条取数路都是这么死的）。 */
+  private spectrumContext?: AudioContext;
+  private songSourceNode?: MediaElementAudioSourceNode;
+  private songAnalyser?: AnalyserNode;
+  private spectrumEnabled = true;
   private effectsConfig: EffectsConfig = defaultEffectsConfig;
+  /** 音效流失败后已退回原始直连的元素（每个元素只退一次）。 */
+  private readonly processedFallback = new WeakSet<HTMLAudioElement>();
  /** 音效改动的防抖定时器（见 setEffects）：拖滑块时合并成最后一次再换流。 */
   private effectsReloadTimer?: number;
   private nativePreparedId?: string;
@@ -482,7 +491,7 @@ export class MusicPlayer {
       const controller = new AbortController(); this.preparation = controller;
       try {
         const response = await fetchOnline(track.onlineSource.provider, 'playback', `/api/online/${track.onlineSource.provider}/prepare/${encodeURIComponent(track.onlineSource.id)}`, {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", signal: controller.signal,
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sameOrigin: true }), signal: controller.signal,
         }, recovery.retries + 1);
         const result = await response.json().catch(() => {
           reportOnlineFailure(track.onlineSource!.provider, 'playback', { stage: 'response', code: `${track.onlineSource!.provider.toUpperCase()}_FRONTEND_INVALID_JSON` }, response.status, recovery.retries + 1);
@@ -562,6 +571,9 @@ export class MusicPlayer {
     if (request !== this.operation || this.disposed || this.song !== audio)
       return;
     try {
+      // play() 是用户手势触发的，趁这一次把被自动播放策略挂起的
+      // AudioContext 拉起来，音浪才拿得到频谱数据。
+      this.resumeSpectrum();
       await audio.play();
       if (request !== this.operation || this.disposed || this.song !== audio) {
         if (this.song !== audio || !this.expectsSong()) audio.pause();
@@ -586,6 +598,16 @@ export class MusicPlayer {
 
   private async handleSongFailure(track: MusicTrack, error: unknown, request: number, recovery = this.onlineRecovery): Promise<void> {
     if (request !== this.operation || this.disposed) return;
+    // 先辨「是不是音效流自己的锅」：是的话换回原始地址重来一次，不算这首歌失败。
+    const element = this.song;
+    const fallbackSource = element?.dataset.fallbackSrc;
+    if (element && fallbackSource && !this.processedFallback.has(element)) {
+      this.processedFallback.add(element);
+      element.src = fallbackSource;
+      element.load();
+      void element.play().catch(() => {});
+      return;
+    }
     const message = this.playbackError(track, error);
     if (!track.onlineSource || !recovery || !this.expectsSong()) { this.fail(message); return; }
     const name = error instanceof DOMException ? error.name : '';
@@ -895,13 +917,30 @@ export class MusicPlayer {
       return this.effects;
     } catch { return undefined; }
   }
- /** 频谱取样：只读**已存在**的效果链，绝不在这里创建 AudioContext ——
-  * 详情页的音频条每帧都会问一次，没有播放时建 ctx 会撞浏览器的自动播放策略。
-  * 播放时 routeThroughEffects() 已经建过链，所以正在放歌就一定有数据。 */
+/** 频谱取样：无缝模式走无缝引擎的分析器，普通模式走本元素的分析旁支。
+ * 两处都是真实 FFT 数据；取不到就返回 false —— 绝不伪造节奏。 */
   readSpectrum(target: Uint8Array): boolean {
-    if (!this.effects) return false;
-    this.effects.readSpectrum(target);
+    // 无缝模式：出声的是无缝引擎的 Web Audio 图，真频谱只能从它那里拿。
+    if (this.gapless?.trackId) return this.gapless.readSpectrum(target);
+    // 普通模式：同源元素接过分析旁支才有数据。
+    if (!this.songAnalyser || !this.spectrumEnabled) return false;
+    this.songAnalyser.getByteFrequencyData(target as Uint8Array<ArrayBuffer>);
     return true;
+  }
+  /** 音浪开关：关掉只断开分析旁支；发声路线是 MediaElementSource → destination，
+   *  与开关无关，绝不能因为关音浪把歌弄哑。 */
+  setSpectrumEnabled(enabled: boolean, _responsive = false): void {
+    this.spectrumEnabled = enabled;
+    if (!this.songSourceNode || !this.songAnalyser) return;
+    if (enabled) this.songSourceNode.connect(this.songAnalyser);
+    else try { this.songSourceNode.disconnect(this.songAnalyser); } catch { /* 本就未连接 */ }
+  }
+  /** 用户点了播放（有手势）后把 AudioContext 叫醒，音浪才有数据、图才有声音。 */
+  resumeSpectrum(): void {
+    void this.spectrumContext?.resume().catch(() => {});
+  }
+  get spectrumSampleRate(): number | undefined {
+    return (this.gapless?.trackId ? this.gapless.sampleRate : undefined) ?? this.spectrumContext?.sampleRate;
   }
   setEffects(config: EffectsConfig): void {
     const before = this.effectsConfig;
@@ -1045,6 +1084,41 @@ export class MusicPlayer {
     void audio;
   }
 
+  /** 音浪取数接线（照抄 0.4.1 预览版）：媒体元素只有一条可听输出路线 ——
+  * MediaElementSource → destination；分析器从这条线分出旁支，不接输出。
+  * 跨源媒体接进 Web Audio 会被规范整图静音，所以 src 不同源就完全不接线，
+  * 宁可这歌没波形，也绝不把歌弄哑。 */
+  private attachSpectrum(audio: HTMLAudioElement): void {
+    if (this.routedSongs.has(audio)) return;
+    try {
+      const src = audio.src || audio.currentSrc;
+      const target = src ? new URL(src, location.href) : null;
+      const page = new URL(location.href);
+      const loopback = (host: string) => /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(host);
+      const sameOrigin = !!target && (target.origin === page.origin ||
+        (loopback(target.hostname) && loopback(page.hostname) && target.port === page.port));
+      if (!sameOrigin) return;
+      const AudioContextCtor = (globalThis as { AudioContext?: typeof AudioContext }).AudioContext;
+      if (!AudioContextCtor) return;
+      const context = this.spectrumContext ??= new AudioContextCtor();
+      const sourceNode = context.createMediaElementSource(audio);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 2048;              // 1024 bins，正好对齐音浪的采样缓冲
+      analyser.smoothingTimeConstant = 0.72;
+      analyser.minDecibels = -95;
+      analyser.maxDecibels = -25;
+      sourceNode.connect(context.destination);  // 唯一可听路线
+      sourceNode.connect(analyser);             // 旁支取数，不接输出
+      this.songSourceNode = sourceNode;
+      this.songAnalyser = analyser;
+      this.routedSongs.add(audio);
+      audio.addEventListener("play", () => { void context.resume().catch(() => {}); });
+      void context.resume().catch(() => {});
+    } catch {
+      // 接线失败（含宿主 Web Audio 不可用）：元素保持直连发声，音浪静止。
+    }
+  }
+
   private createSong(track: MusicTrack, source = track.audioUrl): HTMLAudioElement {
     const audio = new Audio();
     this.song = audio;
@@ -1152,7 +1226,15 @@ export class MusicPlayer {
       if (active()) void this.handleSongFailure(track, audio.error, this.operation);
       else if (this.song === audio) this.cancelSongFade();
     });
-    audio.src = this.processedSource(track) ?? (source || `/api/audio/${encodeURIComponent(track.id)}`);
+    // 音效烘焙流（/api/audio/processed*）要多经过一层本机 FFmpeg：代理白名单、
+    // 编码器、磁盘任何一环出问题都会 422。把原始直连地址留在元素上，失败时
+    // 悄悄退回去，别把整首歌判死。
+    const directSource = source || `/api/audio/${encodeURIComponent(track.id)}`;
+    const producedSource = this.processedSource(track);
+    if (producedSource) audio.dataset.fallbackSrc = directSource;
+    audio.src = producedSource ?? directSource;
+    // src 定型后接音浪分析旁支（跨源则不接，见 attachSpectrum）。
+    this.attachSpectrum(audio);
     return audio;
   }
 

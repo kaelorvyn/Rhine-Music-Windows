@@ -1,4 +1,5 @@
 import https from 'node:https';
+import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { withHardTimeout } from './hard-timeout.mjs';
@@ -124,7 +125,7 @@ export function configureServerLines(servers) {
   }));
 }
 
-export const LINE_PROBE_TIMEOUT_MS = 2500;
+export const LINE_PROBE_TIMEOUT_MS = 8000;
 
 let authToken = null;
 let cipherKeyBuf = null;
@@ -176,6 +177,7 @@ export async function probeServerLines({ timeoutMs = LINE_PROBE_TIMEOUT_MS } = {
             'Authorization': `Bearer ${authToken ?? ''}`,
             'Accept': 'application/json',
             'User-Agent': signConfig?.userAgent || 'rhine-music/0.1.1',
+            ...signedHeaders('GET', PROBE_PATH, null),
           },
           signal: controller.signal,
         }),
@@ -192,13 +194,41 @@ export async function probeServerLines({ timeoutMs = LINE_PROBE_TIMEOUT_MS } = {
       detail = error?.name === 'HardTimeoutError' ? `timeout ${timeoutMs}ms` : `${error?.message ?? error}`;
     }
     return {
-      id: line.id, label: line.label,
+      id: line.id, label: line.label, host: line.host,
       reachable, healthy,
       latency_ms: Date.now() - startedAt,
       detail,
     };
   };
   if (!SERVER_LINES.length || !PROBE_PATH) { lineState.probing = false; return serverLineState(); }
+
+  // 只保留域名能解析的线路。解析不通就是不通用 —— 不显示、不探测、不参与排序。
+  const resolved = await Promise.all(SERVER_LINES.map(async (line) => {
+    try {
+      await withHardTimeout(dns.lookup(line.host), timeoutMs, { label: line.label + ' DNS' });
+      return line;
+    } catch {
+      return null;
+    }
+  }));
+  if (resolved.some((line) => !line)) {
+    const keep = resolved.filter(Boolean);
+    SERVER_LINES.length = 0;
+    SERVER_LINES.push(...keep);
+    if (!keep.length) {
+      lineState.probing = false;
+      lineState.allFailed = true;
+      lineState.results = [];
+      lineState.lastProbeAt = new Date().toISOString();
+      return serverLineState();
+    }
+    if (!keep.some((line) => line.baseUrl === lineState.activeBaseUrl)) {
+      lineState.activeBaseUrl = keep[0].baseUrl;
+      lineState.activeId = keep[0].id;
+      lineState.activeLabel = keep[0].label;
+    }
+  }
+
   const probes = SERVER_LINES.map(probeOne);
   const toResults = (settled) => settled.map((r, i) => (r.status === 'fulfilled'
     ? r.value
@@ -243,6 +273,49 @@ export async function probeServerLines({ timeoutMs = LINE_PROBE_TIMEOUT_MS } = {
 }
 
 const urlCache = new Map();
+
+// 【2026-10-24 修「同一首歌怎么点都放不了」】
+// 缓存没过期 ≠ 地址还活着：网易云/酷我的直链都是带签名、约几分钟到二十分钟就失效的临时地址。
+// 缓存 10 分钟 + 命中直接返回 ⇒ 用户重试十次拿到的都是同一条死链，界面上就是「一直加载失败」。
+// 所以命中缓存时先用 HEAD 验一下（老于 60s 的条目才验，新写入的不浪费这一次往返），
+// 验不过就地删除，走真取源。
+async function cachedUrlUsable(url, timeoutMs = 1800) {
+
+  const probe = async (init) => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try { return await fetch(url, { ...init, signal: controller.signal, redirect: 'follow' }) }
+    finally { clearTimeout(timer) }
+  }
+  try {
+    const head = await probe({ method: 'HEAD' })
+    // 有的 CDN 不吃 HEAD（405/501）：退一步用 1 字节 GET 探，别把可用地址误判成死的。
+    if (head.status === 405 || head.status === 501) {
+      const tiny = await probe({ headers: { Range: 'bytes=0-0' } })
+      await tiny.body?.cancel().catch(() => {})
+      return tiny.status === 200 || tiny.status === 206 || tiny.status === 416
+    }
+    return head.status === 200 || head.status === 206 || head.status === 416
+  } catch { return false }
+}
+
+/**
+ * 只把「真的能取到歌」的地址写进缓存。
+ *
+ * 用户要求（2026-10-24）：缓存里不该出现取不到歌的条目 —— 那等于把有害数据留下来，
+ * 下次、下下次都拿同一条死链。所以写入前先 HEAD 验一次，验不过就不写。
+ */
+async function rememberUsableUrl(cacheKey, entry) {
+  if (await cachedUrlUsable(entry.url)) { urlCache.set(cacheKey, entry); return true }
+  urlCache.delete(cacheKey)
+  return false
+}
+
+/** 播放端发现某平台的直链被拒（403/404/410）时，把该平台的缓存整片作废。 */
+export function invalidatePoolUrlCache(provider) {
+  const prefix = `${provider}:`
+  for (const key of [...urlCache.keys()]) if (String(key).startsWith(prefix)) urlCache.delete(key)
+}
 const URL_CACHE_TTL = 10 * 60 * 1000;
 
 let heartbeatTimer = null;
@@ -253,6 +326,53 @@ const activeDownloads = new Map();
 
 let inflightProbe = null;
 const PROBE_FRESH_MS = 2000;
+
+/**
+ * 各平台的固定探针曲：检测「这个平台的上游能不能出货」用。
+ * id 取自各平台自己的搜索（不是池子的 id），quality 用最低档 —— 这一跳只验证
+ * 通路和延迟，不关心音质，省额度也省时间。
+ */
+export const POOL_PROBES = {
+  kuwo: { songId: 'MUSIC_118980', name: '夜曲', artist: '周杰伦' },
+  kugou: { songId: '16c8ab298231370293d16bcf9e5ff9b6', name: '夜曲', artist: '周杰伦' },
+  qq: { songId: '001zMQr71F1Qo8', name: '夜曲', artist: '周杰伦' },
+  netease: { songId: '2725685941', name: '夜曲', artist: '周杰伦' },
+};
+
+export const UPSTREAM_PROBE_TIMEOUT_MS = 10000;
+
+/**
+ * 逐平台探测上游：每个平台发一次最小的取源请求，量延迟。
+ * 与线路探测相互独立 —— 线路挂了平台全红，线路正常也可能某个平台单独不通。
+ */
+export async function probeUpstreams({ timeoutMs = UPSTREAM_PROBE_TIMEOUT_MS } = {}) {
+  const platforms = Object.keys(sourceSpec.alias ?? {});
+  const targets = platforms.length ? platforms : Object.keys(POOL_PROBES);
+  const runOne = async (platform) => {
+    const probe = POOL_PROBES[platform];
+    if (!probe) return { platform, ok: false, latency_ms: null, detail: '没有探针曲' };
+    const startedAt = Date.now();
+    try {
+      const result = await withHardTimeout(
+        resolveSong({ source: platform, songId: probe.songId, quality: 'standard', name: probe.name, artist: probe.artist, fresh: true }),
+        timeoutMs,
+        { label: platform + ' 上游' },
+      );
+      const latency = Date.now() - startedAt;
+      if (result?.audioUrl) {
+        return { platform, ok: true, latency_ms: latency, quality: result.actualQuality ?? 'standard', detail: result.format ?? '' };
+      }
+      return { platform, ok: false, latency_ms: latency, detail: result?.error ?? '未返回地址' };
+    } catch (error) {
+      const latency = Date.now() - startedAt;
+      const timeout = error?.name === 'HardTimeoutError';
+      return { platform, ok: false, latency_ms: timeout ? null : latency, detail: timeout ? '超时' : String(error?.message ?? error) };
+    }
+  };
+  if (!SERVER_LINES.length || !credentialsReady()) return { upstreams: [] };
+  const upstreams = await Promise.all(targets.map(runOne));
+  return { upstreams };
+}
 
 export function probeServerLinesShared(opts) {
   if (inflightProbe) return inflightProbe;
@@ -294,6 +414,28 @@ export function loadFromImportedKey(dataDir) {
   return cred;
 }
 
+/**
+ * 移除密钥后把运行时状态清干净。
+ *
+ * 【2026-10-23 修「移除密钥还能测延迟」】
+ * 原来 clear() 只删磁盘文件，内存里三样东西一样没动：
+ *   · authToken / cipherKeyBuf —— credentialsReady() 仍为 true，池子还能被调用
+ *   · SERVER_LINES            —— 线路表还在，/api/pool/lines/probe 照样探测
+ *   · lineState.results       —— 上次的 598ms 还在，界面照旧显示
+ * 于是「移除」之后照样能点亮延迟，等于没移除。
+ */
+export function resetPoolRuntime() {
+  authToken = null;
+  cipherKeyBuf = null;
+  deviceId = null;
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+  configureServerLines([]);
+  lineState.probing = false;
+  lineState.lastProbeAt = null;
+  lineState.allFailed = false;
+  lineState.results = [];
+}
+
 export function credentialsReady() {
   return Boolean(authToken && cipherKeyBuf);
 }
@@ -325,7 +467,7 @@ function autoDecrypt(body) {
   return body;
 }
 
-export const POOL_REQUEST_TIMEOUT_MS = 3000;
+export const POOL_REQUEST_TIMEOUT_MS = 9000;
 
 async function rawRequest(method, path, bodyObj, { encrypted = false, timeoutMs = POOL_REQUEST_TIMEOUT_MS } = {}) {
   const primary = { baseUrl: activeBaseUrl(), hostname: hostOf(activeBaseUrl()) };
@@ -424,14 +566,19 @@ function sourceName(source) {
   return key.charAt(0).toUpperCase() + key.slice(1);
 }
 
-export async function resolveSong({ source = '', songId, quality, name, artist, album, mid }) {
+export async function resolveSong({ source = '', songId, quality, name, artist, album, mid, fresh = false }) {
   const tier = quality ?? QUALITY_LADDER[0] ?? '';
   const normalizedId = normalizeId(source, songId);
   const cacheKey = `${source}:${normalizedId}:${tier}`;
-  const cached = urlCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < URL_CACHE_TTL) {
-    return { audioUrl: cached.url, format: cached.format, ekey: cached.ekey, actualQuality: cached.actualQuality, bitrate: cached.bitrate, cached: true };
-  }
+  const cached = fresh ? undefined : urlCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < URL_CACHE_TTL) {
+      const age = Date.now() - cached.ts
+      if (age < 60_000 || await cachedUrlUsable(cached.url)) {
+        return { audioUrl: cached.url, format: cached.format, ekey: cached.ekey, actualQuality: cached.actualQuality, bitrate: cached.bitrate, cached: true };
+      }
+      // 死链：删掉再走一次真取源，别把过期地址继续发给播放器。
+      urlCache.delete(cacheKey)
+    }
 
   const body = { song_id: normalizedId, source: sourceName(source), quality: String(tier), device_id: deviceId };
   if (name) body.name = name;
@@ -451,14 +598,14 @@ export async function resolveSong({ source = '', songId, quality, name, artist, 
         actualQuality: d.actualQuality || d.quality || tier,
         bitrate: d.bitrate || 0,
       };
-      urlCache.set(cacheKey, { url: result.audioUrl, format: result.format, ekey: result.ekey, actualQuality: result.actualQuality, bitrate: result.bitrate, ts: Date.now() });
+    await rememberUsableUrl(cacheKey, { url: result.audioUrl, format: result.format, ekey: result.ekey, actualQuality: result.actualQuality, bitrate: result.bitrate, ts: Date.now() })
       return result;
     }
 
     if (r.status === 200) {
       const url = extractAudioUrl(r.body);
       if (url) {
-        urlCache.set(cacheKey, { url, format: 'unknown', ekey: null, ts: Date.now() });
+      await rememberUsableUrl(cacheKey, { url, format: 'unknown', ekey: null, ts: Date.now() })
         return { audioUrl: url, format: 'unknown', ekey: null };
       }
     }
