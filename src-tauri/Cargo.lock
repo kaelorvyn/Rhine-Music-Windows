@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "rhine-music-windows"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "open",
  "rfd",

@@ -19,6 +19,7 @@ import './scrollbar.css';
 // 原生 select 展开层的圆角（appearance: base-select），不支持的旧内核自动跳过。
 import './ui-select.css';
 import { fetchOnline, mountOnlineDebug, onlineErrorReport } from './online-debug';
+import { MusicVisualizer, normalizeVisualizer, visualizerMarkup, type VisualizerOptions } from "./music-visualizer";
 import { settingsCategories, settingsNavigation, groupSettingsContent, selectSettingsCategory, filterSettings, type SettingsCategory } from './music-settings';
 import { buildMusicFeedback, feedbackMarkup } from './music-feedback';
 import { clearAudioCache, clearPoolCredential, importPoolCredential, openFeedbackDraft, poolCredentialExportUrl, readAudioCacheUsage, readPoolCredential, syncCacheSettings, syncTrayPreference } from './desktop';
@@ -78,6 +79,7 @@ import { setupPlaylistSongBars } from './playlist-song-bars';
 import { MusicPresentation, type AlbumSelection } from "./music-presentation";
 import { MusicTrackFocus } from "./music-track-focus";
 import { MusicBoot } from "./music-boot";
+import { MusicEntry } from "./music-entry";
 import { MusicFrameTiming } from "./music-frame-timing";
 import { searchMusicLibrary } from "./music-search";
 import { OnlineMusicSearch } from "./online-music-search";
@@ -182,6 +184,8 @@ const preferences = {
     cacheLimit: 2048,
     cacheLocation: '',
     minimizeToTray: true,
+    // 音浪：默认开、进度条上方、细柱频谱（与预览版默认一致）。
+    visualizer: normalizeVisualizer(undefined),
   },
   ...read<
     Partial<{
@@ -218,6 +222,7 @@ const preferences = {
       cacheLimit: number;
       cacheLocation: string;
       minimizeToTray: boolean;
+      visualizer: VisualizerOptions;
     }>
   >("rhine-music-preferences", {}),
 };
@@ -394,8 +399,11 @@ stage.innerHTML = `
   </section>
   <div class="music-bottomline"><span>LOCAL COLLECTION <i>·</i> <span id="library-count">0 ALBUMS</span></span><span id="runtime-info">THREE.JS / LOCAL / V${appVersion}</span></div>
   <div id="music-panel-root"></div><div id="music-toast" role="status" aria-live="polite"></div>
-  <div id="music-loading"><span class="loading-orbit"></span><strong>OPENING THE ARCHIVE</strong><small>正在载入三维专辑架</small></div>
+  <div id="music-loading" hidden></div>
 `;
+// 进入应用的整套动画：与预览版同一份实现（开机胶片 / 状态行 / 跳过 / 失败重试）。
+// 减少动态效果时整段不创建，加载页退化成一句状态文案。
+const entry = preferences.reduced ? undefined : new MusicEntry(stage);
 const titleMotion = setupMusicTitleLayout(stage);
 const textMotion = setupMusicTextMotion(stage);
 // Keep the previous navigation available while the ruler version is on trial.
@@ -750,13 +758,64 @@ async function refreshPoolCredentialStatus() {
   if (!status) return state;
   if (!state) { status.textContent = "无法读取密钥状态"; return null; }
   if (state.configured) {
-    const who = state.account ? `账号 ${state.account}` : "已导入";
-    const until = state.expiresAt ? ` · ${new Date(state.expiresAt).toLocaleDateString("zh-CN")} 到期` : "";
-    status.textContent = `已启用 · ${who}${until}`;
+    // 只给到期时间。账号名不进 UI。
+    const until = state.expiresAt ? `${new Date(state.expiresAt).toLocaleDateString("zh-CN")} 到期` : "有效期未知";
+    status.textContent = `已启用 · ${until}`;
   } else {
     status.textContent = state.note ?? "未导入密钥，当前只使用备用音源";
   }
   return state;
+}
+
+/** 「检测连通性」：线路 + 各平台上游。线路挂了的不会出现在列表里。 */
+/**
+ * 移除密钥后把「线路 / 平台上游」那一块也清掉。
+ *
+ * 【2026-10-23】原来只刷新状态文字：探测结果留在页面上，看起来像「移除了还能测」。
+ * 后端现在会把线路表与令牌一起作废，这里同步把残留的旧数字擦掉。
+ */
+function clearPoolConnectivityBox(note = "未导入密钥，没有可检测的线路") {
+  const box = document.querySelector<HTMLElement>("#pool-connectivity");
+  if (box) box.innerHTML = `<p class="pool-connectivity-note">${esc(note)}</p>`;
+}
+
+async function runPoolConnectivity() {
+  const box = document.querySelector<HTMLElement>("#pool-connectivity");
+  const button = document.querySelector<HTMLButtonElement>('[data-action="pool-connectivity"]');
+  if (!box) return;
+  if (button) { button.disabled = true; button.textContent = "检测中…"; }
+  box.innerHTML = '<p class="pool-connectivity-note">正在探测线路与平台上游…</p>';
+  try {
+    const response = await fetch("/api/pool/lines/probe?scope=all", { method: "POST" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const value = await response.json() as {
+      results?: { id?: string; label?: string; host?: string; reachable?: boolean; healthy?: boolean; latency_ms?: number | null; detail?: string }[];
+      upstreams?: { platform: string; ok: boolean; latency_ms: number | null; quality?: string; detail?: string }[];
+    };
+    const lines = value.results ?? [];
+    const upstreams = value.upstreams ?? [];
+    const lineRows = lines
+      .filter(line => line.reachable)
+      .map(line => `<li><span class="pool-target">${esc(line.host ?? line.label ?? "")}</span><span class="pool-meter">${line.latency_ms != null ? `${line.latency_ms}ms` : "—"}</span></li>`)
+      .join("");
+    const upstreamRows = upstreams
+      .map(item => {
+        const name = (musicPlatforms as Record<string, string>)[item.platform] ?? item.platform;
+        const state = item.ok
+          ? `${item.latency_ms != null ? `${item.latency_ms}ms` : "—"}${item.quality ? ` · ${esc(item.quality)}` : ""}`
+          : esc(item.detail || "失败");
+        return `<li class="${item.ok ? "" : "pool-miss"}"><span class="pool-target">${esc(name)}</span><span class="pool-meter">${state}</span></li>`;
+      })
+      .join("");
+    box.innerHTML = [
+      lineRows ? `<p class="pool-connectivity-title">线路</p><ul class="pool-connectivity-list">${lineRows}</ul>` : '<p class="pool-connectivity-note">线路都连不上。</p>',
+      upstreamRows ? `<p class="pool-connectivity-title">平台上游</p><ul class="pool-connectivity-list">${upstreamRows}</ul>` : "",
+    ].join("");
+  } catch (error) {
+    box.innerHTML = `<p class="pool-connectivity-note">检测失败：${esc(error instanceof Error ? error.message : String(error))}</p>`;
+  } finally {
+    if (button) { button.disabled = false; button.textContent = "检测连通性 ↗"; }
+  }
 }
 
 /** 「导入密钥文件」：打开文件选择器，读文本后交给后端。 */
@@ -770,8 +829,11 @@ async function handlePoolCredentialFile(input: HTMLInputElement) {
   const file = input.files?.[0];
   if (!file) return;
   if (status) status.textContent = "正在导入…";
-  const text = await file.text();
-  const result = await importPoolCredential(text);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  // 密钥文件是二进制信封，按 base64 原样交给后端；前端不解析内容。
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  const result = await importPoolCredential(btoa(binary));
   if (!result.ok) {
     if (status) status.textContent = `导入失败：${result.error ?? "未知原因"}`;
     input.value = "";
@@ -786,7 +848,9 @@ async function removePoolCredential() {
   const status = document.querySelector('#pool-credential-status') as HTMLElement | null;
   if (status) status.textContent = "正在移除…";
   await clearPoolCredential();
-  await refreshPoolCredentialStatus();
+  const state = await refreshPoolCredentialStatus();
+  // 没密钥了：把上一次探测残留的线路/延迟一起擦掉。
+  if (!state?.configured) clearPoolConnectivityBox();
 }
 /** 「清理缓存」按钮的处理器。以前这个 data-action 根本没有监听。 */
 async function clearCacheFromSettings() {
@@ -1644,6 +1708,7 @@ function locatePlaying() {
 }
 function updateSongTransport() {
   songView.update(playerState, mode === 'detail');
+  visualizer.refresh();
 }
 /** 详情页音量条按 preferences 初始化（设置面板改这里也跟着变）。 */
 function initTransportVolume() {
@@ -2513,6 +2578,23 @@ function persistPlaybackIfChanged() {
   saveSavedPlayback({ mode: playerState.mode, tracks: [...playerState.queue] });
 }
 const songView = new MusicSongView($('#mini-playback-below'), seconds => player.seek(seconds), () => preferences.reduced);
+// 音浪画布：挂在 stage 上，自己按「进度条上方 / 窗口底边」找位置搬过去。
+// 注意 playerState 要到启动流程里才有值，这里必须按「可能还没有」写 ——
+// configure() 会立刻读一次状态，读崩了会让整个模块初始化中断、开场卡死。
+const visualizer = new MusicVisualizer(stage, target => player.readSpectrum(target), () => ({
+  playing: playerState?.transport === 'playing',
+  detail: mode === 'detail',
+  currentTrackId: playerState?.currentTrack?.id,
+  reduced: preferences.reduced,
+  sampleRate: player.spectrumSampleRate,
+}));
+// 兜底：音浪初始化出任何问题都只让特效停摆，绝不能拖住开场动画。
+try {
+  visualizer.configure(normalizeVisualizer(preferences.visualizer));
+  player.setSpectrumEnabled(preferences.visualizer.enabled !== false, preferences.reduced);
+} catch (error) {
+  console.warn('[音浪] 初始化失败，本次不启用：', error);
+}
 // 详情区（含 ♥ 收藏按钮、音量条）每次重画后回填收藏态与音量。
 songView.onPaint = () => { refreshFavoriteHearts(); initTransportVolume(); };
 const effectsPanel = new AudioEffectsPanel();
@@ -2525,32 +2607,43 @@ function currentDownloadTarget(): { title: string; artist: string } | null {
 async function downloadCurrentSong(tier?: QualityTier): Promise<void> {
   const track = playerState.currentTrack;
   if (!track) throw new Error('当前没有可下载的歌曲。');
- //
- //
- // 用户要求：不该用设置里的全局值，应该在点下载时看这首歌有哪些音质，
- // 当场选。这里 tier 由下载面板传进来；没传时按无损兜底。
- //
- // 为什么兜底是无损而不是母带：母带(master)返回的是**加密** mflac，
- // 浏览器/落盘都用不了（`ekey → QMC 密钥` 未解出，见 docs/qmc-spec.md）；
- // 无损是明文 flac，真无损且立即可用。
+  //
+  // 用户要求：不该用设置里的全局值，应该在点下载时看这首歌有哪些音质，
+  // 当场选。这里 tier 由下载面板传进来；没传时按无损兜底。
+  //
+  // ★ 下载必须**按所选档位重新取址**：track.audioUrl 是播放用的地址（播放链
+  // 为了浏览器能放，加密档已降到明文无损），拿它当母带下就是「标母带、得无损」
+  // 的根源。这里带着 allowEncrypted 重新取源 —— 服务端可直接返回加密容器
+  // + ekey，下载器落盘前解密成真母带（酷我 QMC 链路已通）。
   const wantedQuality = tier ?? 'lossless';
-  let url = track.audioUrl;
+  const source = track.onlineSource;
+  let url = track.audioUrl ?? '';
   let format = track.format;
+  let ekey = '';
+  if (source) {
+    try {
+      const response = await fetch(`/api/online/${source.provider}/prepare/${encodeURIComponent(source.id)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quality: wantedQuality, allowEncrypted: true }),
+      });
+      const value = await response.json().catch(() => ({})) as { audioUrl?: string; format?: string; ekey?: string; error?: string };
+      if (response.ok && value.audioUrl) {
+        url = value.audioUrl;
+        if (value.format) format = value.format;
+        if (typeof value.ekey === 'string') ekey = value.ekey;
+      }
+    } catch {
+      // 取址失败时回落到播放地址（兜底，不打断下载）。
+    }
+  }
   if (!url) {
-    const source = track.onlineSource;
     if (!source) throw new Error('本地歌曲已在磁盘上，无需下载。');
-    const response = await fetch(`/api/online/${source.provider}/prepare/${encodeURIComponent(source.id)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quality: wantedQuality }),
-    });
-    const value = await response.json().catch(() => ({})) as { audioUrl?: string; format?: string; error?: string };
-    if (!response.ok || !value.audioUrl) throw new Error(value.error || `${musicPlatforms[source.provider]}没有返回可下载的地址。`);
-    url = value.audioUrl;
-    if (value.format) format = value.format;
+    throw new Error(`${musicPlatforms[source.provider]}没有返回可下载的地址。`);
   }
   const reply = await fetch('/api/downloads', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, title: track.title, artist: track.artist, quality: wantedQuality, format }),
+    body: JSON.stringify({ url, title: track.title, artist: track.artist, quality: wantedQuality, format, ekey,
+      provider: source?.provider ?? '' }),
   });
   const value = await reply.json().catch(() => ({})) as { error?: string };
   if (!reply.ok) throw new Error(value.error || '无法加入下载队列。');
@@ -2643,40 +2736,160 @@ async function configureDownloads(): Promise<void> {
     if (status) status.textContent = error instanceof Error ? error.message : '下载设置没有保存成功。';
   }
 }
+interface LxSourceRow {
+  id: string;
+  name: string;
+  version?: string;
+  file: string;
+  builtin: boolean;
+  enabled: boolean;
+  /** 本轮正在测试（后端在跑该源的某个平台）。 */
+  testing?: boolean;
+  /** 本轮自检进行中：还没轮到的源显示「等待中」。 */
+  selfCheckRunning?: boolean;
+  /** 该插件声明支持的平台键（wy/tx/kg/kw）。 */
+  platforms?: string[];
+  health: { ok: boolean; ms: number | null; quality: string | null; source?: string | null; error?: string } | null;
+}
+interface LxSourcesPayload {
+  plugins?: LxSourceRow[];
+  counts?: { total: number; loaded: number };
+  error?: string;
+}
+/** 音源清单一行：名称 · 延迟 · 停用/启用 · 移除（内置源置灰）。 */
+const PLATFORM_LABEL = { wy: '网易', tx: 'QQ', kg: '酷狗', kw: '酷我' } as const;
+
+function renderLxSourcesRows(plugins: LxSourceRow[], counts?: { total: number; loaded: number }) {
+  const list = document.querySelector<HTMLElement>('#lx-sources-list');
+  const counter = document.querySelector<HTMLElement>('#lx-sources-count');
+  if (list) {
+    const rowOf = (plugin: LxSourceRow) => {
+      // 本轮状态机：正在测 > 已测出结果 > 等待中 > 未测。
+      // 失败要显示真正原因（超时/缺ID/资源不存在…），不能一律写成「超时」。
+      const health = plugin.health;
+      // 一行 = 一个插件。它可能只在某个平台可用（酷我可用、网易超时），
+      // 所以既要报「在哪个平台上可用」，也要在失败时说明「几个平台都试过」。
+      const platformCount = plugin.platforms?.length ?? 0;
+      const platformName = PLATFORM_LABEL[(health?.source ?? '') as keyof typeof PLATFORM_LABEL] ?? '';
+      const errorText = (health?.error ?? '').replace(/\s+/g, ' ');
+      const meter = !plugin.enabled
+        ? '已停用'
+        : plugin.testing
+          ? '测试中'
+          : health
+            ? (health.ok
+                ? `${health.ms ?? '—'}ms${health.quality ? ` · ${health.quality}` : ''}${platformName ? ` · ${platformName}` : ''}`
+                : /需要歌曲ID/.test(errorText)
+                  ? '待验证'
+                  : /需要配置/.test(errorText)
+                    ? '需配置 Key'
+                    : `${platformCount || 1} 平台均失败 · ${/超时|timeout/i.test(errorText) ? '超时' : (errorText.slice(0, 14) || '失败')}`)
+            : plugin.selfCheckRunning
+              ? '等待中'
+              : '未测';
+      return `<li class="lx-source-row${plugin.enabled ? '' : ' lx-source-off'}" data-id="${esc(plugin.id)}">
+        <span class="lx-source-name">${esc(plugin.name)}</span>
+        <span class="lx-source-meter">${esc(meter)}</span>
+        <button type="button" class="text-button" data-action="lx-source-toggle" data-id="${esc(plugin.id)}" data-enabled="${plugin.enabled}">${plugin.enabled ? '停用' : '启用'}</button>
+        <button type="button" class="text-button" data-action="lx-source-remove" data-id="${esc(plugin.id)}" ${plugin.builtin ? 'disabled title="内置音源不能移除，只能停用"' : ''}>移除</button>
+      </li>`;
+    };
+    // 【2026-10-24】列表太长（20 条出厂音源把用户的自加音源淹没了）：
+    // 出厂自带的（builtin）收进一行可折叠的「自带音源」，用户自己添加的
+    // 平铺在外面一眼可见。展开状态记住，下次打开设置保持原样。
+    const builtinRows = plugins.filter(plugin => plugin.builtin);
+    const userRows = plugins.filter(plugin => !plugin.builtin);
+    const groupOpen = localStorage.getItem("rhine-lx-builtin-open") === "1";
+    const enabledCount = builtinRows.filter(plugin => plugin.enabled).length;
+    list.innerHTML = [
+      ...userRows.map(rowOf),
+      `<li class="lx-source-group">
+        <button type="button" class="lx-source-group-head" data-action="lx-group-toggle" aria-expanded="${groupOpen}">
+          <span class="lx-source-group-chevron" aria-hidden="true">${groupOpen ? "▾" : "▸"}</span>
+          <span class="lx-source-group-title">自带音源</span>
+          <span class="lx-source-group-meta">${builtinRows.length} 个 · ${enabledCount} 个启用</span>
+        </button>
+        <ul class="lx-source-group-list"${groupOpen ? "" : " hidden"}>${builtinRows.map(rowOf).join("")}</ul>
+      </li>`,
+    ].join("");
+  }
+  if (counter) {
+    const total = counts?.total ?? plugins.length;
+    const loaded = counts?.loaded ?? plugins.filter(plugin => plugin.enabled).length;
+    counter.textContent = `已加载 ${loaded}/${total} 个音源`;
+  }
+}
 async function hydrateLxSources(): Promise<void> {
   try {
     const response = await fetch('/api/lx/status');
-    const value = await response.json() as { enabled?: boolean; dir?: string | null; pluginCount?: number; sources?: { name: string }[] };
-    const dir = document.querySelector<HTMLInputElement>('#lx-sources-dir');
-    if (dir && !dir.value) dir.value = value.dir ?? '';
-    const enabled = document.querySelector<HTMLInputElement>('#lx-sources-enabled');
-    if (enabled) enabled.checked = value.enabled !== false;
+    const value = await response.json() as LxSourcesPayload;
+    renderLxSourcesRows(value.plugins ?? [], value.counts);
     const status = document.querySelector<HTMLElement>('#lx-sources-status');
-    if (status) {
-      status.textContent = value.pluginCount
-        ? `已加载 ${value.pluginCount} 个音源插件：${(value.sources ?? []).map((s) => s.name).slice(0, 6).join('、')}${(value.sources ?? []).length > 6 ? ' 等' : ''}`
-        : '尚未加载任何音源插件。';
-    }
+    if (status && !(value.plugins ?? []).length) status.textContent = '还没有加载到音源。点「添加音源」选 .js 插件。';
   } catch { /* 设置页不依赖音源服务 */ }
 }
-async function configureLxSources(): Promise<void> {
+async function lxSourcesRequest(path: string, body?: unknown): Promise<LxSourcesPayload> {
   const status = document.querySelector<HTMLElement>('#lx-sources-status');
-  const body = {
-    dir: (document.querySelector<HTMLInputElement>('#lx-sources-dir')?.value ?? '').trim(),
-    enabled: document.querySelector<HTMLInputElement>('#lx-sources-enabled')?.checked !== false,
+  const response = await fetch(path, body === undefined ? {} : {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const value = await response.json().catch(() => ({})) as LxSourcesPayload;
+  if (!response.ok) {
+    const message = value.error || '操作没有成功。';
+    if (status) status.textContent = message;
+    throw new Error(message);
+  }
+  if (status) status.textContent = '';
+  renderLxSourcesRows(value.plugins ?? [], value.counts);
+  return value;
+}
+/** 「添加音源」：一个原生多选文件框，选完直接写进用户音源目录并加载。 */
+async function addLxSources(files: FileList | null): Promise<void> {
+  if (!files?.length) return;
+  const status = document.querySelector<HTMLElement>('#lx-sources-status');
+  if (status) status.textContent = `正在添加 ${files.length} 个音源…`;
+  const payload = [];
+  for (const file of Array.from(files)) {
+    if (!/\.js$/i.test(file.name)) continue;
+    payload.push({ name: file.name, text: await file.text() });
+  }
+  if (!payload.length) { if (status) status.textContent = '请选择 .js 音源插件。'; return; }
+  try { await lxSourcesRequest('/api/lx/sources/add', { files: payload }); }
+  catch { /* 错误文案已在 lxSourcesRequest 里写过 */ }
+}
+async function testLxSources(): Promise<void> {
+  const status = document.querySelector<HTMLElement>('#lx-sources-status');
+  const button = document.querySelector<HTMLButtonElement>('[data-action="lx-sources-test"]');
+  if (button) { button.disabled = true; button.textContent = '测试中…'; }
+  if (status) status.textContent = '逐个音源试取一首歌，超时的会标超时…';
+  // 自检在 worker 里跑，health 是实时更新的：每 700ms 拉一次清单+进度，
+  // 测一个就显示一个，不用等整轮跑完。
+  let polling = true;
+  const tick = async () => {
+    try {
+      const list = await fetch('/api/lx/status');
+      if (list.ok) {
+        const value = await list.json() as LxSourcesPayload;
+        renderLxSourcesRows(value.plugins ?? [], value.counts);
+      }
+      const progress = await fetch('/api/lx/progress');
+      if (progress.ok && status) {
+        const p = await progress.json() as { running?: boolean; done?: number; total?: number; alive?: number };
+        if (p.running) status.textContent = `测试中 ${p.done ?? 0}/${p.total ?? 0} · 活 ${p.alive ?? 0}`;
+      }
+    } catch { /* 轮询失败不影响主流程 */ }
+    if (polling) setTimeout(tick, 700);
   };
-  if (status) status.textContent = '正在重新加载音源插件…';
+  void tick();
   try {
-    const response = await fetch('/api/lx/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const value = await response.json().catch(() => ({})) as { error?: string; pluginCount?: number; sources?: { name: string }[] };
-    if (!response.ok) throw new Error(value.error || '自定义音源设置没有保存成功。');
-    if (status) {
-      status.textContent = value.pluginCount
-        ? `已加载 ${value.pluginCount} 个音源插件：${(value.sources ?? []).map((s) => s.name).slice(0, 6).join('、')}${(value.sources ?? []).length > 6 ? ' 等' : ''}`
-        : '没有加载到音源插件，请确认目录里有 .js 音源文件。';
-    }
-  } catch (error) {
-    if (status) status.textContent = error instanceof Error ? error.message : '自定义音源设置没有保存成功。';
+    await lxSourcesRequest('/api/lx/selfcheck', {});
+    if (status) status.textContent = '测试完成。';
+  } catch { /* 错误文案已在 lxSourcesRequest 里写过 */ }
+  finally {
+    polling = false;
+    if (button) { button.disabled = false; button.textContent = '测试连通性 ↗'; }
   }
 }
 /** 全曲解析（后台静默）: 播放前先问一遍其他音源，能拿到全曲就直接播全曲。
@@ -3140,12 +3353,17 @@ function renderSettingsPanel() {
 
     <section class="panel-section" data-settings-group="playback"><h3>播放</h3><label class="settings-row"><span>进入软件自动播放</span><input type="checkbox" id="autoplay-setting" data-settings-key="autoplay" ${preferences.autoplay ? "checked" : ""}></label></section>
     <section class="panel-section" data-settings-group="cache"><h3>缓存</h3><label class="settings-row"><span>缓存上限</span><input type="range" id="cache-limit" data-settings-key="cacheLimit" min="64" max="8192" step="64" value="${preferences.cacheLimit}" aria-label="缓存上限"></label><p class="scan-status" id="cache-limit-status" role="status">${preferences.cacheLimit} MB</p><label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" data-settings-key="cacheLocation" placeholder="读取中…" aria-label="缓存位置" value="${esc(preferences.cacheLocation)}"></label><button class="text-button" data-action="cache-clear">清理缓存 ↗</button><p class="scan-status" id="cache-status" role="status" aria-live="polite"></p></section>
-    <section class="panel-section" data-settings-group="library"><h3>共享音源</h3><p class="scan-status" id="pool-credential-status" role="status" aria-live="polite">检查中…</p><div class="pool-credential-actions"><button class="text-button" data-action="pool-credential-import">导入密钥文件 ↗</button><button class="text-button" data-action="pool-credential-export">导出密钥 ↗</button><button class="text-button" data-action="pool-credential-clear">移除 ↗</button></div><input type="file" id="pool-credential-file" accept=".rhinekey,.json" hidden><p class="scan-status">密钥由你自己提供，程序不内置任何凭据。没导入时只使用备用音源。</p></section>
+    <section class="panel-section" data-settings-group="library"><h3>共享音源</h3><p class="scan-status" id="pool-credential-status" role="status" aria-live="polite">检查中…</p><div class="pool-credential-actions"><button class="text-button" data-action="pool-connectivity">检测连通性 ↗</button><button class="text-button" data-action="pool-credential-import">导入密钥文件 ↗</button><button class="text-button" data-action="pool-credential-export">导出密钥 ↗</button><button class="text-button" data-action="pool-credential-clear">移除 ↗</button></div><div class="pool-connectivity" id="pool-connectivity" role="status" aria-live="polite"></div><input type="file" id="pool-credential-file" accept=".rhinekey,.json" hidden><p class="scan-status">密钥由你自己提供，程序不内置任何凭据。没导入时只使用备用音源。</p></section>
     <section class="panel-section" data-settings-group="display"><h3>窗口</h3><label class="settings-row"><span>关闭窗口时最小化到托盘</span><input type="checkbox" id="minimize-to-tray" data-settings-key="minimizeToTray" ${preferences.minimizeToTray ? "checked" : ""}></label></section>
+    ${visualizerMarkup(normalizeVisualizer(preferences.visualizer))}
     <section class="panel-section" data-settings-group="personalization"><h3>账号头像</h3><div class="avatar-settings"><span class="account-avatar avatar-large" id="avatar-preview"></span><label class="text-button" for="avatar-upload">上传头像 ↗</label><input type="file" id="avatar-upload" accept="image/png,image/jpeg,image/webp" hidden><button class="text-button" data-action="avatar-reset">恢复默认头像</button></div><p class="scan-status">未上传时使用默认头像。</p></section>
     <section class="panel-section" data-settings-group="local"><h3>音乐库排列</h3><label class="settings-row"><span>排列方式</span><select id="music-sort" aria-label="音乐库排列方式">${(["genre", "artist", "album"] as MusicSortMode[]).map((value) => `<option value="${value}" ${preferences.sortMode === value ? "selected" : ""}>${sortLabels[value].name}</option>`).join("")}</select></label></section>
     <section class="panel-section" data-settings-group="download"><h3>歌曲下载</h3><label class="settings-row"><span>下载目录</span><input type="text" id="download-directory" placeholder="读取中…" aria-label="下载目录"></label><label class="settings-row"><span>下载音质</span><select id="download-quality" aria-label="下载音质"><option value="lossless">无损</option><option value="master">母带</option><option value="surround">环绕</option><option value="hifi">HiFi</option><option value="hires">Hi-Res</option><option value="high">高品</option><option value="standard">标准</option></select></label><label class="settings-row"><span>文件命名</span><select id="download-naming" aria-label="文件命名"><option value="{artist} - {title}">歌手 - 歌名</option><option value="{title} - {artist}">歌名 - 歌手</option><option value="{title}">仅歌名</option></select></label><p class="scan-status" id="download-settings-status" role="status">下载仅保存平台提供给当前账号的音源，请遵守平台协议与版权法。</p></section>
-    <section class="panel-section" id="lx-sources-settings" data-settings-group="library"><h3>自定义音源</h3><p class="scan-status">加载 LX Music 音源插件（.js），为平台只肯给试听的歌曲补上完整音源。插件由你自己提供与维护。</p><label class="settings-row"><span>音源目录</span><input type="text" id="lx-sources-dir" placeholder="选择音源目录，或留空只使用内置音源"  aria-label="自定义音源目录"></label><label class="settings-row"><span>启用自定义音源</span><input type="checkbox" id="lx-sources-enabled"></label><button class="primary-button" data-action="lx-sources-save">保存并重新加载 ↗</button><p class="scan-status" id="lx-sources-status" role="status" aria-live="polite"></p></section>
+    <section class="panel-section" id="lx-sources-settings" data-settings-group="library"><h3>备用音源</h3>
+      <div class="lx-sources-actions"><button class="text-button" data-action="lx-sources-add">添加音源 ↗</button><button class="text-button" data-action="lx-sources-test">测试连通性 ↗</button><input type="file" id="lx-sources-files" accept=".js" multiple hidden></div>
+      <ul class="lx-sources-list" id="lx-sources-list"></ul>
+      <p class="lx-sources-count" id="lx-sources-count" role="status" aria-live="polite">读取中…</p>
+      <p class="scan-status" id="lx-sources-status" role="status" aria-live="polite"></p></section>
     <section class="panel-section" data-settings-group="local"><h3>高级设置 · 专辑阵列</h3><label class="settings-row"><span>专辑列显示</span><select id="music-array-mode" aria-label="专辑列显示方式"><option value="filled" ${preferences.arrayMode === "filled" ? "selected" : ""}>填充画面</option><option value="realistic" ${preferences.arrayMode === "realistic" ? "selected" : ""}>真实专辑列</option></select></label><label class="settings-row"><span>保留每列浏览位置</span><input type="checkbox" id="remember-column-position" ${preferences.rememberColumnPosition ? "checked" : ""}></label></section>
     <section class="settings-audio" data-settings-group="audio">${audioOutputMarkup()}</section>
     <section class="panel-section" data-settings-group="display"><h3>渲染画质</h3><label class="quality-control"><span>画质选择</span><select id="quality-mode"><option value="auto" ${preferences.qualityMode === 'auto' ? 'selected' : ''}>自动适配</option><option value="manual" ${preferences.qualityMode === 'manual' ? 'selected' : ''}>手动设置</option></select></label>
@@ -3734,6 +3952,18 @@ document.addEventListener("click", (e) => {
  // 但事件委托的 switch 里没有对应分支，点了什么都不会发生。
       void clearCacheFromSettings();
       break;
+    case "visualizer-color-reset":
+      preferences.visualizer = normalizeVisualizer({ ...preferences.visualizer, color: undefined });
+      savePrefs();
+      visualizer.configure(preferences.visualizer);
+      {
+        const input = document.querySelector<HTMLInputElement>("#visualizer-color");
+        if (input) input.value = "#d9ad7d";
+      }
+      break;
+    case "pool-connectivity":
+      void runPoolConnectivity();
+      break;
     case "pool-credential-import":
       pickPoolCredentialFile();
       break;
@@ -3757,8 +3987,49 @@ document.addEventListener("click", (e) => {
     case "model-viewer":
  // Temporarily unavailable for the simplified CD shell (no inner assembly).
       break;
-    case "lx-sources-save":
-      void configureLxSources();
+    case "retry-startup":
+      location.reload();
+      break;
+    case "lx-sources-add":
+      document.querySelector<HTMLInputElement>("#lx-sources-files")?.click();
+      break;
+    case "lx-sources-test":
+      void testLxSources();
+      break;
+    case "lx-group-toggle": {
+      // 折叠/展开「自带音源」。状态存本地，重渲染后保持原样。
+      const open = localStorage.getItem("rhine-lx-builtin-open") !== "1";
+      localStorage.setItem("rhine-lx-builtin-open", open ? "1" : "0");
+      const group = target.closest(".lx-source-group");
+      const body = group?.querySelector<HTMLElement>(".lx-source-group-list");
+      const chevron = group?.querySelector<HTMLElement>(".lx-source-group-chevron");
+      if (body) body.hidden = !open;
+      if (chevron) chevron.textContent = open ? "▾" : "▸";
+      target.setAttribute("aria-expanded", String(open));
+      break;
+    }
+    case "lx-source-toggle": {
+      // 【2026-10-24】乐观启停：点下的瞬间按钮和行就切过去，后端随后跟上。
+      // 以前点完要干等 1–2 秒才有反应，像是指令没执行。失败才回滚并提示。
+      const row = target.closest(".lx-source-row");
+      const id = target.dataset.id ?? "";
+      const next = target.dataset.enabled !== "true";
+      const paint = (enabled: boolean) => {
+        row?.classList.toggle("lx-source-off", !enabled);
+        target.dataset.enabled = String(enabled);
+        target.textContent = enabled ? "停用" : "启用";
+      };
+      paint(next);
+      void lxSourcesRequest("/api/lx/sources/toggle", { id, enabled: next })
+        .catch(() => {
+          paint(!next);
+          const status = document.querySelector<HTMLElement>("#lx-sources-status");
+          if (status) status.textContent = "启停没有成功，已恢复原状态。";
+        });
+      break;
+    }
+    case "lx-source-remove":
+      void lxSourcesRequest("/api/lx/sources/remove", { id: target.dataset.id });
       break;
     case "avatar-reset":
       preferences.avatar = undefined;
@@ -3942,6 +4213,12 @@ document.addEventListener("change", (e) => {  const el = e.target as HTMLInputEl
     void handlePoolCredentialFile(el);
     return;
   }
+  // 自定义音源：支持一次选多个 .js，选完直接写入并加载。
+  if (el.id === "lx-sources-files") {
+    void addLxSources(el.files);
+    el.value = "";
+    return;
+  }
   if (el.id === "glass-occlusion") {
     if (el.value === "on" || el.value === "off" || el.value === "debug") {
       glassOcclusionMode = el.value;
@@ -4049,6 +4326,31 @@ document.addEventListener("change", (e) => {  const el = e.target as HTMLInputEl
     el.value = mode;
     player.setSongTransitionMode(mode);
     savePrefs();
+  }
+  if (el.id === "visualizer-enabled") {
+    preferences.visualizer = normalizeVisualizer({ ...preferences.visualizer, enabled: el.checked });
+    savePrefs();
+    player.setSpectrumEnabled(preferences.visualizer.enabled, preferences.reduced);
+    visualizer.configure(preferences.visualizer);
+    return;
+  }
+  if (el.id === "visualizer-position") {
+    preferences.visualizer = normalizeVisualizer({ ...preferences.visualizer, position: el.value as "progress" | "bottom" });
+    savePrefs();
+    visualizer.configure(preferences.visualizer);
+    return;
+  }
+  if (el.id === "visualizer-style") {
+    preferences.visualizer = normalizeVisualizer({ ...preferences.visualizer, style: el.value as "bars" | "dots" | "mini" | "outline" });
+    savePrefs();
+    visualizer.configure(preferences.visualizer);
+    return;
+  }
+  if (el.id === "visualizer-color") {
+    preferences.visualizer = normalizeVisualizer({ ...preferences.visualizer, color: el.value });
+    savePrefs();
+    visualizer.configure(preferences.visualizer);
+    return;
   }
   if (el.id === "reduced-motion") {
     preferences.reduced = el.checked;
@@ -4318,6 +4620,35 @@ window.addEventListener("pagehide", (event) => {
 });
 window.addEventListener("pageshow", (event) => { if (event.persisted) resumePage(); });
 
+/** 启动阶段超时器：对齐预览版的 xt.run。
+ *  每个阶段都有自己的上限 —— 任何一步卡住都不该让加载页无限转圈，
+ *  超时/抛错时打日志并交给上层决定降级还是进失败页。 */
+async function runStartupStage<T>(label: string, run: () => Promise<T>, timeoutMs: number): Promise<T> {
+  let timer = 0;
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(`${label}超时（${Math.round(timeoutMs / 1000)} 秒）`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 启动失败页：说明原因，并给「重新加载」与「打开设置」两个出口。 */
+function showStartupFailure(message: string) {
+  // 胶片还在跑的时候，失败信息交给它自己那一套（预览版同一套文案与重试按钮）。
+  if (entry?.active) { entry.fail(message); return; }
+  const node = document.querySelector<HTMLElement>("#music-loading");
+  if (!node) return;
+  node.hidden = false;
+  node.innerHTML = `<strong>启动未能完成</strong><small>${esc(message)}</small>` +
+    `<button class="primary-button" data-action="retry-startup">重新加载</button>` +
+    `<button data-action="settings">打开设置</button>`;
+}
+
 async function start() {
  // This local application owns its live index. An old archive PWA must not serve stale UI.
   if ("serviceWorker" in navigator) {
@@ -4334,7 +4665,10 @@ async function start() {
  // 用户要求：封面不要等开场动画跑完才一张张下。先把首屏那几张的请求发出去
  // （此刻 records 还是内置档案，通常没封面，纯属不放过任何一次提前建连的机会）。
   warmFirstScreenCovers();
-  await loadLibrary(true);
+  // 曲库读不到就带着内置档案继续 —— 这一跳不值得挡住整个应用。
+  await runStartupStage("读取曲库", () => loadLibrary(true), 20000).catch((error) => {
+    console.warn("[启动] 曲库读取失败，先用内置档案继续：", error);
+  });
   if (frameDisposed) return;
  // 真正的第一枪：曲库到手、封面 URL 已知，立刻在加载页/动画期间建连 + 进 HTTP 缓存，
  // 不等 boot.start()，更不等动画结束。这里直接预热**全库**（前台优先 + 并发 8），
@@ -4378,16 +4712,16 @@ async function start() {
         onClose: () => closeDebugPanel("developerMode"),
       });
     }
-    await Promise.all([
-      scene.load(undefined, selected),
+    await runStartupStage("载入三维场景", () => Promise.all([
+      scene!.load(undefined, selected),
       document.fonts.load("400 20px MiSans"),
       document.fonts.load("600 20px MiSans"),
-    ]);
+    ]), 45000);
     if (frameDisposed) return;
  // 场景已建、格已定：此刻就把选中格周围的封面压进解码队列，比 boot.start()
  // 早一整段（开场动画期间/之前），动画结束时这些封面已经在解或在缓存里。
     preloadNearbyCovers();
-    $("#music-loading small").textContent = "正在准备玻璃材质与专辑封面…";
+    entry?.setStatus("正在准备玻璃材质与专辑封面…");
     $("#three-scene canvas").setAttribute(
       "aria-label",
       `三维专辑阵列，左右切${sortLabel.column}，上下切专辑`,
@@ -4397,14 +4731,16 @@ async function start() {
     preferences.renderQuality = renderQuality; savePrefs();
     scene.setQuality(renderQuality);
     scene.setReduced(preferences.reduced);
-    await scene.prepareMusicRenderer();
+    await runStartupStage("准备渲染器", () => scene!.prepareMusicRenderer(), 60000);
     if (frameDisposed) return;
  // Browser playback does not need a Swift compiler at startup. A saved
  // native output is restored after graphics preparation; otherwise discover
  // native devices only when the user opens the output settings.
     if (preferences.audioBackend === "coreaudio") {
-      $("#music-loading small").textContent = "正在连接已选择的音频设备…";
-      await refreshAudioOutputs(true);
+      entry?.setStatus("正在连接已选择的音频设备…");
+      await runStartupStage("连接音频设备", () => refreshAudioOutputs(true), 15000).catch((error) => {
+        console.warn("[启动] 音频设备连接失败，稍后可在设置里重试：", error);
+      });
     }
     if (frameDisposed) return;
     ready = true;
@@ -4441,6 +4777,16 @@ async function start() {
       context: () => fileLocation(navigationSelection()).lane,
     });
     $("#music-loading").remove();
+    // 胶片放完（或被跳过）才继续 —— 与预览版一致；跳过键随时可以提前结束。
+    if (entry) {
+      // 胶片靠 requestAnimationFrame 推进：窗口在后台时 rAF 会停，胶片就永远
+      // 放不完。这里给一个硬上限 —— 到点直接收摊，绝不把进入应用卡死。
+      await Promise.race([
+        entry.completeLoading(),
+        new Promise<void>((resolve) => { window.setTimeout(resolve, 30000); }),
+      ]);
+      entry.dispose();
+    }
     updateSelection();
  // 加载页撤掉之后播开场动画（用户要求：等加载完毕之后再放开场动画）。
  //
@@ -4452,7 +4798,9 @@ async function start() {
  // 推进整段动画，结束后走 onComplete → showMusicArchiveImmediately()
  // （skip 分支）或 finishMusicIntro()（完整播完）。两条路径都会回到档案架。
  // reduced（减少动态效果）时 start() 内部会立刻 skip()，等价于原来的直接显示。
-    boot?.start(performance.now() / 1000);
+    // 与预览版一致：开机胶片之后直接是专辑阵列波浪（约 5.2 秒），
+    // 不再插一段口号片；口号片仍保留给设置里的「重播开场」。
+    boot?.startScene(performance.now() / 1000);
     if (boot?.active === true) {
  // 开场动画进行中：可见性/inert 由 MusicBoot 自己管（它在 start() 里把
  // 兄弟层设为 inert 并隐藏），这里**不能**再去改 #music-browse 的 inert，
@@ -4489,10 +4837,18 @@ async function start() {
   } catch (error) {
     console.error(error);
     if (frameDisposed) return;
-    $("#music-loading").innerHTML =
-      `<strong>三维资源未能加载</strong><small>${esc((error as Error).message)}</small><button data-action="library">检查音乐库</button>`;
+    showStartupFailure((error as Error).message || "三维资源未能加载。");
   }
 }
+// 加载页看门狗：正常情况下 start() 会在十几秒内把它撤掉。
+// 万一某个阶段静默卡死，这里兜底亮出「启动未能完成 + 重新加载」，
+// 而不是让用户对着一个转圈的圈发呆。
+window.setTimeout(() => {
+  if (!entry?.active && !document.querySelector("#music-loading")) return;
+  console.warn("[启动] 加载页超时未撤下，转入失败页");
+  showStartupFailure("启动时间过长，某个环节没有完成。");
+}, 90000);
+
 void start();
 Object.assign(window, {
   rhineMusic: {

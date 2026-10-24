@@ -160,3 +160,160 @@
   .settings-page .settings-row input[type="checkbox"] { appearance: auto; }
   .settings-page .settings-row input[type="checkbox"]::after { display: none; }
 }
+
+/* ── 共享音源：连通性检测结果 ─────────────────────────────── */
+.pool-connectivity:empty { display: none; }
+.pool-connectivity { margin: 14px 0 0; }
+.pool-connectivity-note { margin: 0; color: var(--muted); font-size: 12px; }
+.pool-connectivity-title {
+  margin: 14px 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+.pool-connectivity-list { margin: 0; padding: 0; list-style: none; }
+.pool-connectivity-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.pool-connectivity-list li:last-child { border-bottom: 0; }
+.pool-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pool-meter {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pool-connectivity-list li.pool-miss .pool-meter { color: var(--ink); opacity: .55; }
+
+/* ── 自定义音源管理 ─────────────────────────────────────── */
+.lx-sources-actions { display: flex; gap: 10px; margin: 4px 0 14px; }
+.lx-sources-list { margin: 0; padding: 0; list-style: none; }
+.lx-source-row {
+  display: grid;
+  /* meter 列原来是 92px 死值，状态文字加长（「182ms · master · 酷我」）后
+     直接溢出压到「停用」按钮上。改成按内容伸缩、可收缩省略。 */
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content) 66px 66px;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.lx-source-row:last-child { border-bottom: 0; }
+.lx-source-row.lx-source-off .lx-source-name { color: var(--muted); }
+.lx-source-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lx-source-meter {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+.lx-source-row .text-button {
+  /* margin 归零：全局 .settings-page .text-button 的 16px 右外边距在 66px
+     的网格列里装不下，按钮会溢出列、两个挤在一起。列间间距由 gap: 12px 出。 */
+  margin: 0;
+  min-width: 66px;
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+.lx-source-row .text-button[disabled] { opacity: .35; cursor: default; }
+
+/* ── 自带音源折叠组：我们提供的音源收纳成一行，用户自加的留在外面 ── */
+.lx-source-group { border-bottom: 1px solid var(--line); }
+.lx-source-group:last-child { border-bottom: 0; }
+.lx-source-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 46px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.lx-source-group-head:hover { color: color-mix(in srgb, var(--ink) 75%, var(--accent)); }
+.lx-source-group-chevron {
+  flex: 0 0 12px;
+  width: 12px;
+  color: var(--muted);
+}
+.lx-source-group-title { flex: 1; }
+.lx-source-group-meta {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.lx-source-group-list { margin: 0; padding: 0; list-style: none; }
+.lx-source-group-list .lx-source-row:last-child { border-bottom: 0; }
+.lx-source-group-list .lx-source-row:first-child { border-top: 1px solid var(--line); }
+.lx-sources-count { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+
+/* ── 控件统一尺度（2026-10-24）────────────────────────────────
+   同一屏出现过三种字号：下拉继承 body 16px（「独显适配 · 增强」大一号）、
+   文字按钮 11px、标签 13px；按钮高度还分 28px / 35px 两档，并排就是
+   「一大一小」。这里定死一档：字号 13px、控件高 32px，下拉值在框内居中。 */
+.settings-page .settings-row > span,
+.settings-page .quality-control > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.settings-page .settings-row select,
+.settings-page .quality-control select,
+.settings-page .quality-settings select {
+  box-sizing: border-box;
+  position: relative;
+  /* 不定死 height：死高会让文字顶对齐。上下对称内边距让盒子自己包住文字，
+     天然居中，高度仍落在 ~32px 与按钮一致。左右也对称（32px），
+     文字才能相对整个框居中；右侧空间留给钉死的小箭头。 */
+  padding: 7px 32px;
+  font-size: 13px;
+  line-height: 1.35;
+  min-height: 32px;
+}
+/* base-select 把 select 变成按钮语义的盒子，要显式垂直居中才不偏上。
+   文字在框内居中，小箭头绝对定位钉在最右（inline-flex：盒子贴内容宽度）。 */
+@supports (appearance: base-select) {
+  .settings-page .settings-row select,
+  .settings-page .quality-control select,
+  .settings-page .quality-settings select {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+  .settings-page .settings-row select::picker-icon,
+  .settings-page .quality-control select::picker-icon,
+  .settings-page .quality-settings select::picker-icon {
+    position: absolute;
+    right: 12px;
+    margin: 0;
+  }
+}
+.settings-page .text-button,
+.settings-page .primary-button {
+  min-height: 32px;
+  font-size: 13px;
+}
+.settings-page .primary-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 22px !important;
+}
+/* 独立按钮块跟在输入行后面时（「清理缓存」），留出呼吸距离而不是贴着。 */
+.settings-page .settings-row + .text-button { margin-top: 10px; }

@@ -7,6 +7,11 @@
   --panel: rgba(245, 244, 239, 0.97);
   --page-bg: #e8e5e1;
   --veil: rgba(236, 233, 225, 0.72);
+  /* 音浪：暖昼是琥珀调，和 --accent 同族但更淡，压在歌词条上方不抢字。 */
+  --wave-crest: rgba(175, 112, 36, 0.9);
+  --wave-top: rgba(230, 181, 100, 0.58);
+  --wave-middle: rgba(204, 154, 92, 0.28);
+  --wave-base: rgba(193, 151, 105, 0.06);
   color: var(--ink);
   font-family: MiSans, system-ui, sans-serif;
 }
@@ -29,6 +34,10 @@
   --panel: rgba(17, 27, 42, 0.97);
   --page-bg: #08121f;
   --veil: rgba(10, 21, 37, 0.75);
+  --wave-crest: rgba(190, 227, 255, 0.95);
+  --wave-top: rgba(134, 193, 244, 0.56);
+  --wave-middle: rgba(96, 157, 216, 0.28);
+  --wave-base: rgba(79, 132, 193, 0.06);
 }
 .music-app[data-theme="dusk"] {
   --ink: #24313b;
@@ -39,6 +48,10 @@
   --panel: rgba(225, 233, 238, 0.98);
   --page-bg: #cbd6df;
   --veil: rgba(199, 214, 224, 0.72);
+  --wave-crest: rgba(96, 124, 148, 0.9);
+  --wave-top: rgba(132, 168, 196, 0.56);
+  --wave-middle: rgba(112, 146, 174, 0.28);
+  --wave-base: rgba(96, 128, 156, 0.06);
 }
 .music-app button,
 .music-app a,
@@ -1241,12 +1254,36 @@
    于是头像区出现「label 11px、button 16px」一大一小 —— label 不在那条规则里。
    提到 (0,2,0) 就压得住；不删全局 inherit，因为那是刻意让控件跟随页面字体。 */
 .music-app .text-button,
+/* 所有可点文字统一是按钮：同高度、同描边、同圆角。
+   不再靠颜色暗示「这里能点」；margin 归零 —— 原来的
+   margin: 10px 20px 0 0 把行内按钮往下顶，就是各行高度不齐的元凶。 */
 .text-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 14px;
+  margin: 0;
   font: inherit;
   font-size: 11px;
-  color: var(--accent) !important;
-  margin: 10px 20px 0 0;
+  letter-spacing: .04em;
+  line-height: 1;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--ink) 20%, transparent);
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .16s ease, border-color .16s ease, opacity .16s ease, transform .12s ease;
 }
+.text-button:hover:not([disabled]) {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  border-color: color-mix(in srgb, var(--ink) 34%, transparent);
+}
+.text-button:active:not([disabled]) { transform: translateY(1px); }
+.text-button[disabled] { opacity: .38; cursor: default; }
+.text-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* 收藏心形（固定心形，无样式选择）：♡ 未收藏 / ♥ 已收藏（红心）。 */
 .song-favorite {
   font-size: 15px;
@@ -1424,6 +1461,7 @@
   position: absolute;
   inset: 0;
   z-index: 40;
+  pointer-events: none;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -1431,6 +1469,8 @@
   gap: 14px;
   background: var(--page-bg);
 }
+#music-loading button { pointer-events: auto; }
+#music-loading[hidden] { display: none !important; }
 #music-loading strong {
   font-size: 11px;
   letter-spacing: 3px;
@@ -2136,6 +2176,8 @@
   border-color: var(--line);
   border-radius: 10px;
   font: inherit;
+  /* 不许再继承 body 16px：设置页控件统一 13px（见 music-settings.css）。 */
+  font-size: 13px;
 }
 .music-panel .quality-range input {
   width: 150px;
@@ -2675,3 +2717,55 @@
   }
 }
 .playback-albums .genre-stepper, .playback-albums .music-view-toggle { display: none; }
+
+/* ── 音浪（visualizer）────────────────────────────────────
+   画布由 MusicVisualizer 插到 seek 之前或窗口底边；这里只管尺寸与位置。
+   contain: strict 让重绘不会触发外层布局，播放时每帧都在画的元素必须隔离。 */
+.music-visualizer {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 168px;
+  margin: 4px 0 0;
+  padding: 0;
+  pointer-events: none;
+  contain: strict;
+  opacity: 1;
+}
+.music-visualizer[hidden] { display: none; }
+.music-visualizer-mini { height: 72px; }
+.music-visualizer-bottom {
+  position: absolute;
+  z-index: 5;
+  left: 28px;
+  bottom: 26px;
+  width: calc(100% - 56px);
+  height: 288px;
+  margin: 0;
+}
+/* 浮在进度条那一行上方：绝对定位，完全不参与布局，
+   所以进度条宽度和四个 34×34 按钮的位置都不受影响。 */
+.music-visualizer:not(.music-visualizer-bottom) {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  width: 100%;
+  height: 168px;
+  margin: 0;
+  z-index: 2;
+}
+.music-visualizer.music-visualizer-mini { height: 72px; }
+/* 音浪贴到窗口底边时，底边那条细线让位，免得和频谱叠在一起。 */
+.music-app.has-bottom-visualizer .music-bottomline { visibility: hidden; }
+/* 设置里的颜色行 */
+.visualizer-color { display: inline-flex; align-items: center; gap: 10px; }
+.visualizer-color input[type="color"] {
+  width: 34px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}

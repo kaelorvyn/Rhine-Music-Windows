@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import './update-center.css';
 import { escapeHtml as esc } from './html';
 import { openExternal } from './desktop';
@@ -18,6 +19,21 @@ interface AppInfo {
   /** 程序目录是否可写：不可写（装在 Program Files）时降级成「打开下载页」。 */
   writable: boolean;
 }
+
+/** 主进程推来的更新进度（phase: download / unpack / apply / restart）。 */
+interface UpdateProgress {
+  phase: 'download' | 'unpack' | 'apply' | 'restart' | 'error';
+  downloaded: number;
+  total: number;
+}
+
+const PHASE_TEXT: Record<UpdateProgress['phase'], string> = {
+  download: '正在下载更新包',
+  unpack: '正在解压更新包',
+  apply: '正在替换程序文件',
+  restart: '正在重启应用',
+  error: '更新失败',
+};
 
 interface ReleaseInfo {
   version: string;
@@ -47,14 +63,38 @@ function formatSize(bytes?: number): string {
     : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-async function fetchLatest(): Promise<ReleaseInfo | undefined> {
+/** 本地后端查更新：绕过渲染进程的 CORS 与匿名限流。
+ *  浏览器直连 api.github.com 时，一旦撞上「无 CORS 头的 403」，fetch 直接
+ *  抛 Failed to fetch —— 旧实现把它 catch 掉当「没更新」，用户就什么都看不到。
+ *  后端（node）不受 CORS 限制，还能多走两条无配额通道，所以由它来查。 */
+async function fetchLatestFromBackend(): Promise<ReleaseInfo | undefined> {
+  try {
+    const response = await fetch('/api/update/check', { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) return undefined;
+    const value = await response.json() as {
+      version?: string; tag?: string; notes?: string; htmlUrl?: string;
+      assetUrl?: string; assetSize?: number; source?: string;
+    };
+    const version = String(value.version ?? '');
+    if (!version) return undefined;
+    return {
+      version,
+      tag: String(value.tag ?? 'v' + version),
+      notes: String(value.notes ?? '').slice(0, 400),
+      htmlUrl: String(value.htmlUrl ?? RELEASES_URL),
+      assetUrl: value.assetUrl,
+      assetSize: value.assetSize,
+    };
+  } catch { return undefined; }
+}
+
+/** 直连 GitHub 的兜底（网页版/脱离本地后端时才会用到）。 */
+async function fetchLatestDirect(): Promise<ReleaseInfo | undefined> {
   try {
     const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
       headers: { Accept: 'application/vnd.github+json' },
- // 8 秒硬超时：检测更新绝不能把启动拖住。
       signal: AbortSignal.timeout(8000),
     });
- // 403（匿名限流 60 次/小时）与 404（还没有 release）都当「没查到」，静默跳过。
     if (!response.ok) return undefined;
     const value = await response.json() as {
       tag_name?: string; body?: string; html_url?: string;
@@ -63,7 +103,6 @@ async function fetchLatest(): Promise<ReleaseInfo | undefined> {
     const tag = String(value.tag_name ?? '');
     const version = tag.replace(/^v/i, '');
     if (!version) return undefined;
- // 只认便携包：安装器会弹 UAC 重装一遍，不是「关一下就更新好」的体验。
     const asset = value.assets?.find(item => /-portable\.zip$/i.test(item.name));
     return {
       version, tag,
@@ -73,6 +112,10 @@ async function fetchLatest(): Promise<ReleaseInfo | undefined> {
       assetSize: asset?.size,
     };
   } catch { return undefined; }
+}
+
+async function fetchLatest(): Promise<ReleaseInfo | undefined> {
+  return (await fetchLatestFromBackend()) ?? (await fetchLatestDirect());
 }
 
 /** 版本更新的后台检测 + 设置面板分区。
@@ -86,7 +129,15 @@ export class UpdateCenter {
   private timer?: number;
   private overlay?: HTMLElement;
   private busy = false;
+  private progress?: UpdateProgress;
   constructor() {
+    // 主进程一边下载一边推进度：百分比、阶段都在这里落地。
+    if (isDesktop()) {
+      void listen<UpdateProgress>('rhine-update-progress', event => {
+        this.progress = event.payload;
+        this.paintProgress();
+      });
+    }
     // 不等 check()：设置面板可能在检测完成前就渲染，先把这个值拿到。
     void this.appInfo().then(() => this.paintStatus());
   }
@@ -194,11 +245,15 @@ export class UpdateCenter {
       <h2>发现新版本 ${esc(release.version)}</h2>
       <p class="update-sub">当前 ${esc(version)}${size ? ` · 更新包 ${esc(size)}` : ''}${release.assetSize && !this.info?.writable ? '' : ''}</p>
       ${release.notes ? `<pre class="update-notes">${esc(release.notes)}</pre>` : ''}
+      <div class="update-progress" hidden>
+        <div class="update-progress-track"><i class="update-progress-fill"></i></div>
+        <div class="update-progress-line"><span class="update-progress-phase"></span><span class="update-progress-number"></span></div>
+      </div>
       <p class="update-hint"></p>
       <div class="update-buttons">
-        <button type="button" class="text-button" data-update="later">取消</button>
-        <button type="button" class="primary-button" data-update="install">${this.info?.writable ? '下载并更新' : '打开下载页'}</button>
-        <button type="button" class="text-button" data-update="repo">打开仓库</button>
+        <button type="button" class="update-button" data-update="later">取消</button>
+        <button type="button" class="update-button update-button-primary" data-update="install">${this.info?.writable ? '下载并更新' : '打开下载页'}</button>
+        <button type="button" class="update-button" data-update="repo">打开仓库</button>
       </div></div>`;
     const hint = root.querySelector<HTMLElement>('.update-hint')!;
     root.querySelector('[data-update="later"]')!.addEventListener('click', () => this.closeDialog());
@@ -216,15 +271,50 @@ export class UpdateCenter {
     if (this.busy || !release.assetUrl) return;
     this.busy = true;
     button.disabled = true;
-    hint.textContent = '正在下载更新包，完成后应用会自动重启…';
+    // 先摆出「开始下载」的状态，别让用户对着静止的按钮猜。
+    this.progress = { phase: 'download', downloaded: 0, total: release.assetSize ?? 0 };
+    hint.textContent = '下载完成后会自动替换并重启，中途不用管它。';
+    this.paintProgress();
     try {
- // 主进程下载、解压、写替换脚本，然后自己退出；重启后就是新版本。
- // 这里不要等它"完成"——进程会先退出，等不到返回值是正常的。
-      await invoke('desktop_update_install', { url: release.assetUrl });
+// 主进程下载、解压、写替换脚本，然后自己退出；重启后就是新版本。
+// 这里不要等它"完成"——进程会先退出，等不到返回值是正常的。
+      await invoke('desktop_update_install', { url: release.assetUrl, size: release.assetSize ?? 0 });
     } catch (error) {
       this.busy = false;
       button.disabled = false;
-      hint.textContent = `${String(error)} 可以改用「打开仓库」手动下载。`;
+      const message = String(error).replace(/^Error:\s*/, '');
+      hint.textContent = `${message} 可以改用「打开仓库」手动下载。`;
+      this.progress = { phase: 'error', downloaded: 0, total: 0 };
+      this.paintProgress();
+    }
+  }
+
+  /** 把主进程推来的阶段与字节数画成进度条。 */
+  private paintProgress(): void {
+    const box = this.overlay?.querySelector<HTMLElement>('.update-progress');
+    if (!box) return;
+    const state = this.progress;
+    const fill = box.querySelector<HTMLElement>('.update-progress-fill');
+    const phase = box.querySelector<HTMLElement>('.update-progress-phase');
+    const number = box.querySelector<HTMLElement>('.update-progress-number');
+    if (!state) { box.hidden = true; return; }
+    box.hidden = false;
+    box.dataset.phase = state.phase;
+    if (phase) phase.textContent = PHASE_TEXT[state.phase];
+    if (state.phase === 'download') {
+      const total = state.total || 0;
+      const percent = total > 0 ? Math.min(100, Math.round((state.downloaded / total) * 100)) : 0;
+      box.dataset.indeterminate = String(total <= 0);
+      if (fill) fill.style.width = total > 0 ? `${percent}%` : '';
+      if (number) {
+        number.textContent = total > 0
+          ? `${percent}% · ${formatSize(state.downloaded)} / ${formatSize(total)}`
+          : formatSize(state.downloaded);
+      }
+    } else {
+      box.dataset.indeterminate = 'false';
+      if (fill) fill.style.width = '100%';
+      if (number) number.textContent = '';
     }
   }
 

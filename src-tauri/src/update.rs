@@ -9,11 +9,108 @@
 //! 能解 zip）。少一个 crate 少一份编译时间与供应链面。
 
 use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
 };
+
+/// 问服务器要总大小。拿不到就返回 None —— 后面只做「能解开」的校验。
+fn remote_total(url: &str, proxy: Option<&str>) -> Option<u64> {
+    let mut head = Command::new("curl");
+    head.args(["-sIL", "--fail", "--max-time", "25"]);
+    if let Some(proxy) = proxy {
+        head.arg("--proxy").arg(proxy);
+    }
+    head.arg(url);
+    let output = spawn_hidden(&mut head).output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    // 逐跳重定向会给出多个头，取最后一个 content-length。
+    text.lines()
+        .filter_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower
+                .strip_prefix("content-length:")
+                .and_then(|value| value.trim().parse::<u64>().ok())
+        })
+        .next_back()
+}
+
+/// 读出本机代理。
+///
+/// 这是个必须解决的问题：curl.exe **不读** Windows 的「Internet 选项」代理，
+/// 代理开着时它会直连然后卡到超时（用户看到的就是一个空黑框，永远不动）。
+/// 顺序：HTTPS_PROXY / https_proxy / ALL_PROXY 环境变量 → 注册表 WinINET。
+/// 注册表 ProxyServer 可能是 "host:port"，也可能是 "http=h:p;https=h:p"，都要认。
+fn system_proxy() -> Option<String> {
+    for key in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"] {
+        if let Ok(value) = std::env::var(key) {
+            let value = value.trim().to_string();
+            if !value.is_empty() {
+                return Some(if value.contains("://") { value } else { format!("http://{value}") });
+            }
+        }
+    }
+    let output = spawn_hidden(Command::new("reg").args([
+        "query",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+    ]))
+    .output()
+    .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut enabled = false;
+    let mut server = String::new();
+    for line in text.lines() {
+        if line.contains("ProxyEnable") {
+            enabled = line.trim_end().ends_with("0x1") || line.trim_end().ends_with('1');
+        }
+        if line.contains("ProxyServer") {
+            if let Some((_, value)) = line.split_once("REG_SZ") {
+                server = value.trim().to_string();
+            }
+        }
+    }
+    if !enabled || server.is_empty() {
+        return None;
+    }
+    // "http=h:p;https=h:p" → 取 https（我们只下 https）
+    let picked = server
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("https=").map(|value| value.to_string()))
+        .or_else(|| server.split(';').find_map(|part| part.trim().strip_prefix("http=").map(|value| value.to_string())))
+        .unwrap_or(server);
+    let picked = picked.trim();
+    if picked.is_empty() { None } else { Some(format!("http://{picked}")) }
+}
+
+/// 以「无窗口」方式启动外部程序。
+///
+/// 这是个 GUI 程序：直接 spawn curl / tar / cmd 时，Windows 会给每个控制台
+/// 程序新开一个黑色命令行窗口 —— 用户看到的就是「弹一个空框又消失」。
+/// 加上 CREATE_NO_WINDOW 后它们彻底在后台跑。
+fn spawn_hidden(command: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// 更新进度事件：前端据此在对话框里画进度条。
+#[derive(Clone, Serialize)]
+struct UpdateProgress {
+    /// download / unpack / apply / restart
+    phase: &'static str,
+    downloaded: u64,
+    total: u64,
+}
+
+fn report(app: &AppHandle, phase: &'static str, downloaded: u64, total: u64) {
+    let _ = app.emit("rhine-update-progress", UpdateProgress { phase, downloaded, total });
+}
 
 /// 只允许从这些域下载。否则「传一个 URL 过来就能覆盖程序目录」会变成一个
 /// 任意写入入口。
@@ -102,7 +199,7 @@ fn find_payload_root(root: &Path, exe_name: &str, depth: usize) -> Option<PathBu
 ///
 /// 返回 Ok 表示「脚本已经排上队、应用即将重启」，前端不必等它回来。
 #[tauri::command]
-pub async fn desktop_update_install(app: tauri::AppHandle, url: String) -> Result<String, String> {
+pub async fn desktop_update_install(app: tauri::AppHandle, url: String, size: Option<f64>) -> Result<String, String> {
     let host = host_of(&url).ok_or_else(|| "更新地址无法解析。".to_string())?;
     if !host_allowed(&host) {
         return Err(format!("更新地址不在允许的范围（{host}）。"));
@@ -128,26 +225,94 @@ pub async fn desktop_update_install(app: tauri::AppHandle, url: String) -> Resul
     let staging = work.join("staging");
     fs::create_dir_all(&staging).map_err(|e| format!("无法创建解压目录：{e}"))?;
 
-    // 1) 下载（curl 自带进度与重定向处理，比手写 socket 稳）。
-    let downloaded = Command::new("curl")
-        .args(["-L", "--fail", "--silent", "--show-error", "-o"])
-        .arg(&zip)
-        .arg(&url)
-        .status()
-        .map_err(|e| format!("无法启动 curl：{e}"))?;
-    if !downloaded.success() {
-        let _ = fs::remove_dir_all(&work);
-        return Err("更新包下载失败，请检查网络或改用 GitHub 页面下载。".to_string());
+    // 1) 下载：断点续传 + 完整性校验。
+    //    这里必须自己校验大小 —— 代理掐断连接时 curl 可能「干净地」退出 0，
+    //    留下半截 zip，然后解压才报「文件已损坏」，用户完全看不出是下载的锅。
+    let proxy = system_proxy();
+    let mut total = size.filter(|value| *value > 0.0).map(|value| value as u64).unwrap_or(0);
+    if total == 0 {
+        total = remote_total(&url, proxy.as_deref()).unwrap_or(0);
     }
+    report(&app, "download", 0, total);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let have = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
+        if total > 0 && have >= total {
+            break;
+        }
+        let mut curl = Command::new("curl");
+        curl.args([
+            "-L",
+            "--fail",
+            "--silent",
+            "--show-error",
+            // 断了从断点接着下，不要把 300 MB 重来一遍。
+            "-C",
+            "-",
+            "--connect-timeout",
+            "20",
+            "-o",
+        ])
+        .arg(&zip)
+        .arg(&url);
+        if let Some(proxy) = proxy.as_deref() {
+            curl.arg("--proxy").arg(proxy);
+        }
+        let mut child = spawn_hidden(&mut curl)
+            .spawn()
+            .map_err(|e| format!("无法启动 curl：{e}"))?;
+        let mut last_reported = have;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {
+                    let done = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
+                    if done != last_reported {
+                        last_reported = done;
+                        report(&app, "download", done, total.max(done));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        let finished = match status {
+            Ok(status) => status.success(),
+            Err(error) => {
+                let _ = report(&app, "error", 0, total);
+                return Err(format!("下载过程出错：{error}"));
+            }
+        };
+        let done = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
+        if finished && (total == 0 || done >= total) {
+            break;
+        }
+        // 没下完：保留已有字节，退避后再接着下。最多试 4 次。
+        if attempt >= 4 {
+            let _ = report(&app, "error", done, total);
+            return Err(format!(
+                "更新包下载不完整（{done} / {total} 字节）。已保留临时文件，稍后可重试。",
+            ));
+        }
+        report(&app, "download", done, total.max(done));
+        std::thread::sleep(std::time::Duration::from_millis(600 * attempt as u64));
+    }
+    // 收尾对齐：让进度条停到 100%。
+    let final_size = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
+    if total > 0 && final_size < total {
+        let _ = report(&app, "error", final_size, total);
+        return Err("更新包下载不完整。已保留临时文件，稍后可重试。".to_string());
+    }
+    report(&app, "download", final_size, final_size);
 
     // 2) 解压（Windows 自带 bsdtar，能直接解 zip）。
-    let unpacked = Command::new("tar")
-        .arg("-xf")
-        .arg(&zip)
-        .arg("-C")
-        .arg(&staging)
-        .status()
-        .map_err(|e| format!("无法启动 tar：{e}"))?;
+    report(&app, "unpack", 0, 0);
+    let unpacked = spawn_hidden(
+        Command::new("tar").arg("-xf").arg(&zip).arg("-C").arg(&staging),
+    )
+    .status()
+    .map_err(|e| format!("无法启动 tar：{e}"))?;
     if !unpacked.success() {
         let _ = fs::remove_dir_all(&work);
         return Err("更新包解压失败，文件可能已损坏。".to_string());
@@ -162,7 +327,7 @@ pub async fn desktop_update_install(app: tauri::AppHandle, url: String) -> Resul
     let body = format!(
         "@echo off\r\n\
 chcp 65001 >nul\r\n\
-timeout /t 2 /nobreak >nul\r\n\
+ping -n 3 127.0.0.1 >nul\r\n\
 robocopy \"{payload}\" \"{target}\" /E /IS /MOVE /R:2 /W:1 /NFL /NDL /NJH /NJS >nul\r\n\
 start \"\" \"{exe}\"\r\n\
 rd /s /q \"{work}\"\r\n\
@@ -174,13 +339,31 @@ del \"%~f0\"\r\n",
     );
     fs::write(&script, body).map_err(|e| format!("无法写入更新脚本：{e}"))?;
 
-    // 5) 以独立进程启动脚本（不继承本进程生命周期），随后退出。
-    Command::new("cmd")
-        .args(["/C", "start", "/b", ""])
-        .arg(&script)
+    // 5) 以完全独立的进程启动替换脚本，随后自己退出。
+    //
+    // 这里必须是 DETACHED_PROCESS 而不是 start /b：
+    //   · start /b 起的是控制台程序，会**新开一个黑窗口**（就是用户说的那个
+    //     「弹出命令提示符又消失」）；
+    //   · DETACHED_PROCESS 干脆不给它分配控制台，全程静默；
+    //   · 再加 CREATE_BREAKAWAY_FROM_JOB，避免它被当前进程的作业对象连带收走。
+    report(&app, "apply", 0, 0);
+    let mut apply = Command::new("cmd");
+    apply.args(["/C"]).arg(&script);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        apply.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    }
+    apply
         .spawn()
         .map_err(|e| format!("无法启动更新脚本：{e}"))?;
 
+    report(&app, "restart", 0, 0);
+    // 让「正在重启应用…」和 100% 的进度条停留一下再关，别一闪而过。
+    std::thread::sleep(std::time::Duration::from_millis(900));
     app.exit(0);
     Ok("更新已开始，应用会自动重启。".to_string())
 }

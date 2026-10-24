@@ -9,6 +9,9 @@ import { chromium } from 'playwright';
 import { createMusicServer } from './music-server.mjs';
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'rhine-settings-ui-'));
+// hermetic：关掉音源插件与第三方备用站，测试不必等自检/真网络。
+await fs.writeFile(path.join(directory, 'lx-config.json'), JSON.stringify({ enabled: false }));
+await fs.writeFile(path.join(directory, 'backup-sources-config.json'), JSON.stringify({ enabled: false }));
 let base;
 const emptyCatalog = provider => ({ provider, tracks: [] });
 const { server } = await createMusicServer({
@@ -69,16 +72,15 @@ try {
   await page.locator('[data-action="settings-category"][data-category="playback"]').click();
   await until(`document.querySelector('[data-settings-page="playback"]')?.hidden === false`, 'playback page');
   await page.locator('#autoplay-setting').check();
-  await page.locator('#seamless-playback').uncheck();
+// 无缝切歌改成常开（设置项已移除，用户不再需要这个开关）—— 只验自动播放。
   await page.waitForTimeout(500);
   const prefs = await readPrefs();
   assert.equal(prefs.autoplay, true, '进入软件自动播放');
-  assert.equal(prefs.seamlessPlayback, false, '无缝切歌可关');
 
  // 渲染模式在「音频」页。
   await page.locator('[data-action="settings-category"][data-category="audio"]').click();
   await until(`document.querySelector('[data-settings-page="audio"]')?.hidden === false`, 'audio page');
-  assert.match(await page.locator('[data-settings-page="audio"]').textContent(), /渲染模式/, '音频页有渲染模式');
+  assert.match(await page.locator('[data-settings-page="audio"]').textContent(), /输出方式/, '音频页有输出方式');
 
  // 缓存在「缓存」页：滑杆 + 文本。
   await page.locator('[data-action="settings-category"][data-category="cache"]').click();
@@ -91,11 +93,11 @@ try {
   assert.equal(cachePrefs.cacheLocation, 'D:\\cache', '缓存位置');
   assert.match(await page.locator('#cache-limit-status').textContent(), /4096 MB/, '缓存上限有回显');
 
- // 诊断页：不属于 Rhine 原有分类，验证新分类也能打开。
-  await page.evaluate(() => document.querySelector('[data-action="settings-category"][data-category="diagnostics"]').click());
-  await until(`document.querySelector('[data-settings-page="diagnostics"]')?.hidden === false`, 'diagnostics page');
-  assert.match(await page.locator('[data-settings-page="diagnostics"]').textContent(), /诊断/, '诊断页有内容');
-  assert.equal(await page.evaluate(() => document.querySelector('[data-action="settings-category"][data-category="diagnostics"]').getAttribute('aria-current')), 'page', '导航高亮跟着走');
+// 分类切换与导航高亮：诊断页已按用户要求移除，这里用「本地歌单」。
+await page.evaluate(() => document.querySelector('[data-action="settings-category"][data-category="local"]').click());
+await until(`document.querySelector('[data-settings-page="local"]')?.hidden === false`, 'local page');
+assert.match(await page.locator('[data-settings-page="local"]').textContent(), /歌单/, '本地歌单页有内容');
+assert.equal(await page.evaluate(() => document.querySelector('[data-action="settings-category"][data-category="local"]').getAttribute('aria-current')), 'page', '导航高亮跟着走');
 
  // ── 设置搜索（对照参考行为。searchPlaceholder / searchNoResult）──────
   const search = page.locator('#settings-search');

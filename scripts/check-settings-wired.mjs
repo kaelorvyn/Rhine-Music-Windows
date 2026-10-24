@@ -14,8 +14,10 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = process.argv[2] || process.cwd()
+// 默认以仓库根为基准（脚本可能在任意 cwd 下被调用）
+const ROOT = process.argv[2] || fileURLToPath(new URL('..', import.meta.url))
 const APP = fs.readFileSync(path.join(ROOT, 'src/music-app.ts'), 'utf8')
 
 // 取出设置面板那一段

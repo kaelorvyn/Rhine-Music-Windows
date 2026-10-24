@@ -8,6 +8,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { decryptOrFallback } from './qmc-decrypt.mjs';
 
 const failure = (message, status = 400) => Object.assign(new Error(message), { status });
 const MAX_BYTES = 512 * 1024 * 1024;
@@ -180,7 +181,7 @@ export class DownloadManager {
     await this.save();
     return this.snapshot();
   }
-  async add({ url, title, artist, quality, fileName, format } = {}) {
+  async add({ url, title, artist, quality, fileName, format, ekey, provider } = {}) {
     await this.ready;
     if (!this.settings.directory) throw failure('请先在设置里选择下载目录。', 409);
     if (typeof url !== 'string' || !/^https?:\/\//.test(url) || url.length > 4096) throw failure('无效的下载地址。');
@@ -189,6 +190,10 @@ export class DownloadManager {
       quality: qualityLevels.includes(quality) ? quality : this.settings.quality,
       fileName: cleanName(fileName) || renderFileName(this.settings.naming, { title, artist, format }),
       status: 'queued', error: null, bytes: 0, createdAt: this.now(),
+      // 加密容器 + ekey：落盘前解密用（真母带/真无损才落盘）。
+      format: typeof format === 'string' ? format.slice(0, 16) : '',
+      ekey: typeof ekey === 'string' && ekey.length <= 8192 ? ekey : '',
+      provider: typeof provider === 'string' ? provider.slice(0, 16) : '',
     };
     task.target = path.join(this.settings.directory, task.fileName);
     this.tasks.unshift(task);
@@ -252,7 +257,22 @@ export class DownloadManager {
         const { bytesRead } = await probe.read(buffer, 0, 64, 0);
         head = buffer.subarray(0, bytesRead);
       } finally { await probe.close(); }
-      const sniffed = sniffAudio(head);
+      let sniffed = sniffAudio(head);
+      // ★ 加密容器 + 带 ekey → 落盘前就地解密成明文（解不出就照旧拒绝，绝不落垃圾）。
+      if (!sniffed.ok && task.ekey) {
+        const cipher = await fs.readFile(partial);
+        const { buf } = decryptOrFallback(cipher, {
+          format: task.format, ekey: task.ekey, provider: task.provider, quality: task.quality,
+        });
+        await fs.writeFile(partial, buf);
+        const reopen = await fs.open(partial, 'r');
+        try {
+          const buffer = Buffer.alloc(64);
+          const { bytesRead } = await reopen.read(buffer, 0, 64, 0);
+          head = buffer.subarray(0, bytesRead);
+        } finally { await reopen.close(); }
+        sniffed = sniffAudio(head);
+      }
       if (!sniffed.ok) throw failure(`${sniffed.reason} 该音源可能尚未解密或格式不受支持。`, 415);
  // ★ 扩展名以**实测内容**为准，而非上游声明的 format ——
  // 上游说 mflac 而实际送来的可能是 mgg/mp3，命名错了播放器仍打不开。

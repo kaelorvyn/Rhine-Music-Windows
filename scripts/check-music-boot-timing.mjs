@@ -19,7 +19,7 @@ function sourceModule(path) {
 }
 
 const timingModule = sourceModule('../src/music-boot-timing.ts');
-const { MusicBootFrameClock, MUSIC_BOOT_START_TIME: START, MUSIC_BOOT_END_TIME: END, MUSIC_BOOT_SCENE_REVEAL_TIME, MUSIC_BOOT_SCENE_START, musicBootSceneTime } = await import(timingModule);
+const { MusicBootFrameClock, STALL_CLAMP_SECONDS, MUSIC_BOOT_START_TIME: START, MUSIC_BOOT_END_TIME: END, MUSIC_BOOT_SCENE_REVEAL_TIME, MUSIC_BOOT_SCENE_START, musicBootSceneTime } = await import(timingModule);
 const { MusicBoot } = await import(sourceModule('../src/music-boot.ts'));
 const { musicOpeningFrame, MUSIC_OPENING_SLOGAN } = await import(sourceModule('../src/music-opening.ts'));
 const close = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-9,
@@ -41,10 +41,10 @@ for (const fps of [30, 60, 120]) {
 const cold = new MusicBootFrameClock();
 cold.reset(10);
 close(cold.update(10), START, 'Cold start begins with its first frame');
-close(cold.update(13.5), START + 0.05, 'A 3.5 second first-render shader compile consumes only one bounded frame');
-close(cold.update(13.5 + 1 / 60), START + 0.05 + 1 / 60, 'The next frame has no catch-up backlog');
+close(cold.update(13.5), START + STALL_CLAMP_SECONDS, 'A 3.5 second first-render shader compile consumes only one bounded frame');
+close(cold.update(13.5 + 1 / 60), START + STALL_CLAMP_SECONDS + 1 / 60, 'The next frame has no catch-up backlog');
 const beforeHidden = cold.update(13.6);
-close(cold.update(313.6), beforeHidden + 0.05, 'A hidden tab does not skip the remaining opening');
+close(cold.update(313.6), beforeHidden + STALL_CLAMP_SECONDS, 'A hidden tab does not skip the remaining opening');
 const beforeInvalid = cold.update(313.7);
 for (const invalid of [NaN, Infinity, -Infinity, 200, 313.7]) {
   assert.equal(cold.update(invalid), beforeInvalid, 'Invalid or backward timestamps cannot rewind or advance the film');
@@ -52,7 +52,7 @@ for (const invalid of [NaN, Infinity, -Infinity, 200, 313.7]) {
 close(cold.update(313.7 + 1 / 60), beforeInvalid + 1 / 60, 'Backward timestamps do not alter the previous valid clock sample');
 cold.reset(500);
 assert.equal(cold.update(500), START, 'A restarted opening discards all prior progress');
-close(cold.update(550), START + 0.05, 'A stall before the first animation callback is bounded too');
+close(cold.update(550), START + STALL_CLAMP_SECONDS, 'A stall before the first animation callback is bounded too');
 
 // Minimal DOM doubles exercise the real MusicBoot state machine, including its
 // one-frame endpoint handoff, skip callback and reduced-motion branch.
@@ -144,7 +144,7 @@ actual.boot.start(100);
 assert.equal(actual.boot.update(100).appTime, START);
 assert.equal(actual.scene.inert, true);
 assert.equal(actual.controls.style.getPropertyValue('visibility'), 'hidden');
-close(actual.boot.update(103.5).appTime, START + 0.05, 'Actual MusicBoot uses the bounded clock after shader compilation');
+close(actual.boot.update(103.5).appTime, START + STALL_CLAMP_SECONDS, 'Actual MusicBoot uses the bounded clock after shader compilation');
 assert.equal(actual.boot.update(203.5).phase, 'logo', 'A long pause cannot jump actual MusicBoot to its final selection');
 assert.deepEqual(actual.completed, [], 'A pause cannot complete the intro');
 actual.boot.replay(500);

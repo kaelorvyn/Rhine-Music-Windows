@@ -66,3 +66,6 @@ pool-credential.json
 
 # 第三方接口调研笔记（内部资料，不公开）
 /QISHUI-API.md
+
+# 音源清理时的备份目录（开发期临时物，不入库）
+/scripts/_lx-sources-removed-*/

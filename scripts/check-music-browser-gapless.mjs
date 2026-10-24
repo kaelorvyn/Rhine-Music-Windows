@@ -28,6 +28,10 @@ function fixture(t) {
     changeState(state) { this.state = state; contextEvents.dispatchEvent(new Event('statechange')) },
     resume: async () => { context.state = 'running' }, close: async () => { context.closed = true },
     createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect() {} }),
+    createAnalyser: () => ({
+      fftSize: 2048, frequencyBinCount: 1024, smoothingTimeConstant: 0.72, minDecibels: -95, maxDecibels: -25,
+      connect() {}, disconnect() {}, getByteFrequencyData() {}, getFloatTimeDomainData() {},
+    }),
     createBufferSource: () => {
       const source = { stopped: false, connect() {}, disconnect() {}, stop() { this.stopped = true },
         start(at, offset) { this.at = at; this.offset = offset }, onended: null }

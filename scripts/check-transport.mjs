@@ -8,6 +8,9 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'rhine-transport-'));
+// hermetic：关掉音源插件与第三方备用站，别让 UI 测试走真网络（会被慢源拖到超时）
+await fs.writeFile(path.join(directory, 'lx-config.json'), JSON.stringify({ enabled: false }))
+await fs.writeFile(path.join(directory, 'backup-sources-config.json'), JSON.stringify({ enabled: false }))
 let base, server;
 const browser = await chromium.launch();
 const app = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -28,6 +31,9 @@ try {
   await app.goto(`${base}/?lab=0`);
   await app.waitForFunction(() => !!window.rhineMusic && !document.querySelector('#music-loading'), undefined, { timeout: 45000 });
   await post('/api/config', { roots: [musicRoot] }); await post('/api/library/scan', {});
+// 扫描结果由界面主动拉取（不再靠外部 POST 触发实时推送）：扫描后重载一次再断言。
+await app.reload();
+await app.waitForFunction(() => !!window.rhineMusic && !document.querySelector('#music-loading'), undefined, { timeout: 45000 });
   await app.waitForFunction(() => window.rhineMusic.library?.albums?.length === 1, undefined, { timeout: 60000 });
 
  // ── 1. 顶栏 = 歌名 + 播放/暂停（+ 头像），下面只有歌词 + 进度条。
@@ -59,10 +65,10 @@ try {
  // ── 3. 队列走「歌单」按钮；行带 ♥ 收藏 ─────────────────────────
   await clickInPage('#my-playlists-button');
   await app.waitForFunction(() => !!document.querySelector('#panel-body .queue-row'), undefined, { timeout: 30000 });
-  assert.ok(await app.locator('[data-action="queue-clear"]').count() >= 1, '队列面板可清空');
+// 「清空队列」按钮已移除（逐项移除 + 收藏即可），不再断言它。
   assert.ok(await app.locator('[data-queue-remove]').count() >= 1, '队列面板可逐项移除');
   assert.ok(await app.locator('[data-action="song-favorite"]').count() >= 1, '队列行带 ♥ 收藏');
-  console.log('③ 队列面板（歌单按钮）：清空 / 移除 / ♥ 收藏齐全');
+  console.log('③ 队列面板（歌单按钮）：逐项移除 / ♥ 收藏齐全');
 
   assert.deepEqual(errors, []);
   console.log('\n顶栏（歌名 + 播放/暂停 + 歌词 + 进度条，音量在详情页）验证通过。');

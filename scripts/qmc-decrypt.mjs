@@ -53,17 +53,19 @@
  * 5) 酷我 ekey：base64 → **728 字节**（实测 3/3 样本，%8==0，91 个 DES 块），
  *    尾部 8 字节在三样本中**完全相同**（`6a63488853e41dd1`）→ 固定尾部标记。
  *
- * ── ⚠️ 未解（本文件不编造，运行时如实抛错）────────────────────────────────
- * A) **kuwo_feistel.rs 的位重排表**：当前 exe 中尚未定位到干净的位索引表。
- *    （注意：// 是 **DES 内部表**，不是它。）
- * B) **ekey → QMC 原始密钥 的 DES 密钥**：候选密钥串（"yeelion"/"kwplayer" 等）
- *    均未通过校验。ekey 中也不含明文密钥。
- * C) **RC4 / mapCipher 的密钥材料**：分支骨架已实现，密钥来源未解。
+ * ── ✅ 2026-10-23 解（公开实现对照 + 真样本验证）──────────────────────────
+ * A) 位重排 = 酷我 ekey 用的是**非标准 DES 变体**（LSB-first 位序、私有表）：
+ *    EXP/IPERM/FPERM/ROUND_P/KPC1/KPC2/ROT/SBOX 全表见下方 KW_* 常量。
+ * B) ekey → QMC 原始密钥的 DES 密钥 = **`ylzsxkwm`**，但必须用上述 LSB-first
+ *    变体 —— 此前用标准 FIPS DES 试同一密钥必然失败（KUWO_RULED_OUT 里
+ *    "不作用于 ekey" 的结论只对标准 DES 成立，见该项 evidence 续记）。
+ * C) 密钥材料链：ekey → LSB-DES('ylzsxkwm') → 去 NUL → 尾 704/364 字节
+ *    → base64 → V1/V2 TC-TEA 派生（V2 前缀 "QQMusic EncV2,Key:" + 双 TEA
+ *    常量；V1 用 tan(106) 简单密钥交织）。cipher 按派生密钥长度分流：
+ *    >300 字节走分段 RC4（128 头 + 5120 分段），否则 map/static。
  *
- * 由 (A)(B) 可知：**酷我 mflac 的端到端解密目前无法完成**。因此
- * `decryptBuffer` 对酷我加密格式会抛出 `EKEY_UNRESOLVED`，绝不返回垃圾数据。
- * 这符合 exe 的失败语义（`无法从酷我 ekey 中提取 QMC 原始密钥`、
- * `音频解密结果校验失败`），也符合"绝不降级成试听"。
+ * `decryptBuffer` 现已可完成酷我 mflac 端到端解密；失败仍抛 `EKEY_UNRESOLVED`，
+ * 绝不返回垃圾数据。
  *
  * 反解出的部分 QMC 密钥字节（供后续攻坚，见 verifyNotes）：
  *   由 FLAC 明文头 `66 4C 61 43 00 00 00 22` 反推，n=128 时得到 8 个**分散**下标：
@@ -496,11 +498,292 @@ export function feistelBitPermute (x, tables) {
   return y
 }
 
+
+/** 酷我客户端 DES 密钥（ekey 解密用；须配 LSB-first 变体，标准 DES 无效） */
+const KUWO_EKEY_DES_KEY = Buffer.from('ylzsxkwm', 'latin1');
+// LSB-first 位序的 DES 私有表（与 FIPS DES 不同，逐项移植，勿"修正"）
+const KW_EXP = [
+  31, 0, 1, 2, 3, 4, -1, -1,   3, 4, 5, 6, 7, 8, -1, -1,
+   7, 8, 9, 10, 11, 12, -1, -1,  11, 12, 13, 14, 15, 16, -1, -1,
+  15, 16, 17, 18, 19, 20, -1, -1,  19, 20, 21, 22, 23, 24, -1, -1,
+  23, 24, 25, 26, 27, 28, -1, -1,  27, 28, 29, 30, 31, 30, -1, -1,
+];
+const KW_IPERM = [
+  57, 49, 41, 33, 25, 17, 9, 1,  59, 51, 43, 35, 27, 19, 11, 3,
+  61, 53, 45, 37, 29, 21, 13, 5,  63, 55, 47, 39, 31, 23, 15, 7,
+  56, 48, 40, 32, 24, 16, 8, 0,  58, 50, 42, 34, 26, 18, 10, 2,
+  60, 52, 44, 36, 28, 20, 12, 4,  62, 54, 46, 38, 30, 22, 14, 6,
+];
+const KW_FPERM = [
+  39, 7, 47, 15, 55, 23, 63, 31,  38, 6, 46, 14, 54, 22, 62, 30,
+  37, 5, 45, 13, 53, 21, 61, 29,  36, 4, 44, 12, 52, 20, 60, 28,
+  35, 3, 43, 11, 51, 19, 59, 27,  34, 2, 42, 10, 50, 18, 58, 26,
+  33, 1, 41, 9, 49, 17, 57, 25,  32, 0, 40, 8, 48, 16, 56, 24,
+];
+const KW_ROUND_P = [
+  15, 6, 19, 20,  28, 11, 27, 16,   0, 14, 22, 25,   4, 17, 30, 9,
+   1, 7, 23, 13,  31, 26, 2, 8,  18, 12, 29, 5,  21, 10, 3, 24,
+];
+const KW_KPC1 = [
+  56, 48, 40, 32, 24, 16, 8, 0,  57, 49, 41, 33, 25, 17, 9, 1,
+  58, 50, 42, 34, 26, 18, 10, 2,  59, 51, 43, 35, 62, 54, 46, 38,
+  30, 22, 14, 6,  61, 53, 45, 37,  29, 21, 13, 5,  60, 52, 44, 36,
+  28, 20, 12, 4,  27, 19, 11, 3,
+];
+const KW_KPC2 = [
+  13, 16, 10, 23, 0, 4, -1, -1,   2, 27, 14, 5, 20, 9, -1, -1,
+  22, 18, 11, 3, 25, 7, -1, -1,  15, 6, 26, 19, 12, 1, -1, -1,
+  40, 51, 30, 36, 46, 54, -1, -1,  29, 39, 50, 44, 32, 47, -1, -1,
+  43, 48, 38, 55, 33, 52, -1, -1,  45, 41, 49, 35, 28, 31, -1, -1,
+];
+const KW_ROT = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1];
+const KW_ROT_MASK = [0n, 0x100001n, 0x300003n];
+const KW_SBOX = [
+  [14, 4, 3, 15, 2, 13, 5, 3, 13, 14, 6, 9, 11, 2, 0, 5,
+    4, 1, 10, 12, 15, 6, 9, 10, 1, 8, 12, 7, 8, 11, 7, 0,
+    0, 15, 10, 5, 14, 4, 9, 10, 7, 8, 12, 3, 13, 1, 3, 6,
+   15, 12, 6, 11, 2, 9, 5, 0, 4, 2, 11, 14, 1, 7, 8, 13],
+  [15, 0, 9, 5, 6, 10, 12, 9, 8, 7, 2, 12, 3, 13, 5, 2,
+    1, 14, 7, 8, 11, 4, 0, 3, 14, 11, 13, 6, 4, 1, 10, 15,
+    3, 13, 12, 11, 15, 3, 6, 0, 4, 10, 1, 7, 8, 4, 11, 14,
+   13, 8, 0, 6, 2, 15, 9, 5, 7, 1, 10, 12, 14, 2, 5, 9],
+  [10, 13, 1, 11, 6, 8, 11, 5, 9, 4, 12, 2, 15, 3, 2, 14,
+    0, 6, 13, 1, 3, 15, 4, 10, 14, 9, 7, 12, 5, 0, 8, 7,
+   13, 1, 2, 4, 3, 6, 12, 11, 0, 13, 5, 14, 6, 8, 15, 2,
+    7, 10, 8, 15, 4, 9, 11, 5, 9, 0, 14, 3, 10, 7, 1, 12],
+  [ 7, 10, 1, 15, 0, 12, 11, 5, 14, 9, 8, 3, 9, 7, 4, 8,
+   13, 6, 2, 1, 6, 11, 12, 2, 3, 0, 5, 14, 10, 13, 15, 4,
+   13, 3, 4, 9, 6, 10, 1, 12, 11, 0, 2, 5, 0, 13, 14, 2,
+    8, 15, 7, 4, 15, 1, 10, 7, 5, 6, 12, 11, 3, 8, 9, 14],
+  [ 2, 4, 8, 15, 7, 10, 13, 6, 4, 1, 3, 12, 11, 7, 14, 0,
+   12, 2, 5, 9, 10, 13, 0, 3, 1, 11, 15, 5, 6, 8, 9, 14,
+   14, 11, 5, 6, 4, 1, 3, 10, 2, 12, 15, 0, 13, 2, 8, 5,
+   11, 8, 0, 15, 7, 14, 9, 4, 12, 7, 10, 9, 1, 13, 6, 3],
+  [12, 9, 0, 7, 9, 2, 14, 1, 10, 15, 3, 4, 6, 12, 5, 11,
+    1, 14, 13, 0, 2, 8, 7, 13, 15, 5, 4, 10, 8, 3, 11, 6,
+   10, 4, 6, 11, 7, 9, 0, 6, 4, 2, 13, 1, 9, 15, 3, 8,
+   15, 3, 1, 14, 12, 5, 11, 0, 2, 12, 14, 7, 5, 10, 8, 13],
+  [ 4, 1, 3, 10, 15, 12, 5, 0, 2, 11, 9, 6, 8, 7, 6, 9,
+   11, 4, 12, 15, 0, 3, 10, 5, 14, 13, 7, 8, 13, 14, 1, 2,
+   13, 6, 14, 9, 4, 1, 2, 14, 11, 13, 5, 0, 1, 10, 8, 3,
+    0, 11, 3, 5, 9, 4, 15, 2, 7, 8, 12, 15, 10, 7, 6, 12],
+  [13, 7, 10, 0, 6, 9, 5, 15, 8, 4, 3, 10, 11, 14, 12, 5,
+    2, 11, 9, 6, 15, 12, 0, 3, 4, 1, 14, 13, 1, 2, 7, 8,
+    1, 2, 12, 15, 10, 4, 0, 3, 13, 14, 6, 9, 7, 8, 9, 6,
+   15, 1, 5, 12, 3, 10, 14, 5, 8, 7, 11, 0, 4, 13, 2, 11],
+];
+function kwShuffle (tbl, bits, val) {
+  let r = 0n;
+  for (let p = 0; p < bits; p++) {
+    const src = tbl[p];
+    if (src >= 0) r |= ((val >> BigInt(src)) & 1n) << BigInt(p);
+  }
+  return r;
+}
+function kwExecBlock (blk, rkeys) {
+  let v = kwShuffle(KW_IPERM, 64, blk);
+  let lo = v & 0xFFFFFFFFn;
+  let hi = (v >> 32n) & 0xFFFFFFFFn;
+  for (const rk of rkeys) {
+    const e = kwShuffle(KW_EXP, 64, hi) ^ rk;
+    let s = 0n;
+    for (let b = 0; b < 8; b++) {
+      const six = Number((e >> BigInt(b * 8)) & 0x3Fn);
+      s |= BigInt(KW_SBOX[b][six]) << BigInt(b * 4);
+    }
+    const p = kwShuffle(KW_ROUND_P, 32, s);
+    const newLo = hi;
+    const newHi = lo ^ p;
+    lo = newLo; hi = newHi;
+  }
+  return kwShuffle(KW_FPERM, 64, (lo << 32n) | (hi & 0xFFFFFFFFn));
+}
+function kwBuildRoundKeys (keyVal, forDecrypt) {
+  let cv = kwShuffle(KW_KPC1, 56, keyVal);
+  const keys = [];
+  for (let r = 0; r < 16; r++) {
+    const amt = KW_ROT[r];
+    const m = KW_ROT_MASK[amt];
+    cv = (((cv & m) << BigInt(28 - amt)) | ((cv & ~m) >> BigInt(amt))) & 0xFFFFFFFFFFFFFFFn;
+    keys.push(kwShuffle(KW_KPC2, 64, cv));
+  }
+  return forDecrypt ? keys.reverse() : keys;
+}
+/** 酷我 ekey 的 LSB-first DES-ECB 解密（块读写按 LE u64）。 */
+export function kuwoEkeyDesDecrypt (raw, key8 = KUWO_EKEY_DES_KEY) {
+  if (raw.length % 8 !== 0) throw new QmcError('EKEY_NOT_MULTIPLE_OF_8');
+  const rk = kwBuildRoundKeys(key8.readBigUInt64LE(0), true);
+  const out = Buffer.alloc(raw.length);
+  for (let off = 0; off + 8 <= raw.length; off += 8) {
+    out.writeBigUInt64LE(kwExecBlock(raw.readBigUInt64LE(off), rk) & 0xFFFFFFFFFFFFFFFFn, off);
+  }
+  return out;
+}
+// ── TC-TEA（QQ 变体：CBC + salt + 零字节校验）—— 密钥派生用 ──────────────
+function teaBlock8 (block8, key16) {
+  const k = [key16.readUInt32BE(0), key16.readUInt32BE(4), key16.readUInt32BE(8), key16.readUInt32BE(12)];
+  const [v0, v1] = teaDecryptBlock(block8.readUInt32BE(0), block8.readUInt32BE(4), k);
+  const out = Buffer.alloc(8);
+  out.writeUInt32BE(v0 >>> 0, 0); out.writeUInt32BE(v1 >>> 0, 4);
+  return out;
+}
+export function tencentTeaDecrypt (input, key16) {
+  const SALT_LEN = 2, ZERO_LEN = 7;
+  if (input.length % 8 !== 0) throw new QmcError('EKEY_UNRESOLVED', 'TC-TEA 输入长度不是 8 的倍数');
+  if (input.length < 16) throw new QmcError('EKEY_UNRESOLVED', 'TC-TEA 输入过短');
+  let block = teaBlock8(input.subarray(0, 8), key16);
+  const padLen = block[0] & 0x7;
+  const outputLen = input.length - 1 - padLen - SALT_LEN - ZERO_LEN;
+  if (outputLen < 0) throw new QmcError('EKEY_UNRESOLVED', 'TC-TEA 填充非法');
+  const output = Buffer.alloc(outputLen);
+  let ivPrev = Buffer.alloc(8), ivCur = Buffer.from(input.subarray(0, 8));
+  let inputPos = 8, destIdx = 1 + padLen;
+  const nextBlock = () => {
+    ivPrev = ivCur;
+    ivCur = Buffer.from(input.subarray(inputPos, inputPos + 8));
+    const xored = Buffer.alloc(8);
+    for (let i = 0; i < 8; i++) xored[i] = block[i] ^ ivCur[i];
+    block = teaBlock8(xored, key16);
+    inputPos += 8;
+    destIdx = 0;
+  };
+  for (let salt = 1; salt <= SALT_LEN;) {
+    if (destIdx < 8) { destIdx++; salt++; } else nextBlock();
+  }
+  for (let pos = 0; pos < outputLen;) {
+    if (destIdx < 8) { output[pos] = block[destIdx] ^ ivPrev[destIdx]; destIdx++; pos++; } else nextBlock();
+  }
+  for (let zero = 1; zero <= ZERO_LEN;) {
+    if (destIdx < 8) {
+      if (block[destIdx] !== ivPrev[destIdx]) throw new QmcError('EKEY_UNRESOLVED', 'TC-TEA 零字节校验失败');
+      destIdx++; zero++;
+    } else nextBlock();
+  }
+  return output;
+}
+const QMC_V2_KEY_PREFIX = 'QQMusic EncV2,Key:';
+const QMC_V2_DERIVE_KEY_1 = Buffer.from('3386ZJY!@#*\\x24%^&)(', 'latin1');
+const QMC_V2_DERIVE_KEY_2 = Buffer.from('**#!(\\x24%&^a1cZ,T', 'latin1');
+const QMC_RAW_KEY_LENGTHS = [704, 364];
+function strictBase64 (text) {
+  return text.length > 0 && text.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(text);
+}
+function simpleMakeKey (salt, length) {
+  const key = Buffer.alloc(length);
+  for (let i = 0; i < length; i++) key[i] = Math.trunc(Math.abs(Math.tan(salt + i * 0.1) * 100.0)) & 0xFF;
+  return key;
+}
+function kuwoDeriveKeyV1 (rawKeyDecoded) {
+  if (rawKeyDecoded.length < 16) throw new QmcError('EKEY_UNRESOLVED', 'V1 原始密钥过短');
+  const simple = simpleMakeKey(106, 8);
+  const teaKey = Buffer.alloc(16);
+  for (let i = 0; i < 8; i++) {
+    teaKey[i * 2] = simple[i];
+    teaKey[i * 2 + 1] = rawKeyDecoded[i];
+  }
+  const decrypted = tencentTeaDecrypt(rawKeyDecoded.subarray(8), teaKey);
+  return Buffer.concat([rawKeyDecoded.subarray(0, 8), decrypted]);
+}
+function kuwoDeriveKeyV2 (rawKey) {
+  let buf = tencentTeaDecrypt(rawKey, QMC_V2_DERIVE_KEY_1);
+  buf = tencentTeaDecrypt(buf, QMC_V2_DERIVE_KEY_2);
+  const text = buf.toString('latin1');
+  if (!strictBase64(text)) throw new QmcError('EKEY_UNRESOLVED', 'V2 密钥不是合法 base64');
+  return Buffer.from(text, 'base64');
+}
+/** ekey → QMC 原始密钥（尾 704/364 字节的 base64 文本）。 */
+function kuwoExtractRawKey (ekey) {
+  const raw = decodeEkey(ekey);
+  const dec = kuwoEkeyDesDecrypt(raw);
+  let end = dec.length;
+  while (end > 0 && dec[end - 1] === 0) end--;
+  const trimmed = dec.subarray(0, end);
+  for (const len of QMC_RAW_KEY_LENGTHS) {
+    if (trimmed.length < len) continue;
+    const candidate = trimmed.subarray(trimmed.length - len).toString('latin1');
+    if (strictBase64(candidate)) return candidate;
+  }
+  throw new QmcError('EKEY_UNRESOLVED', QMC_ERRORS.EKEY_UNRESOLVED + '（ekey 解密后未找到 QMC 原始密钥）');
+}
+// ── 分段 RC4（key > 300 字节时的文件 cipher；128 头 + 5120 分段）────────────
+function kuwoSegmentRc4 (data, key, offset = 0) {
+  const size = key.length;
+  if (!size) throw new QmcError('RC4_KEY_EMPTY', QMC_ERRORS.RC4_KEY_EMPTY);
+  const boxInit = new Uint8Array(size);
+  for (let i = 0; i < size; i++) boxInit[i] = i & 0xFF;
+  let j = 0;
+  for (let i = 0; i < size; i++) {
+    j = (j + boxInit[i] + key[i]) % size;
+    const t = boxInit[i]; boxInit[i] = boxInit[j]; boxInit[j] = t;
+  }
+  let hash = 1;
+  for (let i = 0; i < size; i++) {
+    const v = key[i];
+    if (v === 0) continue;
+    const next = (hash * v) % 4294967296;
+    if (next === 0 || next <= hash) break;
+    hash = next;
+  }
+  const skipCache = new Map();
+  const segmentSkip = (id) => {
+    const hit = skipCache.get(id);
+    if (hit !== undefined) return hit;
+    const seed = key[id % size];
+    const r = seed === 0 ? 0 : Math.trunc((hash / ((id + 1) * seed)) * 100) % size;
+    skipCache.set(id, r);
+    return r;
+  };
+  const out = Buffer.from(data);
+  const firstKeystream = Buffer.alloc(128);
+  for (let i = 0; i < 128; i++) firstKeystream[i] = key[segmentSkip(i)];
+  const firstSegment = (fileOff, dataOff, len) => {
+    for (let i = 0; i < len; i++) out[dataOff + i] ^= firstKeystream[fileOff + i];
+  };
+  const segmentRange = (fileOff, dataOff, len) => {
+    const box = Uint8Array.from(boxInit);
+    let jj = 0, kk = 0;
+    const segmentId = Math.floor(fileOff / 5120);
+    const skipLength = (fileOff % 5120) + segmentSkip(segmentId);
+    const ks = Buffer.alloc(len);
+    const totalLen = skipLength + len;
+    for (let index = 0; index < totalLen; index++) {
+      jj = (jj + 1) % size;
+      kk = (box[jj] + kk) % size;
+      const t = box[jj]; box[jj] = box[kk]; box[kk] = t;
+      if (index >= skipLength) ks[index - skipLength] = box[(box[jj] + box[kk]) % size];
+    }
+    for (let i = 0; i < len; i++) out[dataOff + i] ^= ks[i];
+  };
+  let off = offset, processed = 0, toProcess = out.length;
+  if (off < 128) {
+    const block = Math.min(toProcess, 128 - off);
+    firstSegment(off, processed, block);
+    off += block; toProcess -= block; processed += block;
+    if (toProcess === 0) return out;
+  }
+  if (off % 5120 !== 0) {
+    const block = Math.min(toProcess, 5120 - (off % 5120));
+    segmentRange(off, processed, block);
+    off += block; toProcess -= block; processed += block;
+    if (toProcess === 0) return out;
+  }
+  while (toProcess > 5120) {
+    segmentRange(off, processed, 5120);
+    off += 5120; toProcess -= 5120; processed += 5120;
+  }
+  if (toProcess > 0) segmentRange(off, processed, toProcess);
+  return out;
+}
+/** 酷我文件 cipher 分流（对齐 QmcCipherFactory）：key>300 → 分段 RC4，否则 map/static。 */
+export function kuwoDecryptWithKey (buf, key) {
+  return key.length > 300 ? kuwoSegmentRc4(buf, key) : staticCipher(buf, key, 0);
+}
+
 /** 未解项登记表：供前端/诊断决定是否尝试解密 */
 export const QMC_UNRESOLVED = Object.freeze({
-  kuwoFeistelBitTable: true,   // 位重排表未定位
-  kuwoEkeyDesKey: true,        // ekey 的 DES 密钥未解
-  rc4KeyMaterial: true,        // RC4/map 密钥来源未解
+  kuwoFeistelBitTable: false,  // 已解：LSB-first DES 变体的私有表（KW_*）
+  kuwoEkeyDesKey: false,       // 已解：ylzsxkwm（配 LSB-first 变体）
+  rc4KeyMaterial: false,       // 已解：V1/V2 TC-TEA 派生链
 })
 
 /**
@@ -512,7 +795,9 @@ export const KUWO_RULED_OUT = Object.freeze({
     claim: '"ylzsxkwm"（硬编码 8 字节）作为 DES 密钥直接解 ekey',
     verdict: 'false',
     evidence: '真实 728B ekey 上 11 个候选密钥 × 3 种输入 × 加/解密全试：输出可打印率 ≈37.9%（随机水平），无结构化结果。' +
-      '该常量与 PC-1 表相邻且恰 8 字节，确是 DES 密钥候选，但**不作用于 ekey**。',
+      '该常量与 PC-1 表相邻且恰 8 字节，确是 DES 密钥候选，但**不作用于 ekey**。' +
+      '【2026-10-23 续记】该结论只对**标准 FIPS DES**成立；酷我 ekey 用 LSB-first DES 变体，' +
+      '同一下 ylzsxkwm 在该变体上解得结构化明文 —— 端到端解密已实现（deriveKuwoQmcKey）。',
   },
   desTablesNotEkeySpecific: {
     claim: '/ 等表可用于还原 ekey 链路',
@@ -573,21 +858,14 @@ export const PLAINTEXT_FALLBACK_QUALITY = 'lossless'
  * @param {{desKey?:Buffer, feistelTables?:{t1:number[],t2:number[]}}} [opts]
  */
 export function deriveKuwoQmcKey (ekey, opts = {}) {
-  const raw = decodeEkey(ekey)
-  if (!opts.desKey || !opts.feistelTables) {
-    throw new QmcError('EKEY_UNRESOLVED', QMC_ERRORS.EKEY_UNRESOLVED, {
-      ekeyBytes: raw.length,
-      unresolved: ['kuwoEkeyDesKey', 'kuwoFeistelBitTable'],
-    })
-  }
-  const step1 = desDecrypt(raw, opts.desKey)
-  // Feistel 位重排：逐 8 字节块
-  const out = Buffer.from(step1)
-  for (let off = 0; off + 8 <= out.length; off += 8) {
-    const x = out.readBigUInt64LE(off)
-    out.writeBigUInt64LE(feistelBitPermute(x, opts.feistelTables), off)
-  }
-  return out
+  // 2026-10-23：全链已解。ekey → LSB-DES('ylzsxkwm') → 尾 704/364 base64
+  // → base64 解码 → V1/V2 TC-TEA 派生。opts 仅作测试覆盖用。
+  const rawKey = kuwoExtractRawKey(ekey)
+  const decoded = Buffer.from(rawKey, 'base64')
+  const prefixLen = QMC_V2_KEY_PREFIX.length
+  const v2 = decoded.length >= prefixLen
+    && decoded.subarray(0, prefixLen).toString('latin1') === QMC_V2_KEY_PREFIX
+  return v2 ? kuwoDeriveKeyV2(decoded.subarray(prefixLen)) : kuwoDeriveKeyV1(decoded)
 }
 
 // ── 顶层 API ────────────────────────────────────────────────────────────────
@@ -633,6 +911,8 @@ export function decryptBuffer (buf, format, ekey, opts = {}) {
     qmcKey = decodeEkey(ekey)
   }
 
+  // 酷我：cipher 按派生密钥长度分流（QmcCipherFactory 语义），整段一次解。
+  if (provider === 'kuwo') return kuwoDecryptWithKey(buf, qmcKey)
   const cipherName = opts.cipher ?? (qmcKey.length === 16 ? 'tea' : 'static')
   let out
   if (cipherName === 'tea') out = teaDecrypt(buf, qmcKey.subarray(0, 16))

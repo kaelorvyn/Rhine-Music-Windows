@@ -14,6 +14,9 @@ const runtime = new LxSourceRuntime({ guardRejections: true })
 
 const METHODS = {
   loadDirectory: (args) => runtime.loadDirectory(...args),
+  loadDirectories: (args) => runtime.loadDirectories(...args),
+  setDisabled: (args) => runtime.setDisabled(...args),
+  listPlugins: () => runtime.listPlugins(),
   search: (args) => runtime.search(...args),
   resolveUrl: (args) => runtime.resolveUrl(...args),
   resolveForProvider: (args) => runtime.resolveForProvider(...args),
@@ -32,6 +35,8 @@ const METHODS = {
     enabled: runtime.enabled,
     pluginCount: runtime.plugins.size,
     sources: runtime.listSources(),
+    plugins: runtime.listPlugins(),
+    disabled: [...(runtime.disabled ?? [])],
     report: runtime.loadReport,
     selfCheck: runtime.selfCheckReport,
   }),
@@ -42,6 +47,7 @@ const METHODS = {
     runtime.health.clear()
     runtime.selfCheckReport = null
     runtime.loadReport = []
+    runtime.disabled = new Set()
     return { cleared: true }
   },
 }
