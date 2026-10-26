@@ -96,6 +96,14 @@ import type { LightingLabController, LightingLabSettings } from "./music-lightin
 import { setupMotionLab } from "./music-motion-lab";
 import { getMusicMotionSpeed, normalizeMusicMotionSpeed, onMusicMotionSpeedChange, setMusicMotionSpeed } from "./music-motion-settings";
 import { mountMusicWheelNavigation } from "./music-wheel-navigation";
+import {
+  MusicKeyGestures,
+  DEFAULT_KEY_BINDINGS,
+  keybindingsSectionMarkup,
+  mountKeybindingEditor,
+  sanitizeKeyBindings,
+  type KeyBindings,
+} from "./music-keybindings";
 import { isDesktop, openExternal } from "./desktop";
 import { RenderScheduler } from "./render-scheduler";
 import {
@@ -186,6 +194,8 @@ const preferences = {
     minimizeToTray: true,
     // 音浪：默认开、进度条上方、细柱频谱（与预览版默认一致）。
     visualizer: normalizeVisualizer(undefined),
+    // 键盘操作绑定：单击切歌 / 双击跳转 / 长按变速，用户可在设置里改键。
+    keybindings: { ...DEFAULT_KEY_BINDINGS } as KeyBindings,
   },
   ...read<
     Partial<{
@@ -223,9 +233,12 @@ const preferences = {
       cacheLocation: string;
       minimizeToTray: boolean;
       visualizer: VisualizerOptions;
+      keybindings: KeyBindings;
     }>
   >("rhine-music-preferences", {}),
 };
+// 存档里的键位可能来自手改的 localStorage 或旧版本：非法/撞键一律回默认。
+preferences.keybindings = sanitizeKeyBindings(preferences.keybindings);
 preferences.onlineErrorDisplay = preferences.onlineErrorDisplay === true;
 preferences.songTransition = normalizeSongTransition(preferences.songTransition, preferences.songFade);
 delete preferences.songFade;
@@ -3363,6 +3376,7 @@ function renderSettingsPanel() {
     `<section class="panel-section" data-settings-group="personalization"><h3>外观主题</h3><div class="theme-cards">${(["day", "night", "dusk"] as Theme[]).map((t) => `<button data-theme="${t}" aria-pressed="${preferences.theme === t}" class="${t}"><i></i><strong>${themeNames[t]}</strong><span>${t === "day" ? "暖白玻璃与日光" : t === "dusk" ? "冷调薄雾与雾蓝玻璃" : "极简星空与透光白卡"}</span></button>`).join("")}</div></section>
 
     <section class="panel-section" data-settings-group="playback"><h3>播放</h3><label class="settings-row"><span>进入软件自动播放</span><input type="checkbox" id="autoplay-setting" data-settings-key="autoplay" ${preferences.autoplay ? "checked" : ""}></label></section>
+    ${keybindingsSectionMarkup(preferences.keybindings)}
     <section class="panel-section" data-settings-group="cache"><h3>缓存</h3><label class="settings-row"><span>缓存上限</span><input type="range" id="cache-limit" data-settings-key="cacheLimit" min="64" max="8192" step="64" value="${preferences.cacheLimit}" aria-label="缓存上限"></label><p class="scan-status" id="cache-limit-status" role="status">${preferences.cacheLimit} MB</p><label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" data-settings-key="cacheLocation" placeholder="读取中…" aria-label="缓存位置" value="${esc(preferences.cacheLocation)}"></label><button class="text-button" data-action="cache-clear">清理缓存 ↗</button><p class="scan-status" id="cache-status" role="status" aria-live="polite"></p></section>
     <section class="panel-section" data-settings-group="library"><h3>共享音源</h3><p class="scan-status" id="pool-credential-status" role="status" aria-live="polite">检查中…</p><p class="scan-status pool-sign-note" id="pool-credential-signnote" role="alert" hidden></p><div class="pool-credential-actions"><button class="text-button" data-action="pool-connectivity">检测连通性 ↗</button><button class="text-button" data-action="pool-credential-import">导入密钥文件 ↗</button><button class="text-button" data-action="pool-credential-export">导出密钥 ↗</button><button class="text-button" data-action="pool-credential-clear">移除 ↗</button></div><div class="pool-connectivity" id="pool-connectivity" role="status" aria-live="polite"></div><input type="file" id="pool-credential-file" accept=".rhinekey,.json" hidden><p class="scan-status">密钥由你自己提供，程序不内置任何凭据。没导入时只使用备用音源。<br>换一台电脑用？把这份密钥文件拷过去导入即可。</p></section>
     <section class="panel-section" data-settings-group="display"><h3>窗口</h3><label class="settings-row"><span>关闭窗口时最小化到托盘</span><input type="checkbox" id="minimize-to-tray" data-settings-key="minimizeToTray" ${preferences.minimizeToTray ? "checked" : ""}></label></section>
@@ -3402,7 +3416,29 @@ function renderSettingsPanel() {
   updateCreditsStatus();
   applyAvatar();
   syncAudioOutputUI();
+  mountShortcutEditor();
   if (!audioOutputsChecked && !outputBusy) void refreshAudioOutputs(true);
+}
+
+/**
+ * 挂上「键盘操作」的改键器。
+ *
+ * 面板每次重渲染 innerHTML 都会换掉这些按钮，所以旧监听必须先解绑，
+ * 否则点一下会触发好几份保存（旧节点已失效，但监听仍挂在 window 上）。
+ */
+let disposeShortcutEditor: (() => void) | undefined;
+function mountShortcutEditor() {
+  disposeShortcutEditor?.();
+  disposeShortcutEditor = mountKeybindingEditor(
+    $("#panel-body"),
+    () => preferences.keybindings,
+    (next) => {
+      preferences.keybindings = next;
+      save("rhine-music-preferences", preferences);
+      // 正在生效的 2 倍速可能挂在旧键上，改完键位就收掉，避免松不开。
+      keyGestures.cancel();
+    },
+  );
 }
 function updateQuality() {
   renderQuality = normalizeQuality(renderQuality);
@@ -4383,6 +4419,30 @@ document.addEventListener("change", (e) => {  const el = e.target as HTMLInputEl
     savePrefs();
   }
 });
+/**
+ * 按键手势：单击切歌/切歌单、双击 ±15 秒、长按临时 2 倍速。
+ *
+ * 键位来自设置（`preferences.keybindings`），所以这里只认动作，不认具体键。
+ * 变速走 `player.setRate`，跳转走 `player.seek`，两者都不重载音频。
+ */
+const keyGestures = new MusicKeyGestures({
+  enabled: () => !panel && !boot?.active && !viewer?.isOpen && !mvPlayer.isOpen,
+  active: () => Boolean(playerState.currentTrack),
+  playing: () => playerState.playing,
+  bindings: () => preferences.keybindings,
+  navigateSong: (direction) => stepAlbum(direction),
+  navigatePlaylist: (direction) => stepGenre(direction),
+  seekBy: (seconds) => {
+    const duration = playerState.duration > 0 ? playerState.duration : 0;
+    const target = playerState.currentTime + seconds;
+    // 前 15 秒往回退会到负数，夹到 0；快进越界夹到结尾。
+    player.seek(duration > 0 ? Math.min(duration, Math.max(0, target)) : Math.max(0, target));
+  },
+  boost: (active) => player.setRate(active ? 2 : 1),
+});
+document.addEventListener("keyup", (e) => keyGestures.keyup(e));
+window.addEventListener("blur", () => keyGestures.cancel());
+
 document.addEventListener("keydown", (e) => {
   if (boot?.active) return;
   if (viewer?.isOpen || mvPlayer.isOpen) return;
@@ -4392,6 +4452,8 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (panel) {
+    // 面板一开就收掉半截手势（含正在生效的 2 倍速），别让它漏到面板里的输入框。
+    keyGestures.cancel();
     if (e.key === "Tab") {
       const items = [
         ...document.querySelectorAll<HTMLElement>(
@@ -4445,22 +4507,8 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     setOverview(!overview);
   }
-  if (e.key === "ArrowLeft") {
-    e.preventDefault();
-    stepGenre(-1);
-  }
-  if (e.key === "ArrowRight") {
-    e.preventDefault();
-    stepGenre(1);
-  }
-  if (e.key === "ArrowUp") {
-    e.preventDefault();
-    stepAlbum(-1);
-  }
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    stepAlbum(1);
-  }
+  // 方向键交给手势机：它要区分单击/双击/长按，不能再在这里逐个 if。
+  if (keyGestures.keydown(e)) return;
   if (e.key === "Enter" && !(e.target as HTMLElement).closest("button, a")) {
     e.preventDefault();
     setMode("detail");

@@ -48,10 +48,27 @@ assert.deepEqual(
 );
 assert.equal(
   steps.consume(144, 80),
-  3,
-  "A fast gesture can advance several albums",
+  1,
+  "One wheel notch (100-144px on Windows) advances exactly one album",
 );
 assert.equal(steps.consume(10000, 96), 3, "Oversized events are bounded");
+// 回归：鼠标滚轮一格 = 一首。Chromium/Edge 在 Windows 上一格 deltaY=100，
+// 旧阈值 48 会把它算成两首（100 / 48 = 2.08 → trunc → 2）。
+steps.reset();
+assert.equal(steps.consume(100, 0), 1, "A 100px notch advances exactly one album");
+steps.reset();
+assert.equal(steps.consume(120, 0), 1, "A 120px notch advances exactly one album");
+steps.reset();
+assert.equal(steps.consume(-100, 0), -1, "Reverse notch advances one album up");
+steps.reset();
+assert.equal(steps.consume(100, 0), 1);
+assert.equal(
+  steps.consume(100, 16),
+  1,
+  "Consecutive notches each advance one album (no remainder drift)",
+);
+assert.equal(steps.consume(100, 32), 1);
+assert.equal(steps.consume(100, 48), 1);
 assert.equal(
   steps.consume(1, 112),
   0,

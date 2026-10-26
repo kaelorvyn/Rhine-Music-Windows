@@ -327,3 +327,21 @@
 }
 /* 独立按钮块跟在输入行后面时（「清理缓存」），留出呼吸距离而不是贴着。 */
 .settings-page .settings-row + .text-button { margin-top: 10px; }
+
+/* ── 键盘操作（设置 · 播放）────────────────────────────────────
+   右侧是「当前键位」按钮，直接用 .text-button，跟本页其它按钮同款。
+   两处必须覆盖：
+   1. `.settings-page .text-button` 有 16px 右外边距（并排按钮靠它拉开），
+      在行里会把 8 个键位推得参差不齐 —— 这里清零，改用 margin-left:auto 靠右。
+   2. 按钮宽度随文案变（↑ 窄、Page Up 宽），给个统一最小宽 + 居中，
+      箭头才排得成一竖列。 */
+.settings-page .shortcut-row > .shortcut-binding {
+  margin: 0 0 0 auto;
+  min-width: 72px;
+  justify-content: center;
+}
+/* 录制中：换个边框色提示「正在等按键」，形状尺寸不变。 */
+.settings-page .shortcut-binding[data-recording="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}

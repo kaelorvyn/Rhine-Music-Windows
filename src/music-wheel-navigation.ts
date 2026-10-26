@@ -4,7 +4,19 @@ export type MusicWheelInput = Pick<
   "deltaMode" | "deltaX" | "deltaY" | "ctrlKey" | "shiftKey"
 >;
 
-const PIXELS_PER_ALBUM = 48;
+/**
+ * 一格滚轮对应的像素量。
+ *
+ * Chromium / Edge / WebView2 在 Windows 上一次滚轮格给的是 **100px**
+ * （`deltaMode` 为 0，即像素模式；某些老驱动给 120）。这个值以前是 48，
+ * 是按「3 行 × 16px」推出来的 —— 那是行模式（`deltaMode` 1）的量级，
+ * 跟真实鼠标滚轮对不上。结果 `trunc(100 / 48) = 2`：用户滚一格，翻两首。
+ */
+const NOTCH_PIXELS = 100;
+
+/** 触控板累积阈值：细碎增量加到这么多就翻一首，保持原先的手感。 */
+const TRACKPAD_PIXELS = 48;
+
 const MAX_ALBUMS_PER_EVENT = 3;
 const GESTURE_GAP_MS = 200;
 
@@ -51,13 +63,28 @@ export class MusicWheelSteps {
     }
     this.lastTime = now;
     this.direction = direction;
- // Accumulate small trackpad deltas, while a single oversized wheel/page
- // event can never jump dozens of albums or leave a delayed input backlog.
-    this.remainder +=
-      Math.min(Math.abs(delta), PIXELS_PER_ALBUM * MAX_ALBUMS_PER_EVENT) *
-      direction;
-    const steps = Math.trunc(this.remainder / PIXELS_PER_ALBUM);
-    this.remainder -= steps * PIXELS_PER_ALBUM;
+
+    const magnitude = Math.abs(delta);
+
+    // 离散滚轮格（鼠标中键滚轮）：一格 = 一首。
+    //
+    // 这一档必须先把零头清零再返回，不能走下面的累积 —— 100 的驱动还行，
+    // 但 120 的老驱动会攒出 20、40…… 每几格就多翻一首。离散事件没有
+    // 「零头」这个概念：一个事件就是一格。快滚时浏览器会把几格合并成
+    // 一个更大的 delta，那就按比例翻，上限 MAX_ALBUMS_PER_EVENT 首。
+    if (magnitude >= NOTCH_PIXELS) {
+      this.remainder = 0;
+      const notches = Math.min(
+        Math.trunc(magnitude / NOTCH_PIXELS),
+        MAX_ALBUMS_PER_EVENT,
+      );
+      return direction * Math.max(1, notches);
+    }
+
+    // 触控板 / 高精度滚轮：细碎增量累积到 TRACKPAD_PIXELS 才翻一首。
+    this.remainder += magnitude * direction;
+    const steps = Math.trunc(this.remainder / TRACKPAD_PIXELS);
+    this.remainder -= steps * TRACKPAD_PIXELS;
     return steps || 0;
   }
 }

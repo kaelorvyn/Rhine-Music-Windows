@@ -134,6 +134,8 @@ export class MusicPlayer {
   private gestureReceived = false;
   private disposed = false;
   private pendingSeek: number | null = null;
+  /** 当前播放速率（1 = 原速）。长按 2 倍速时临时改成 2，松开回 1。 */
+  private playbackRate = 1;
   private preparation?: AbortController;
   private onlineRecovery?: OnlineRecovery;
   private nativePoll?: ReturnType<typeof setTimeout>;
@@ -810,8 +812,27 @@ export class MusicPlayer {
     this.emit();
   }
 
-  setSongTransitionMode(mode: SongTransitionMode): void {
+  /**
+   * 临时变速（长按 2 倍速用）。
+   *
+   * 只改播放速率，不动音量、不动音效链、不重新加载音频 —— 松开立刻回 1，
+   * 播放位置连续。速率记在实例上，换歌后新元素沿用同一个值，所以按住
+   * 不放时连续跳过几首也还是 2 倍速。
+   */
+  setRate(rate: number): void {
     if (this.disposed) return;
+    const next = Number.isFinite(rate) && rate > 0 ? Math.min(4, Math.max(0.25, rate)) : 1;
+    if (this.playbackRate === next) return;
+    this.playbackRate = next;
+    if (this.song) this.song.playbackRate = next;
+    if (this.value.backend === "coreaudio") {
+      // 原生输出不一定实现 rate；实现不了就保持原速，不让它冒错。
+      void this.nativeCommand({ action: "rate", rate: next }).catch(() => {});
+    }
+    this.emit();
+  }
+
+  setSongTransitionMode(mode: SongTransitionMode): void {    if (this.disposed) return;
     const transitionMode = normalizeSongTransition(mode);
     const previous = this.value.songTransitionMode;
     const position = this.gapless?.trackId ? this.gapless.position : this.value.currentTime;
@@ -1125,6 +1146,8 @@ export class MusicPlayer {
     this.songTrackId = track.id;
     this.songGain = this.value.songTransitionMode === "fade-in-out" ? 0 : 1;
     audio.preload = "metadata";
+    // 新元素默认 1 倍速；长按变速期间换歌要保持住当前速率。
+    audio.playbackRate = this.playbackRate;
     this.setSongGain(this.songGain);
  // 音效实时化（用户要求：「音效器要能实时切换、实时变化」）：
  // 把音频元素接进 Web Audio 音效链，改设置时只改 AudioParam，**不重新加载
