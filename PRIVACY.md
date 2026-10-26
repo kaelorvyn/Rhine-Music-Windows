@@ -1,6 +1,6 @@
 # 隐私与数据处理说明
 
-适用范围：本仓库发布的 Windows 社区预览版。维护与反馈：DuoJiuBetter，2228396737@qq.com。
+适用范围：本仓库发布的 Windows 社区版。维护：**kaelorvyn**（本仓库）；Windows 形态的移植与长期维护：**DuoJiuBetter**。反馈与权利事务的邮件地址：2228396737@qq.com（Windows 移植版沿用）。贡献者名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 ## 本机数据
 

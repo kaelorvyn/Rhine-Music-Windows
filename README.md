@@ -2,7 +2,7 @@
 
 把本地音乐放进三维玻璃专辑架里浏览和播放的音乐播放器，Windows 桌面版。
 
-这是 [RonaldDeng/Rhine-Music-Demo](https://github.com/RonaldDeng/Rhine-Music-Demo) V0.4.1 的 **Windows 社区衍生版**，视觉与渲染基础来自 [LBEILC/RhineLabUI](https://github.com/LBEILC/RhineLabUI)。Windows 版本由 [DuoJiuBetter](https://github.com/DuoJiuBetter) 维护，本 **0.1.1** 由 [kaelorvyn](https://github.com/kaelorvyn) 打包发布。
+这是 [RonaldDeng/Rhine-Music-Demo](https://github.com/RonaldDeng/Rhine-Music-Demo) V0.4.1 的 **Windows 社区衍生版**，视觉与渲染基础来自 [LBEILC/RhineLabUI](https://github.com/LBEILC/RhineLabUI)。Windows 形态的移植与长期维护者：[DuoJiuBetter](https://github.com/DuoJiuBetter)；本仓库（**0.1.1** 起）由 [kaelorvyn](https://github.com/kaelorvyn) 维护并发布。完整贡献者名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 本仓库与上游作者、各音乐平台及原作品牌方**没有官方合作关系**。
 
@@ -135,16 +135,31 @@ node scripts/package-desktop.mjs                       # 组便携包
 
 ### 作者与贡献者
 
-这个项目不是一个人写的，代码和设计来自三方：
+这个项目不是一个人写的。代码和设计来自三方，另有若干贡献者在各自的上游仓库里留下了真实提交。**完整名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)**（10 人，去重，逐位列出）。
 
-| 角色 | 作者 | 贡献 |
+先向这三个人特别致谢 —— 缺任何一位都没有现在这个东西：
+
+| | 作者 | 贡献 |
 |---|---|---|
-| 原作者 | [**RonaldDeng**](https://github.com/RonaldDeng) | [Rhine-Music-Demo](https://github.com/RonaldDeng/Rhine-Music-Demo) V0.4.1 的完整实现：三维专辑架、播放器、本地曲库、在线平台接入 |
-| 视觉与渲染 | [**LBEILC**（路北路陈）](https://github.com/LBEILC) | [RhineLabUI](https://github.com/LBEILC/RhineLabUI) 的三维视觉、玻璃材质、景深与光照设计 |
-| Windows 版维护 | [**DuoJiuBetter**](https://github.com/DuoJiuBetter) | Windows 移植与长期维护：Tauri 桌面壳、运行时打包、性能优化、平台适配 |
-| 本预览版 | [**kaelorvyn**](https://github.com/kaelorvyn) | 0.1.1 的功能与发布：多平台歌单、音质选择、跨源兜底、设置项接入 |
+| **Windows 版维护者** | [**DuoJiuBetter**](https://github.com/DuoJiuBetter) | 把三维档案界面搬成能双击运行的 Windows 程序：Tauri 桌面壳、运行时打包、安装器、性能优化、平台适配与长期维护 |
+| **原版作者** | [**RonaldDeng**](https://github.com/RonaldDeng) | [Rhine-Music-Demo](https://github.com/RonaldDeng/Rhine-Music-Demo) V0.4.1 的完整实现：本地曲库与播放服务、专辑模型、音乐界面、导航、相机交互、文字效果、响应式 |
+| **视觉与渲染基础** | [**LBEILC**（路北路陈）](https://github.com/LBEILC) | [RhineLabUI](https://github.com/LBEILC/RhineLabUI) 的三维视觉、玻璃材质、景深与光照、动效体系、建模脚本 |
 
-本仓库的协作者里包含上述作者。MIT 许可要求保留原作者署名，这里逐位列出，不只写一个「致谢」。
+其余贡献者（在线源与启动器、动效、无障碍、兼容性、手柄输入、移动端布局、本仓库维护）：
+
+| # | 贡献者 | 贡献 |
+|---|---|---|
+| 4 | [**MT-gar**](https://github.com/MT-gar) | 独立在线专辑架（Internet Archive + Subsonic 兼容自建服务器）、回环代理与逐源主机白名单、启动器抗保留端口与陈旧锁 |
+| 5 | [**rndyt**](https://github.com/rndyt) | 细粒度动效控制；首次访问跟随系统动效偏好 |
+| 6 | [**fisHarly0**（Harly）](https://github.com/fisHarly0) | 弹窗键盘导航纳入链接；自定义音质预设保持可见 |
+| 7 | [**CrKcel**](https://github.com/CrKcel) | Firefox 音频修复 |
+| 8 | [**EastCation**（辉夜星瞳）](https://github.com/EastCation) | 手柄输入处理，查看器帮助文案随输入设备切换 |
+| 9 | [**Woo3aN**](https://github.com/Woo3aN) | 弹窗顶栏改 sticky，手机上关闭按钮可操作 |
+| 10 | [**kaelorvyn**](https://github.com/kaelorvyn) | 本仓库维护者：0.1.1 起的 Windows 分发与功能（多平台歌单、音质选择、跨源兜底、按键控制、自更新） |
+
+上游 `DuoJiuBetter/Rhine-Music-Windows` 另有 1 个提交由 OpenAI 的编码 agent **codex** 完成（0.2.0 预览版发布）。它**不是自然人**，不计入贡献者人数，但在 [CONTRIBUTORS.md](CONTRIBUTORS.md) 里如实记录。
+
+名单按**作用**排列，不按提交量排名。每一位的署名属于他们本人，本仓库的维护者署名不取代上游署名；MIT 许可要求保留原作者署名，这里逐位列出，不只写一个「致谢」。
 
 MiSans 字体、第三方依赖、模型、标志、《明日方舟》相关视觉元素及声音采样各自遵循其权利边界，不能一概视为 MIT 或已获商业授权。详见 [NOTICE.md](NOTICE.md) 与 [PLATFORM-NOTICE.md](PLATFORM-NOTICE.md)。
 

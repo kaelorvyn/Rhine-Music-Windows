@@ -1,6 +1,6 @@
 # 第三方平台、内容与权利说明
 
-维护者：DuoJiuBetter。联系方式：**2228396737@qq.com**。
+维护者：**kaelorvyn**（本仓库）；Windows 形态的移植与长期维护者：**DuoJiuBetter**。权利事务的联系邮箱为 **2228396737@qq.com**（Windows 移植版沿用）。完整贡献者名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 ## 项目性质
 

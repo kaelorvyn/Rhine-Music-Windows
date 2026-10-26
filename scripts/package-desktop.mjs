@@ -19,6 +19,10 @@ await fs.copyFile('README.md', path.join(output, 'README.txt'));
 await fs.copyFile('LICENSE', path.join(output, 'LICENSE'));
 await fs.copyFile('NOTICE.md', path.join(output, 'NOTICE.md'));
 await fs.copyFile('PLATFORM-NOTICE.md', path.join(output, 'PLATFORM-NOTICE.md'));
+// 贡献者名单随包分发：NOTICE.md / PLATFORM-NOTICE.md 都引用了它，
+// 包里没有这份文件就成了死链，署名也就断了。
+await fs.copyFile('CONTRIBUTORS.md', path.join(output, 'CONTRIBUTORS.md'));
+await fs.copyFile('PRIVACY.md', path.join(output, 'PRIVACY.md'));
 const hashes = [];
 async function walk(dir) {
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {

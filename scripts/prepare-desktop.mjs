@@ -140,7 +140,7 @@ for (const name of NATIVE_KEEP) {
 }
 await fs.cp(path.join(root, 'third-party'), path.join(target, 'third-party'), { recursive: true });
 // README.original.md 是上游项目原始说明，已从仓库移除；改用本项目的 PLATFORM-NOTICE.md。
-for (const name of ['package.json', 'package-lock.json', 'LICENSE', 'NOTICE.md', 'PLATFORM-NOTICE.md'])
+for (const name of ['package.json', 'package-lock.json', 'LICENSE', 'NOTICE.md', 'PLATFORM-NOTICE.md', 'CONTRIBUTORS.md', 'PRIVACY.md'])
   await fs.copyFile(path.join(root, name), path.join(target, name));
 const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
 const child = spawnSync(process.execPath, [npmCli, 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: target, stdio: 'inherit' });

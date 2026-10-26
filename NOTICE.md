@@ -4,7 +4,9 @@
 
 ## Windows 社区分发
 
-本衍生版由 **DuoJiuBetter** 维护，基于 RonaldDeng 的音乐适配和 LBEILC 的视觉基础；保留已有版权与许可。当前公开发行包不捆绑 FFmpeg / ffprobe，内置 Node.js 的许可位于 third-party/NODE-LICENSE.txt；原生依赖许可材料随公开包提供。第三方平台、账号与权利反馈详见 [PLATFORM-NOTICE.md](PLATFORM-NOTICE.md)，隐私说明见 [PRIVACY.md](PRIVACY.md)。Windows 版问题及权利联系邮箱为 **2228396737@qq.com**；上游作者不承担本衍生版支持。以下原有署名和资源来源继续保留。
+本衍生版由 **kaelorvyn** 维护并公开发布；Windows 形态的移植与长期维护者是 **DuoJiuBetter**，音乐适配与修改来自 **RonaldDeng**，视觉与渲染基础来自 **LBEILC**。三方署名各自独立，本仓库维护者的署名不取代任何上游署名。
+
+完整、去重的贡献者名单（10 人，含各自的具体提交）见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。当前公开发行包不捆绑 FFmpeg / ffprobe，内置 Node.js 的许可位于 third-party/NODE-LICENSE.txt；原生依赖许可材料随公开包提供。第三方平台、账号与权利反馈详见 [PLATFORM-NOTICE.md](PLATFORM-NOTICE.md)，隐私说明见 [PRIVACY.md](PRIVACY.md)。Windows 移植相关事务的历史联系邮箱为 **2228396737@qq.com**（DuoJiuBetter）；上游作者不承担本衍生版支持，本软件的使用问题走「设置 → 反馈」。以下原有署名和资源来源继续保留。
 
 ## 开发者与上游
 
@@ -12,8 +14,25 @@
 | --- | --- |
 | 音乐播放器适配及后续修改 | **Copyright (c) 2026 RonaldDeng**。包括本地曲库与播放服务、音乐专辑模型适配、音乐界面、导航、相机交互、文字效果、响应式及版本维护中由本项目新增或修改的部分；不主张对未修改的上游代码或第三方素材享有原创权利。 |
 | 原版 RhineLabUI | **Copyright (c) 2026 LBEILC**。[原仓库](https://github.com/LBEILC/RhineLabUI)，初始基于提交 [`5abab02367465d9189f4ae65bcb6f17fdb5938f7`](https://github.com/LBEILC/RhineLabUI/tree/5abab02367465d9189f4ae65bcb6f17fdb5938f7)。保留其三维档案界面、渲染与动效基础、建模脚本、资料说明和 Git 历史。 |
+| Windows 移植与维护 | **DuoJiuBetter**。[Rhine-Music-Windows](https://github.com/DuoJiuBetter/Rhine-Music-Windows)。Tauri 桌面壳、运行时打包、安装器、性能与平台适配，以及长期版本维护。本项目的 Windows 形态直接继承自这部分工作。 |
 
-有权授权的程序代码、建模脚本和技术文档沿用 [MIT License](LICENSE)，保留以上两项署名。分发代码或其重要部分时须一并保留版权声明及完整许可证；适配者的署名不取代上游署名。MIT 允许使用、修改及商业分发，软件按原样提供；本说明不在 MIT 上另加用途限制。具体以许可证原文为准，参见 [MIT 许可说明](https://choosealicense.com/licenses/mit/)。
+### 其他贡献者
+
+以下各位的提交位于上游仓库，本衍生版一并保留其署名：
+
+| 贡献者 | 仓库与提交数 | 贡献 |
+| --- | --- | --- |
+| [MT-gar](https://github.com/MT-gar) | Rhine-Music-Demo 3 · DuoJiuBetter/Rhine-Music-Windows 3 | 独立在线专辑架（Internet Archive + Subsonic 兼容自建服务器）、回环代理与逐源主机白名单、许可展示；启动器抗保留端口与陈旧锁 |
+| [rndyt](https://github.com/rndyt) | RhineLabUI 8 | 细粒度动效控制；首次访问跟随系统动效偏好 |
+| [fisHarly0（Harly）](https://github.com/fisHarly0) | RhineLabUI 2 | 弹窗键盘导航纳入链接；自定义音质预设保持可见 |
+| [CrKcel](https://github.com/CrKcel) | RhineLabUI 1 | Firefox 音频修复 |
+| [EastCation（辉夜星瞳）](https://github.com/EastCation) | RhineLabUI 1 | 手柄输入处理与帮助文案适配 |
+| [Woo3aN](https://github.com/Woo3aN) | RhineLabUI 1 | 弹窗顶栏 sticky，移动端关闭按钮可操作 |
+| [kaelorvyn](https://github.com/kaelorvyn) | kaelorvyn/Rhine-Music-Windows 21+ | 本仓库维护者（0.1.1 起的 Windows 分发与功能） |
+
+另：上游 `DuoJiuBetter/Rhine-Music-Windows` 有 1 个提交由 OpenAI 的编码 agent **codex** 完成（0.2.0 预览版发布）。它不是自然人，不计入贡献者人数，仅在此如实记录。
+
+有权授权的程序代码、建模脚本和技术文档沿用 [MIT License](LICENSE)，保留以上各项署名。分发代码或其重要部分时须一并保留版权声明及完整许可证；适配者的署名不取代上游署名。MIT 允许使用、修改及商业分发，软件按原样提供；本说明不在 MIT 上另加用途限制。具体以许可证原文为准，参见 [MIT 许可说明](https://choosealicense.com/licenses/mit/)。
 
 [README.original.md](README.original.md) 保留上游原说明，其中“本项目”“原创”等措辞归属于该上游文档的语境。RonaldDeng 不代表 LBEILC，音乐适配不表示上游作者参与、认可或为本衍生版本提供支持。
 
