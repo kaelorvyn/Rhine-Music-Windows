@@ -1,6 +1,6 @@
 [package]
 name = "rhine-music-windows"
-version = "0.1.6"
+version = "0.1.7"
 description = "Rhine Music Windows desktop port"
 edition = "2021"
 license = "MIT"
