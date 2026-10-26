@@ -176,9 +176,31 @@ pub fn desktop_app_info() -> Result<AppInfo, String> {
 
 /// 在解压结果里找「真正的那一层」：Release 的 zip 通常把可执行文件包在
 /// `Rhine-Music-x.y.z-Portable/` 里，也可能直接躺在根上。
+///
+/// 【为什么要退一步认「顶层任意 exe」】
+/// 用户实际启动的程序名不一定和发布包里的文件名一模一样 —— 比如直接双击
+/// 构建产物 `rhine-music-windows.exe`（和 `Rhine Music.exe` 是同一个程序，
+/// 只是文件名不同）。严格按当前 exe 名去找，会得出「更新包里没有找到主程序」
+/// 这种明明是同一个程序却更新不了的结论。所以按名字找不到时，退一步看顶层
+/// 有没有任何 exe：有，就认为这一层就是程序目录。
 fn find_payload_root(root: &Path, exe_name: &str, depth: usize) -> Option<PathBuf> {
     if root.join(exe_name).is_file() {
         return Some(root.to_path_buf());
+    }
+    // 顶层任意 .exe（runtime/ 里的 node.exe、bin/ffmpeg.exe 都在子目录，不会误判）
+    if let Ok(entries) = fs::read_dir(root) {
+        let has_exe = entries.flatten().any(|entry| {
+            let path = entry.path();
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("exe"))
+                    .unwrap_or(false)
+        });
+        if has_exe {
+            return Some(root.to_path_buf());
+        }
     }
     if depth == 0 {
         return None;
@@ -307,13 +329,23 @@ pub async fn desktop_update_install(app: tauri::AppHandle, url: String, size: Op
     report(&app, "download", final_size, final_size);
 
     // 2) 解压（Windows 自带 bsdtar，能直接解 zip）。
+    //
+    // 【为什么不看 success()】
+    // bsdtar 的退出码 1 表示「解完了，但有条目被跳过」，2 才是真正的致命错误。
+    // 触发 1 的场景很常见：某个音源插件的文件名带非常规 Unicode（比如
+    // `[V260907] 𝖧౿ᥣᥣ𝗈 Ԝ𝗈𝗋ᥣᑯ260809.js` 里的星形平面字符），bsdtar 在
+    // Windows 上转不出文件名就跳过它 —— 其余 4835 个文件全都正常解出。
+    //
+    // 旧实现只看 success()，于是把「跳过一个可选插件」判成「整包已损坏」，
+    // 直接把临时目录删了，用户看到的就是「更新失败」。一个插件文件不该
+    // 让整次更新作废 —— 解压结果后面还会核对主程序在不在。
     report(&app, "unpack", 0, 0);
     let unpacked = spawn_hidden(
         Command::new("tar").arg("-xf").arg(&zip).arg("-C").arg(&staging),
     )
     .status()
     .map_err(|e| format!("无法启动 tar：{e}"))?;
-    if !unpacked.success() {
+    if unpacked.code().unwrap_or(2) >= 2 {
         let _ = fs::remove_dir_all(&work);
         return Err("更新包解压失败，文件可能已损坏。".to_string());
     }
@@ -323,12 +355,15 @@ pub async fn desktop_update_install(app: tauri::AppHandle, url: String, size: Op
         .ok_or_else(|| "更新包里没有找到主程序。".to_string())?;
 
     // 4) 写替换脚本。等 2 秒让本进程彻底退出、文件句柄释放。
+    //
+    // `/XD music-data-v3`：包里带了一份默认的 music-data-v3（配置与流派规则），
+    // 但那是**用户数据目录** —— 更新程序不该把人家的歌单索引覆盖成出厂状态。
     let script = work.join("apply-update.cmd");
     let body = format!(
         "@echo off\r\n\
 chcp 65001 >nul\r\n\
 ping -n 3 127.0.0.1 >nul\r\n\
-robocopy \"{payload}\" \"{target}\" /E /IS /MOVE /R:2 /W:1 /NFL /NDL /NJH /NJS >nul\r\n\
+robocopy \"{payload}\" \"{target}\" /E /IS /MOVE /XD music-data-v3 /R:2 /W:1 /NFL /NDL /NJH /NJS >nul\r\n\
 start \"\" \"{exe}\"\r\n\
 rd /s /q \"{work}\"\r\n\
 del \"%~f0\"\r\n",
