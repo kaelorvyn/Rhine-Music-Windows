@@ -563,39 +563,6 @@ export function credentialsReady() {
   return Boolean(authToken && cipherKeyBuf);
 }
 
-/**
- * 扫码登录时用的一份「协议模板」。
- *
- * 走扫码这条路拿到的新凭据不需要带签名脚本（本机有私钥，直接在 Node 里签），
- * 但协议字段（canonical 顺序、头名、加密信封、端点路径）必须一致，
- * 所以这里把已加载的协议配置导出成一份可写进凭据的模板。
- */
-export function signTemplate() {
-  if (!signConfig) return null;
-  return {
-    protocol: signConfig.protocol,
-    headerVersion: signConfig.headerVersion,
-    headerMigration: signConfig.headerMigration,
-    userAgent: signConfig.userAgent,
-    signerScript: signConfig.signerScript,
-    emptyHash: signConfig.emptyHash,
-    nonceBytes: signConfig.nonceBytes,
-    canonical: [...signConfig.canonical],
-    headers: { ...signConfig.headers },
-    probeCanonical: signConfig.probeCanonical,
-  };
-}
-
-export function cryptoTemplate() {
-  if (!cryptoSpec) return null;
-  return { ...cryptoSpec };
-}
-
-export function apiTemplate() {
-  if (!apiSpec) return null;
-  return { ...apiSpec };
-}
-
 export function encrypt(plaintext) {
   if (!cryptoSpec) throw new Error('crypto spec unavailable');
   const nonce = crypto.randomBytes(cryptoSpec.ivBytes);

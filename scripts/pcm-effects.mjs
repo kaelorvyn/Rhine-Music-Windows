@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 
 const eqFrequencies = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
-// biquad 常量按实测频响拟合（常量表 0x141c9c2xx）。
+// biquad 常量按实测频响拟合。
 const EQ_Q = 2.82 / 2;            // Q = 1.41
 const EQ_MAX_RATIO = 0.45;        // EQ 频率上限 0.45·fs
 const SHELF_MAX_RATIO = 0.4;      // 搁架频率上限 0.4·fs

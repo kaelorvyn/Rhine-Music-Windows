@@ -166,28 +166,6 @@
 .pool-connectivity { margin: 14px 0 0; }
 .pool-connectivity-note { margin: 0; color: var(--muted); font-size: 12px; }
 
-/* ── 共享音源：扫码登录 ───────────────────────────────────── */
-.pool-qr-login {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  margin: 16px 0 0;
-  padding: 16px;
-  border: 1px solid var(--line, rgba(127, 138, 145, .28));
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--panel, #fff) 88%, transparent);
-}
-.pool-qr-login[hidden] { display: none; }
-.pool-qr-login img {
-  border-radius: 10px;
-  background: #fff;
-  padding: 8px;
-  box-shadow: 0 2px 14px rgba(15, 23, 28, .12);
-  image-rendering: pixelated;
-}
-.pool-qr-login .scan-status { margin: 0; }
-
 /* 签名失败提示：比普通状态更醒目，但不用刺眼的红色 */
 .pool-sign-note {
   margin: 6px 0 0;

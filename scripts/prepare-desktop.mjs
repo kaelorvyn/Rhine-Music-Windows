@@ -2,7 +2,6 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import esbuild from 'esbuild';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const target = path.join(root, 'desktop-runtime');
@@ -42,18 +41,23 @@ async function collectRuntimeModules(dir) {
 const runtimeModules = await collectRuntimeModules(path.join(root, 'scripts'));
 await fs.mkdir(path.join(target, 'scripts'), { recursive: true });
 
-const MODULE_OPTS = {
-  loader: 'js', format: 'esm', target: 'node20', charset: 'utf8',
-  minifyWhitespace: true, minifySyntax: true,
-};
-
+// runtime 模块**原样拷贝**，不做转译也不做压缩。
+//
+// 【为什么不走 esbuild】
+// esbuild 的 transform 一定会剥掉普通注释（只有 `/*! */` 和 `// @license`
+// 这类 legal comment 能留），而注释正是代码的说明书 —— 读代码的人靠它
+// 知道「这个函数为什么这么写」「踩过什么坑」。
+//
+// 访问控制不靠藏代码，靠的是用户自己导入的密钥文件：
+// 客户端不含任何秘密，源码可以完全公开。
+// 真正不该公开的那部分注释（逆向方法、上游实现细节、个人信息）
+// 由 _obfuscate-release.mjs 的定向清洗负责 —— 删那几条，不是删全部。
+//
+// runtime 里都是 .mjs，Node 直接能跑，不需要转译。
 async function emitModule(name) {
   const from = path.join(root, 'scripts', name);
   const to = path.join(target, 'scripts', name);
-  if (!name.endsWith('.mjs')) { await fs.copyFile(from, to); return; }
-  const src = await fs.readFile(from, 'utf8');
-  const code = esbuild.transformSync(src, MODULE_OPTS).code;
-  await fs.writeFile(to, code, 'utf8');
+  await fs.copyFile(from, to);
 }
 
 for (const name of runtimeModules) {
