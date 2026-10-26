@@ -22,7 +22,7 @@ import { fetchOnline, mountOnlineDebug, onlineErrorReport } from './online-debug
 import { MusicVisualizer, normalizeVisualizer, visualizerMarkup, type VisualizerOptions } from "./music-visualizer";
 import { settingsCategories, settingsNavigation, groupSettingsContent, selectSettingsCategory, filterSettings, type SettingsCategory } from './music-settings';
 import { buildMusicFeedback, feedbackMarkup } from './music-feedback';
-import { clearAudioCache, clearPoolCredential, importPoolCredential, openFeedbackDraft, poolCredentialExportUrl, readAudioCacheUsage, readPoolCredential, syncCacheSettings, syncTrayPreference } from './desktop';
+import { clearAudioCache, clearPoolCredential, importPoolCredential, openFeedbackDraft, poolCredentialExportUrl, poolQrImageUrl, pollPoolQrLogin, readAudioCacheUsage, readPoolCredential, startPoolQrLogin as startPoolQrLoginApi, syncCacheSettings, syncTrayPreference } from './desktop';
 import { version as appVersion } from "../package.json";
 import { MusicOverviewUI } from "./music-overview-ui";
 import { MusicSongView } from './music-song-view';
@@ -764,6 +764,18 @@ async function refreshPoolCredentialStatus() {
   } else {
     status.textContent = state.note ?? "未导入密钥，当前只使用备用音源";
   }
+  // 【2026-10-26】签名失败单独提示：不然用户只看到「取源失败」，
+  // 根本不知道是自己这台电脑缺设备密钥。
+  const signBox = document.querySelector('#pool-credential-signnote') as HTMLElement | null;
+  if (signBox) {
+    if (state.signNote) {
+      signBox.textContent = state.signNote;
+      signBox.hidden = false;
+    } else {
+      signBox.textContent = "";
+      signBox.hidden = true;
+    }
+  }
   return state;
 }
 
@@ -818,9 +830,62 @@ async function runPoolConnectivity() {
   }
 }
 
+/**
+ * 扫码登录。
+ *
+ * 密钥文件里的私钥只对生成它的那台电脑有效 —— 服务端按设备登记公钥，
+ * 换台电脑签名就对不上。这条路让**任何一台电脑**都能自己登记：
+ * 本机生成密钥 → 手机扫一下 → 服务端登记 → 这台电脑拿到自己的凭据。
+ */
+let poolQrTimer: number | null = null;
+
+function stopPoolQrPolling() {
+  if (poolQrTimer != null) { window.clearTimeout(poolQrTimer); poolQrTimer = null; }
+}
+
+function closePoolQrPanel() {
+  stopPoolQrPolling();
+  const box = document.querySelector('#pool-qr-login') as HTMLElement | null;
+  if (box) box.hidden = true;
+}
+
+async function startPoolQrLogin() {
+  const box = document.querySelector('#pool-qr-login') as HTMLElement | null;
+  const image = document.querySelector('#pool-qr-image') as HTMLImageElement | null;
+  const note = document.querySelector('#pool-qr-status') as HTMLElement | null;
+  if (!box) return;
+  closePoolQrPanel();
+  box.hidden = false;
+  if (note) note.textContent = "正在生成二维码…";
+  const session = await startPoolQrLoginApi();
+  if (!session) {
+    if (note) note.textContent = "无法连接服务器，请检查网络后重试。";
+    return;
+  }
+  if (image) image.src = poolQrImageUrl(session.qrContent);
+  if (note) note.textContent = "请用手机上的客户端扫描二维码。";
+  const tick = async () => {
+    const state = await pollPoolQrLogin(session.sessionId);
+    if (!state) { if (note) note.textContent = "连接中断，请重试。"; return; }
+    if (state.status === 'approved') {
+      if (note) note.textContent = "授权成功，正在装填…";
+      closePoolQrPanel();
+      await refreshPoolCredentialStatus();
+      return;
+    }
+    if (state.status === 'error' || state.status === 'expired' || state.status === 'rejected') {
+      if (note) note.textContent = state.error ?? "二维码已过期，请重新获取。";
+      stopPoolQrPolling();
+      return;
+    }
+    // rate_limited 不是失败，等久一点再问（服务端对轮询有速率限制）
+    poolQrTimer = window.setTimeout(() => { void tick(); }, state.status === 'rate_limited' ? 8000 : 5000);
+  };
+  poolQrTimer = window.setTimeout(() => { void tick(); }, 4000);
+}
+
 /** 「导入密钥文件」：打开文件选择器，读文本后交给后端。 */
-function pickPoolCredentialFile() {
-  const input = document.querySelector("#pool-credential-file") as HTMLInputElement | null;
+function pickPoolCredentialFile() {  const input = document.querySelector("#pool-credential-file") as HTMLInputElement | null;
   if (input) input.click();
 }
 
@@ -3353,7 +3418,7 @@ function renderSettingsPanel() {
 
     <section class="panel-section" data-settings-group="playback"><h3>播放</h3><label class="settings-row"><span>进入软件自动播放</span><input type="checkbox" id="autoplay-setting" data-settings-key="autoplay" ${preferences.autoplay ? "checked" : ""}></label></section>
     <section class="panel-section" data-settings-group="cache"><h3>缓存</h3><label class="settings-row"><span>缓存上限</span><input type="range" id="cache-limit" data-settings-key="cacheLimit" min="64" max="8192" step="64" value="${preferences.cacheLimit}" aria-label="缓存上限"></label><p class="scan-status" id="cache-limit-status" role="status">${preferences.cacheLimit} MB</p><label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" data-settings-key="cacheLocation" placeholder="读取中…" aria-label="缓存位置" value="${esc(preferences.cacheLocation)}"></label><button class="text-button" data-action="cache-clear">清理缓存 ↗</button><p class="scan-status" id="cache-status" role="status" aria-live="polite"></p></section>
-    <section class="panel-section" data-settings-group="library"><h3>共享音源</h3><p class="scan-status" id="pool-credential-status" role="status" aria-live="polite">检查中…</p><div class="pool-credential-actions"><button class="text-button" data-action="pool-connectivity">检测连通性 ↗</button><button class="text-button" data-action="pool-credential-import">导入密钥文件 ↗</button><button class="text-button" data-action="pool-credential-export">导出密钥 ↗</button><button class="text-button" data-action="pool-credential-clear">移除 ↗</button></div><div class="pool-connectivity" id="pool-connectivity" role="status" aria-live="polite"></div><input type="file" id="pool-credential-file" accept=".rhinekey,.json" hidden><p class="scan-status">密钥由你自己提供，程序不内置任何凭据。没导入时只使用备用音源。</p></section>
+    <section class="panel-section" data-settings-group="library"><h3>共享音源</h3><p class="scan-status" id="pool-credential-status" role="status" aria-live="polite">检查中…</p><p class="scan-status pool-sign-note" id="pool-credential-signnote" role="alert" hidden></p><div class="pool-credential-actions"><button class="text-button" data-action="pool-connectivity">检测连通性 ↗</button><button class="text-button" data-action="pool-qr-login">扫码登录 ↗</button><button class="text-button" data-action="pool-credential-import">导入密钥文件 ↗</button><button class="text-button" data-action="pool-credential-export">导出密钥 ↗</button><button class="text-button" data-action="pool-credential-clear">移除 ↗</button></div><div class="pool-qr-login" id="pool-qr-login" hidden><img id="pool-qr-image" alt="扫码登录二维码" width="220" height="220"><p class="scan-status" id="pool-qr-status" role="status" aria-live="polite">请用手机上的客户端扫描二维码。</p><button class="text-button" data-action="pool-qr-cancel">取消</button></div><div class="pool-connectivity" id="pool-connectivity" role="status" aria-live="polite"></div><input type="file" id="pool-credential-file" accept=".rhinekey,.json" hidden><p class="scan-status">密钥由你自己提供，程序不内置任何凭据。没导入时只使用备用音源。<br>换一台电脑用？点「扫码登录 ↗」用手机授权一次即可。</p></section>
     <section class="panel-section" data-settings-group="display"><h3>窗口</h3><label class="settings-row"><span>关闭窗口时最小化到托盘</span><input type="checkbox" id="minimize-to-tray" data-settings-key="minimizeToTray" ${preferences.minimizeToTray ? "checked" : ""}></label></section>
     ${visualizerMarkup(normalizeVisualizer(preferences.visualizer))}
     <section class="panel-section" data-settings-group="personalization"><h3>账号头像</h3><div class="avatar-settings"><span class="account-avatar avatar-large" id="avatar-preview"></span><label class="text-button" for="avatar-upload">上传头像 ↗</label><input type="file" id="avatar-upload" accept="image/png,image/jpeg,image/webp" hidden><button class="text-button" data-action="avatar-reset">恢复默认头像</button></div><p class="scan-status">未上传时使用默认头像。</p></section>
@@ -3966,6 +4031,12 @@ document.addEventListener("click", (e) => {
       break;
     case "pool-credential-import":
       pickPoolCredentialFile();
+      break;
+    case "pool-qr-login":
+      void startPoolQrLogin();
+      break;
+    case "pool-qr-cancel":
+      closePoolQrPanel();
       break;
     case "pool-credential-export":
       openExternal(poolCredentialExportUrl());

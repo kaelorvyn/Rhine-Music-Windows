@@ -3,6 +3,7 @@ import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { withHardTimeout } from './hard-timeout.mjs';
+import { normalizeLowS } from './shared-pool-sign.mjs';
 import * as credentialStore from './pool-credential.mjs';
 
 export let SERVER_LINES = [];
@@ -16,6 +17,83 @@ export let PROBE_PATH = '';
 
 let signerCache = { key: null, line9: null };
 
+/**
+ * 内嵌的设备私钥（可选）。
+ *
+ * 【2026-10-26】密钥文件里带 privateKeyPem 时，签名不再依赖本机的
+ * Windows 密钥容器 —— 同一份密钥文件在老师电脑上照样能用。
+ * 没有它时退回旧的容器签名（只在这台生成过密钥的电脑上有效）。
+ */
+let embeddedKey = null;
+
+/**
+ * 签名健康状态。
+ *
+ * 【2026-10-26】原来 signedHeaders() 里 `catch { return {} }` —— 签不出签名就
+ * 悄悄发一个无签名请求，服务端回 403，界面只显示「取源失败」，
+ * 用户完全看不出是自己这台电脑缺设备密钥。
+ *
+ * 现在把最后一次失败的原因记在这里，由 pool-credential.status() 转成一句人话。
+ */
+export const signHealth = {
+  ok: true,
+  reason: '',        // 内部原因码：no_container / signer_failed / key_mismatch / ...
+  detail: '',        // 补充说明（不含凭据）
+  at: 0,
+};
+
+/** 记录一次签名失败。reason 用固定枚举，方便上层映射成文案。 */
+function markSignFailure(reason, detail = '') {
+  signHealth.ok = false;
+  signHealth.reason = reason;
+  signHealth.detail = String(detail ?? '').slice(0, 400);
+  signHealth.at = Date.now();
+}
+
+/** 签名成功一次就把状态清干净。 */
+function markSignOk() {
+  if (!signHealth.ok && !signHealth.reason) return;
+  signHealth.ok = true;
+  signHealth.reason = '';
+  signHealth.detail = '';
+  signHealth.at = Date.now();
+}
+
+/** 供上层读取当前签名健康状态（只读）。 */
+export function signingHealth() {
+  return { ok: signHealth.ok, reason: signHealth.reason, detail: signHealth.detail, at: signHealth.at };
+}
+
+/**
+ * 把签名器返回的 JSON 里的 error 字段翻译成原因码。
+ * 容器不存在 = 这台电脑没登录过上游客户端，是最常见的一种。
+ */
+function classifySignerError(j) {
+  const raw = String(j?.error ?? j?.message ?? '').trim();
+  const e = raw.toUpperCase();
+  if (!e) return ['signer_failed', '签名器没有返回签名'];
+  if (e.includes('NO_KEY') || e.includes('NOT_FOUND') || e.includes('0X80090016')) {
+    return ['no_container', '这台电脑的系统密钥容器里没有设备签名密钥（需要先在客户端里登录一次）'];
+  }
+  if (e.includes('0X8009002B') || e.includes('0X80090010') || e.includes('SIGN_FAIL')) {
+    return ['signer_failed', '系统密钥容器拒绝了签名运算'];
+  }
+  if (e.includes('0X80090029')) {
+    return ['export_blocked', '系统密钥容器不允许导出私钥'];
+  }
+  return ['signer_failed', `签名失败：${raw.slice(0, 160)}`];
+}
+
+/** 从任意错误里尽量挖出结构化信息。 */
+function safeParse(err) {
+  const msg = String(err?.message ?? err ?? '');
+  const m = msg.match(/\{[\s\S]*\}/);
+  if (m) {
+    try { return JSON.parse(m[0]); } catch { /* 不是 JSON 就用原文 */ }
+  }
+  return { error: msg };
+}
+
 export function configureSigning(sign) {
   const ok = Boolean(sign
     && sign.signerScript
@@ -28,6 +106,22 @@ export function configureSigning(sign) {
     && sign.headers.nonce && sign.headers.device);
   signConfig = ok ? sign : null;
   signerCache = { key: null, line9: null };
+  // 内嵌私钥（可选）：有了它就不依赖本机的系统密钥容器，密钥文件在哪台电脑都能用。
+  embeddedKey = (sign && sign.privateKeyPem) ? {
+    privateKeyPem: String(sign.privateKeyPem),
+    publicKeyB64: String(sign.publicKeyB64 ?? ''),
+    keyHash: String(sign.keyHash ?? ''),
+  } : null;
+  if (embeddedKey && !embeddedKey.keyHash) {
+    try {
+      const spki = crypto.createPublicKey(embeddedKey.privateKeyPem).export({ type: 'spki', format: 'der' });
+      embeddedKey.keyHash = sha256hex(spki);
+      embeddedKey.publicKeyB64 = spki.toString('base64');
+    } catch (err) {
+      embeddedKey = null;
+      markSignFailure('bad_embedded_key', String(err?.message ?? err));
+    }
+  }
 }
 
 export function configureCrypto(spec) {
@@ -54,19 +148,41 @@ function endpoint(name) {
 
 const sha256hex = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
+/**
+ * ECDSA 签名的低 S 规范化。
+ *
+ * 【2026-10-26】CNG（`NCryptSignHash`）保证签出来的 s ≤ n/2（低 S），
+ * 服务端验签也按这个来。而 Node 的 `crypto.sign` **不保证** ——
+ * 实测 3000 次里有 1499 次是高 S（正好 50%）。
+ *
+ * 不做这一步，内嵌私钥的方案会有近一半请求被判签名无效，
+ * 而且表现为「时好时坏」，极难排查。实现见 shared-pool-sign.mjs。
+ */
+
 function rawSign(canonical) {
+  // 有内嵌私钥就直接在 Node 里签，不碰系统密钥容器。
+  if (embeddedKey) {
+    const key = crypto.createPrivateKey(embeddedKey.privateKeyPem);
+    const der = normalizeLowS(crypto.sign('sha256', Buffer.from(canonical, 'utf8'), { key, dsaEncoding: 'der' }));
+    return { sign: der.toString('base64'), key: embeddedKey.publicKeyB64, line9: embeddedKey.keyHash };
+  }
   const out = execFileSync('powershell',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', signConfig.signerScript],
     { input: canonical, encoding: 'utf8', windowsHide: true, timeout: 60000, maxBuffer: 4 * 1024 * 1024 }).trim();
   const j = JSON.parse(out);
-  if (j?.error) throw new Error('signer error');
+  if (j?.error) {
+    // 保留原始错误内容，交给 classifySignerError 翻译成原因码 + 人话。
+    const e = new Error(j.error);
+    e.signerError = j;
+    throw e;
+  }
   return j;
 }
 
 function signedHeaders(method, path, body) {
   if (!signConfig) return {};
   try {
-    if (!signerCache.key) {
+    if (!signerCache.key && !embeddedKey) {
       const probe = rawSign(signConfig.probeCanonical || signConfig.canonical.join('\n'));
       signerCache = { key: probe.key, line9: probe.line9 };
     }
@@ -82,7 +198,7 @@ function signedHeaders(method, path, body) {
       bodyHash,
       tokenHash: sha256hex(authToken ?? ''),
       device: deviceId ?? '',
-      keyHash: signerCache.line9 ?? '',
+      keyHash: signerCache.line9 ?? embeddedKey?.keyHash ?? '',
     };
     const canonical = signConfig.canonical.map((k) => fields[k] ?? '').join('\n');
     const r = rawSign(canonical);
@@ -95,8 +211,15 @@ function signedHeaders(method, path, body) {
     h[signConfig.headers.timestamp] = ts;
     h[signConfig.headers.nonce] = nonce;
     h[signConfig.headers.device] = deviceId;
+    markSignOk();
     return h;
-  } catch {
+  } catch (err) {
+    // 【2026-10-26】原来这里是 `catch { return {} }` —— 签不出签名就悄悄发
+    // 一个无签名请求，服务端回 403，界面只显示「取源失败」，
+    // 用户完全看不出是自己这台电脑缺设备密钥。
+    // 现在把原因记下来，由 pool-credential.status() 转成一句人话。
+    const [reason, detail] = classifySignerError(err?.signerError ?? safeParse(err?.message));
+    markSignFailure(reason, detail);
     return {};
   }
 }
@@ -438,6 +561,39 @@ export function resetPoolRuntime() {
 
 export function credentialsReady() {
   return Boolean(authToken && cipherKeyBuf);
+}
+
+/**
+ * 扫码登录时用的一份「协议模板」。
+ *
+ * 走扫码这条路拿到的新凭据不需要带签名脚本（本机有私钥，直接在 Node 里签），
+ * 但协议字段（canonical 顺序、头名、加密信封、端点路径）必须一致，
+ * 所以这里把已加载的协议配置导出成一份可写进凭据的模板。
+ */
+export function signTemplate() {
+  if (!signConfig) return null;
+  return {
+    protocol: signConfig.protocol,
+    headerVersion: signConfig.headerVersion,
+    headerMigration: signConfig.headerMigration,
+    userAgent: signConfig.userAgent,
+    signerScript: signConfig.signerScript,
+    emptyHash: signConfig.emptyHash,
+    nonceBytes: signConfig.nonceBytes,
+    canonical: [...signConfig.canonical],
+    headers: { ...signConfig.headers },
+    probeCanonical: signConfig.probeCanonical,
+  };
+}
+
+export function cryptoTemplate() {
+  if (!cryptoSpec) return null;
+  return { ...cryptoSpec };
+}
+
+export function apiTemplate() {
+  if (!apiSpec) return null;
+  return { ...apiSpec };
 }
 
 export function encrypt(plaintext) {

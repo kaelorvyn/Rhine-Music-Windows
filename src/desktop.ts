@@ -142,6 +142,11 @@ export interface PoolCredentialStatus {
   expiresAt: string | null;
   importedAt: string | null;
   note: string | null;
+  /**
+   * 设备签名失败的原因（人话）。
+   * 有了它，界面能告诉用户「这台电脑缺设备密钥」而不是笼统的「取源失败」。
+   */
+  signNote?: string | null;
 }
 
 export async function readPoolCredential(): Promise<PoolCredentialStatus | null> {
@@ -173,6 +178,39 @@ export async function clearPoolCredential(): Promise<PoolCredentialStatus | null
     if (!response.ok) return null;
     return await response.json() as PoolCredentialStatus;
   } catch { return null; }
+}
+
+/**
+ * 发起一次扫码登录。
+ *
+ * 密钥文件里的私钥只对生成它的那台电脑有效。要在别的电脑上用，
+ * 就在那台电脑上扫一次码 —— 服务端会把这台电脑的公钥登记到账号下。
+ */
+export async function startPoolQrLogin(): Promise<{ sessionId: string; qrContent: string; expiresAt: number } | null> {
+  try {
+    const response = await fetch('/api/pool/login/qr', { method: 'POST' });
+    if (!response.ok) return null;
+    return await response.json() as { sessionId: string; qrContent: string; expiresAt: number };
+  } catch { return null; }
+}
+
+/** 查一次扫码进度。 */
+export async function pollPoolQrLogin(sessionId: string): Promise<{ status: string; error?: string } | null> {
+  try {
+    const response = await fetch('/api/pool/login/qr/poll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    });
+    const body = await response.json() as { status?: string; error?: string };
+    if (!response.ok) return { status: 'error', error: body.error ?? '授权失败' };
+    return { status: body.status ?? 'waiting' };
+  } catch { return { status: 'error', error: '无法连接本地服务' }; }
+}
+
+/** 二维码图片的地址。 */
+export function poolQrImageUrl(content: string) {
+  return `/api/pool/login/qr/image?content=${encodeURIComponent(content)}`;
 }
 
 /** 导出当前密钥文件的下载地址（浏览器直接下载）。 */
