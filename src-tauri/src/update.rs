@@ -120,8 +120,87 @@ const ALLOWED_HOSTS: [&str; 3] = [
     "codeload.github.com",
 ];
 
-fn app_directory() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("无法定位程序位置：{e}"))?;
+/// 走指定通道（`proxy` 为 None 就是直连）把更新包下到 `zip`。
+///
+/// 断点续传最多试 4 次。抽成独立函数是为了让调用方能「换一条通道重来」——
+/// 代理不通时不该让整次更新失败，直连往往反而是通的。
+fn download_package(
+    app: &AppHandle,
+    url: &str,
+    zip: &Path,
+    total: u64,
+    proxy: Option<&str>,
+) -> Result<(), String> {
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let have = fs::metadata(zip).map(|meta| meta.len()).unwrap_or(0);
+        if total > 0 && have >= total {
+            return Ok(());
+        }
+        let mut curl = Command::new("curl");
+        curl.args([
+            "-L",
+            "--fail",
+            "--silent",
+            "--show-error",
+            // 断了从断点接着下，不要把 300 MB 重来一遍。
+            "-C",
+            "-",
+            "--connect-timeout",
+            "20",
+            // 代理「连得上但不动」比连不上更难受：进度条会永远停在 0%。
+            // 低于 1 KB/s 连续 30 秒就判这条通道废了，交给调用方换直连。
+            "--speed-limit",
+            "1024",
+            "--speed-time",
+            "30",
+            "-o",
+        ])
+        .arg(zip)
+        .arg(url);
+        if let Some(proxy) = proxy {
+            curl.arg("--proxy").arg(proxy);
+        }
+        let mut child = spawn_hidden(&mut curl)
+            .spawn()
+            .map_err(|e| format!("无法启动 curl：{e}"))?;
+        let mut last_reported = have;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {
+                    let done = fs::metadata(zip).map(|meta| meta.len()).unwrap_or(0);
+                    if done != last_reported {
+                        last_reported = done;
+                        report(app, "download", done, total.max(done));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        let finished = match status {
+            Ok(status) => status.success(),
+            Err(error) => return Err(format!("下载过程出错：{error}")),
+        };
+        let done = fs::metadata(zip).map(|meta| meta.len()).unwrap_or(0);
+        if finished && (total == 0 || done >= total) {
+            return Ok(());
+        }
+        // 没下完：保留已有字节，退避后再接着下。最多试 4 次。
+        if attempt >= 4 {
+            let where_ = if proxy.is_some() { "（经代理）" } else { "（直连）" };
+            return Err(format!(
+                "更新包下载失败{where_}：{done} / {total} 字节。请检查网络后重试。",
+            ));
+        }
+        report(app, "download", done, total.max(done));
+        std::thread::sleep(std::time::Duration::from_millis(600 * attempt as u64));
+    }
+}
+
+fn app_directory() -> Result<PathBuf, String> {    let exe = std::env::current_exe().map_err(|e| format!("无法定位程序位置：{e}"))?;
     exe.parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "无法定位程序目录".to_string())
@@ -250,75 +329,47 @@ pub async fn desktop_update_install(app: tauri::AppHandle, url: String, size: Op
     // 1) 下载：断点续传 + 完整性校验。
     //    这里必须自己校验大小 —— 代理掐断连接时 curl 可能「干净地」退出 0，
     //    留下半截 zip，然后解压才报「文件已损坏」，用户完全看不出是下载的锅。
-    let proxy = system_proxy();
+    //
+    // 【代理挂了必须能直连】
+    // system_proxy() 只是读注册表，它不知道那个代理程序现在有没有在跑。
+    // 现实里「Internet 选项里开着代理、代理客户端却没启动」是常态 —— 这时
+    // curl 连 127.0.0.1 直接 exit 7，两秒就失败，用户看到的就是「更新失败」，
+    // 而且完全没有退路。所以这里按「先走代理、整体失败再直连重来」的顺序试。
+    let candidates: Vec<Option<String>> = match system_proxy() {
+        Some(proxy) => vec![Some(proxy), None],
+        None => vec![None],
+    };
     let mut total = size.filter(|value| *value > 0.0).map(|value| value as u64).unwrap_or(0);
     if total == 0 {
-        total = remote_total(&url, proxy.as_deref()).unwrap_or(0);
+        for proxy in candidates.iter() {
+            total = remote_total(&url, proxy.as_deref()).unwrap_or(0);
+            if total > 0 {
+                break;
+            }
+        }
     }
     report(&app, "download", 0, total);
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let have = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
-        if total > 0 && have >= total {
-            break;
+
+    let mut last_error = String::new();
+    let mut downloaded = false;
+    for (index, proxy) in candidates.iter().enumerate() {
+        if index > 0 {
+            // 换通道前把半截文件清掉：代理直连两边的 Range 不一定对得上，
+            // 留着旧字节反而会让续传拼出坏包。
+            let _ = fs::remove_file(&zip);
+            last_error.clear();
         }
-        let mut curl = Command::new("curl");
-        curl.args([
-            "-L",
-            "--fail",
-            "--silent",
-            "--show-error",
-            // 断了从断点接着下，不要把 300 MB 重来一遍。
-            "-C",
-            "-",
-            "--connect-timeout",
-            "20",
-            "-o",
-        ])
-        .arg(&zip)
-        .arg(&url);
-        if let Some(proxy) = proxy.as_deref() {
-            curl.arg("--proxy").arg(proxy);
-        }
-        let mut child = spawn_hidden(&mut curl)
-            .spawn()
-            .map_err(|e| format!("无法启动 curl：{e}"))?;
-        let mut last_reported = have;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Ok(status),
-                Ok(None) => {
-                    let done = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
-                    if done != last_reported {
-                        last_reported = done;
-                        report(&app, "download", done, total.max(done));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(150));
-                }
-                Err(error) => break Err(error),
+        match download_package(&app, &url, &zip, total, proxy.as_deref()) {
+            Ok(()) => {
+                downloaded = true;
+                break;
             }
-        };
-        let finished = match status {
-            Ok(status) => status.success(),
-            Err(error) => {
-                let _ = report(&app, "error", 0, total);
-                return Err(format!("下载过程出错：{error}"));
-            }
-        };
-        let done = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
-        if finished && (total == 0 || done >= total) {
-            break;
+            Err(error) => last_error = error,
         }
-        // 没下完：保留已有字节，退避后再接着下。最多试 4 次。
-        if attempt >= 4 {
-            let _ = report(&app, "error", done, total);
-            return Err(format!(
-                "更新包下载不完整（{done} / {total} 字节）。已保留临时文件，稍后可重试。",
-            ));
-        }
-        report(&app, "download", done, total.max(done));
-        std::thread::sleep(std::time::Duration::from_millis(600 * attempt as u64));
+    }
+    if !downloaded {
+        let _ = report(&app, "error", 0, total);
+        return Err(last_error);
     }
     // 收尾对齐：让进度条停到 100%。
     let final_size = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
