@@ -45,6 +45,29 @@ Rhine Music（Windows）不是一个人写的。它是三方成果的衍生版�
 |---|---|
 | [**codex**](https://github.com/codex) | OpenAI 的编码 agent，不是自然人。在上游 `DuoJiuBetter/Rhine-Music-Windows` 留有 1 个提交（0.2.0 预览版发布与安装包下载、模型循环控制）。此处如实记录，不计入贡献者人数，也不替代任何人的署名。 |
 
+## 关于 GitHub 的 Contributors 面板
+
+本仓库的提交历史里并接了三个上游仓库的历史作为祖先 —— `LBEILC/RhineLabUI`、`RonaldDeng/Rhine-Music-Demo`、`DuoJiuBetter/Rhine-Music-Windows`。并接方式是 `git merge -s ours`：**工作树一个文件都没变，已公开的提交也没有被改写**，只是把真实来源记录成祖先关系。这样面板统计的就是真实提交，而不是把别人的代码算到自己头上。
+
+仓库首页的 Contributors 面板现在统计到这 10 位：
+
+| 面板显示 | 提交数 |
+|---|---|
+| [LBEILC](https://github.com/LBEILC) | 105 |
+| [kaelorvyn](https://github.com/kaelorvyn) | 25 |
+| [RonaldDeng](https://github.com/RonaldDeng) | 21 |
+| [rndyt](https://github.com/rndyt) | 8 |
+| [MT-gar](https://github.com/MT-gar) | 3 |
+| [fisHarly0](https://github.com/fisHarly0) | 2 |
+| [codex](https://github.com/codex) | 1 |
+| [CrKcel](https://github.com/CrKcel) | 1 |
+| [EastCation](https://github.com/EastCation) | 1 |
+| [Woo3aN](https://github.com/Woo3aN) | 1 |
+
+**必须说明的一点：DuoJiuBetter 不在这个面板里。** 原因不是遗漏、也不是名单写错 —— 他在自己的仓库里**没有提交过任何 commit**，全部工作通过发布、打包与版本维护完成，所以任何按提交作者统计的列表都不会出现他。他的维护者身份写在上面「特别致谢」和 [NOTICE.md](NOTICE.md) 的版权行里，那才是他应该在的位置。
+
+同理，这个面板只反映**提交归属**，不衡量贡献大小：一个只提了 1 个提交的人，可能修掉了一个所有人都没发现的 bug。
+
 ---
 
 ## 署名要求
