@@ -290,20 +290,27 @@ let poolReady = false
 // 只活到授权成功或过期，不落盘。
 const qrSessions = new Map()
 
-/** 扫码登录用的主机名：跟着线路表走，没有就用默认的。 */
+/**
+ * 扫码登录用的主机名：跟着线路表走。
+ *
+ * 【为什么这里没有默认值】
+ * 软件里**不内置任何服务端信息** —— 域名、密钥、凭据一律来自用户导入的密钥文件。
+ * 没导入密钥 → 没有线路表 → 共享池整条链路不启用（这本来就是设计）。
+ * 所以这里拿不到主机名就是「没装密钥」，直接返回空字符串让调用方给出人话提示，
+ * 而不是悄悄回落到某个写死的域名。
+ */
 function poolLoginHost() {
   const line = POOL_SERVER_LINES[0]
   try {
-    return new URL(line?.baseUrl ?? 'https://kiomosu.asia').hostname
+    return new URL(line?.baseUrl ?? '').hostname
   } catch {
-    return 'kiomosu.asia'
+    return ''
   }
 }
 
 /** 扫码登录产出的凭据要带的线路表。 */
 function poolServers() {
-  const list = POOL_SERVER_LINES.map(l => l.baseUrl).filter(Boolean)
-  return list.length ? list : ['https://kiomosu.asia']
+  return POOL_SERVER_LINES.map(l => l.baseUrl).filter(Boolean)
 }
 // 共享池接受的 7 级音质枚举（低→高），与 exe 内的枚举一致。
 const POOL_QUALITIES = ['standard', 'high', 'lossless', 'hires', 'hifi', 'surround', 'master']
@@ -1567,8 +1574,12 @@ async function lxResolveProbeId(lxKey, keyword) {
       // 想在另一台电脑上用，就在那边扫一次码：本机生成密钥 → 手机授权 →
       // 服务端登记新公钥 → 拿到一份属于这台电脑的凭据。
       if (route === '/api/pool/login/qr' && request.method === 'POST') {
+        // 扫码登录要知道往哪台服务器发 —— 这个地址来自用户导入的密钥文件里的线路表。
+        // 软件本身不内置任何服务器信息：没导入密钥 → 没有线路 → 共享池不启用。
+        const host = poolLoginHost();
+        if (!host) return json(response, 409, { error: '还没有可用的音源线路，请先导入密钥文件' });
         try {
-          const session = await poolLogin.createQrLogin({ host: poolLoginHost() })
+          const session = await poolLogin.createQrLogin({ host, spec: poolSignTemplate() })
           qrSessions.set(session.sessionId, session)
           // 不回传私钥 —— 前端只需要二维码内容，剩下的后端自己存着。
           return json(response, 200, {
@@ -1603,7 +1614,9 @@ async function lxResolveProbeId(lxKey, keyword) {
         const session = qrSessions.get(String(body.sessionId ?? ''))
         if (!session) return json(response, 404, { error: '登录会话不存在或已过期' })
         try {
-          const state = await poolLogin.pollQrLogin(session, { host: poolLoginHost() })
+          const host = poolLoginHost();
+          if (!host) return json(response, 409, { error: '还没有可用的音源线路，请先导入密钥文件' });
+          const state = await poolLogin.pollQrLogin(session, { host, spec: poolSignTemplate() })
           if (state.status === 'approved') {
             // 授权成功 → 把凭据写盘，这台电脑从此有自己的一份密钥。
             const cred = poolLogin.toCredential({

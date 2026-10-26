@@ -25,10 +25,8 @@
 import https from 'node:https';
 import crypto from 'node:crypto';
 
-const DEFAULT_HOST = 'kiomosu.asia';
-const PROTOCOL = 'QT-REQUEST-V2';
-const HEADER_MIGRATION = 'a218d05e439c942397d9412f8be9094f90aae9ef1059392f0a3b9b8f3748d56b';
-const USER_AGENT = 'Qinting-Tauri/0.1';
+// 【不内置任何东西】协议标识、迁移哈希、UA 全部由调用方从密钥文件的 sign 模板传入。
+// 这个文件里没有任何写死的上游标识 —— 软件只认「用户导入的密钥文件说什么就是什么」。
 const EMPTY_HASH = crypto.createHash('sha256').update('').digest('hex');
 
 const sha256hex = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -50,21 +48,35 @@ export function createDeviceId() {
   return 'desktop-' + crypto.randomBytes(16).toString('hex');
 }
 
-/** 组签名头。canonical 的字段顺序与服务端一致。 */
-function signHeaders({ method, path, body, token, deviceId, keyHash, publicKeyB64, privateKey }) {
+/**
+ * 组签名头。canonical 的字段顺序与服务端一致。
+ *
+ * spec 来自密钥文件：{ protocol, headerVersion, headerMigration, userAgent, ... }。
+ * 缺哪个就报哪个的错 —— 不偷偷用兜底常量，因为兜底常量等于「内置」。
+ */
+function signHeaders({ method, path, body, token, deviceId, keyHash, publicKeyB64, privateKey, spec }) {
+  const protocol = String(spec?.protocol ?? '').trim();
+  const version = String(spec?.headerVersion ?? '').trim();
+  const migration = String(spec?.headerMigration ?? '').trim();
+  const userAgent = String(spec?.userAgent ?? '').trim();
+  if (!protocol) throw new Error('密钥文件缺少签名协议配置');
+  if (!version) throw new Error('密钥文件缺少签名版本配置');
+  if (!migration) throw new Error('密钥文件缺少签名迁移配置');
+  if (!userAgent) throw new Error('密钥文件缺少客户端标识配置');
+
   const ts = Math.floor(Date.now() / 1000).toString();
   const nonce = crypto.randomBytes(16).toString('hex');
   const bodyHash = body && body.length ? sha256hex(body) : EMPTY_HASH;
   const canonical = [
-    PROTOCOL, method, path, ts, nonce, bodyHash,
+    protocol, method, path, ts, nonce, bodyHash,
     sha256hex(token ?? ''), deviceId, keyHash,
   ].join('\n');
   const sign = crypto.sign('sha256', Buffer.from(canonical, 'utf8'), { key: privateKey, dsaEncoding: 'der' }).toString('base64');
   return {
     'x-sign': sign,
     'x-sign-key': publicKeyB64,
-    'x-sign-version': '2',
-    'x-sign-migration': HEADER_MIGRATION,
+    'x-sign-version': version,
+    'x-sign-migration': migration,
     'x-timestamp': ts,
     'x-nonce': nonce,
     'x-device-id': deviceId,
@@ -72,13 +84,13 @@ function signHeaders({ method, path, body, token, deviceId, keyHash, publicKeyB6
 }
 
 /** 一次 HTTPS 请求。 */
-function request(host, method, path, bodyObj, { token = null, deviceId, keyHash, publicKeyB64, privateKey, timeoutMs = 15000 } = {}) {
+function request(host, method, path, bodyObj, { token = null, deviceId, keyHash, publicKeyB64, privateKey, spec, timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     const body = bodyObj ? JSON.stringify(bodyObj) : null;
     const headers = {
       'Accept': 'application/json',
-      'User-Agent': USER_AGENT,
-      ...signHeaders({ method, path, body, token, deviceId, keyHash, publicKeyB64, privateKey }),
+      'User-Agent': String(spec?.userAgent ?? '').trim(),
+      ...signHeaders({ method, path, body, token, deviceId, keyHash, publicKeyB64, privateKey, spec }),
     };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     if (body) headers['Content-Type'] = 'application/json';
@@ -105,13 +117,18 @@ function request(host, method, path, bodyObj, { token = null, deviceId, keyHash,
  *
  * 返回 { sessionId, pollToken, qrContent, expiresAt, deviceId, deviceKey }
  * 其中 deviceKey.privateKeyPem 要自己保存 —— 服务端只存公钥。
+ *
+ * host 与 spec 全部由调用方给（spec 来自密钥文件的 sign 模板）：
+ * 这个模块不内置任何上游标识。
  */
-export async function createQrLogin({ host = DEFAULT_HOST, deviceId, deviceKey } = {}) {
+export async function createQrLogin({ host, spec, deviceId, deviceKey } = {}) {
+  if (!host) throw new Error('没有可用线路：先导入密钥文件');
+  if (!spec) throw new Error('密钥文件缺少签名配置');
   const did = deviceId || createDeviceId();
   const key = deviceKey || createDeviceKey();
   const res = await request(host, 'POST', '/api/auth/qr/create',
     { device_id: did, public_key: key.publicKeyB64 },
-    { deviceId: did, keyHash: key.keyHash, publicKeyB64: key.publicKeyB64, privateKey: key.privateKey });
+    { deviceId: did, keyHash: key.keyHash, publicKeyB64: key.publicKeyB64, privateKey: key.privateKey, spec });
   if (res.status !== 200) {
     const msg = res.body?.error || `HTTP ${res.status}`;
     throw new Error(msg === 'Missing request signature' ? '设备签名被拒，请重试' : msg);
@@ -133,7 +150,9 @@ export async function createQrLogin({ host = DEFAULT_HOST, deviceId, deviceKey }
  * 授权成功时返回 { status: 'approved', token, sessionKey }。
  * 未授权时返回 { status: 'waiting' }。
  */
-export async function pollQrLogin(session, { host = DEFAULT_HOST } = {}) {
+export async function pollQrLogin(session, { host, spec } = {}) {
+  if (!host) throw new Error('没有可用线路：先导入密钥文件');
+  if (!spec) throw new Error('密钥文件缺少签名配置');
   const res = await request(host, 'POST', '/api/auth/qr/status', {
     session_id: session.sessionId,
     poll_token: session.pollToken,
@@ -144,6 +163,7 @@ export async function pollQrLogin(session, { host = DEFAULT_HOST } = {}) {
     keyHash: session.deviceKey.keyHash,
     publicKeyB64: session.deviceKey.publicKeyB64,
     privateKey: session.deviceKey.privateKey,
+    spec,
   });
   if (res.status === 429) {
     // 服务端对轮询有速率限制（实测每 2 秒一次会触发 "Too many requests"）。
@@ -162,7 +182,7 @@ export async function pollQrLogin(session, { host = DEFAULT_HOST } = {}) {
 
 /**
  * 把扫码登录的产物整理成一份可直接写盘的凭据。
- * 结构与密钥文件（format 3）一致，所以导入/导出那条路能直接复用。
+ * 结构与密钥文件（format 1）一致，所以导入/导出那条路能直接复用。
  */
 export function toCredential({ session, token, sessionKey, api, sign, crypto: cryptoSpec, servers }) {
   if (!token) throw new Error('没有拿到访问令牌');
@@ -174,7 +194,7 @@ export function toCredential({ session, token, sessionKey, api, sign, crypto: cr
     token,
     key: sessionKey,
     did: session.deviceId,
-    servers: servers ?? [DEFAULT_HOST],
+    servers: servers ?? [],
     sign: {
       ...(sign ?? {}),
       // 内嵌本机私钥 —— 这份凭据就只属于这台电脑了。
