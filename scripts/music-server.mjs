@@ -919,6 +919,34 @@ async function lxResolveProbeId(lxKey, keyword) {
   }
 
   /**
+   * 并发跑几路来源，**谁先给出非空结果就用谁**；全落空才 resolve null。
+   *
+   * 「备用音源」这一站内部是两组来源并发（第三方接口 + 本地音源插件），
+   * 两路各有自己的预算（1.2s / LX_FALLBACK_BUDGET_MS），所以这里必须
+   * 先到先用 —— 用 Promise.all 等齐，整站预算会被最慢那一路吃干，
+   * 快的命中也被拖成超时。
+   *
+   * 【回归】这个函数一度只被调用、从未定义：共享池没命中时「备用音源」
+   * 立刻抛 `ReferenceError: firstHit is not defined`，整站失败。表现就是
+   * 会员歌只剩网易云 30 秒片段 —— 见 source-log.jsonl 的
+   * `备用音源 … firstHit is not defined`。
+   */
+  function firstHit(tasks) {
+    return new Promise(resolve => {
+      let pending = tasks.length
+      if (!pending) { resolve(null); return }
+      for (const task of tasks) {
+        Promise.resolve(task)
+          .then(value => {
+            if (value) resolve(value)
+            else if (--pending === 0) resolve(null)
+          })
+          .catch(() => { if (--pending === 0) resolve(null) })
+      }
+    })
+  }
+
+  /**
    * 串行问链 —— 对齐的 `backup_source.rs` + `playback.rs` 决策树。
    *
    * 逐个 await 每个"问一次"的任务，第一个给出可用结果的立刻返回；全都说没有
