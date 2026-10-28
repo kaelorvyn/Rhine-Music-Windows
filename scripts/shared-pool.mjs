@@ -3,7 +3,6 @@ import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { withHardTimeout } from './hard-timeout.mjs';
-import { normalizeLowS } from './shared-pool-sign.mjs';
 import * as credentialStore from './pool-credential.mjs';
 
 export let SERVER_LINES = [];
@@ -16,15 +15,6 @@ export let QUALITY_LADDER = [];
 export let PROBE_PATH = '';
 
 let signerCache = { key: null, line9: null };
-
-/**
- * 内嵌的设备私钥（可选）。
- *
- * 【2026-10-26】密钥文件里带 privateKeyPem 时，签名不再依赖本机的
- * Windows 密钥容器 —— 同一份密钥文件在老师电脑上照样能用。
- * 没有它时退回旧的容器签名（只在这台生成过密钥的电脑上有效）。
- */
-let embeddedKey = null;
 
 /**
  * 签名健康状态。
@@ -78,9 +68,6 @@ function classifySignerError(j) {
   if (e.includes('0X8009002B') || e.includes('0X80090010') || e.includes('SIGN_FAIL')) {
     return ['signer_failed', '系统密钥容器拒绝了签名运算'];
   }
-  if (e.includes('0X80090029')) {
-    return ['export_blocked', '系统密钥容器不允许导出私钥'];
-  }
   return ['signer_failed', `签名失败：${raw.slice(0, 160)}`];
 }
 
@@ -106,22 +93,6 @@ export function configureSigning(sign) {
     && sign.headers.nonce && sign.headers.device);
   signConfig = ok ? sign : null;
   signerCache = { key: null, line9: null };
-  // 内嵌私钥（可选）：有了它就不依赖本机的系统密钥容器，密钥文件在哪台电脑都能用。
-  embeddedKey = (sign && sign.privateKeyPem) ? {
-    privateKeyPem: String(sign.privateKeyPem),
-    publicKeyB64: String(sign.publicKeyB64 ?? ''),
-    keyHash: String(sign.keyHash ?? ''),
-  } : null;
-  if (embeddedKey && !embeddedKey.keyHash) {
-    try {
-      const spki = crypto.createPublicKey(embeddedKey.privateKeyPem).export({ type: 'spki', format: 'der' });
-      embeddedKey.keyHash = sha256hex(spki);
-      embeddedKey.publicKeyB64 = spki.toString('base64');
-    } catch (err) {
-      embeddedKey = null;
-      markSignFailure('bad_embedded_key', String(err?.message ?? err));
-    }
-  }
 }
 
 export function configureCrypto(spec) {
@@ -148,24 +119,7 @@ function endpoint(name) {
 
 const sha256hex = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-/**
- * ECDSA 签名的低 S 规范化。
- *
- * 【2026-10-26】CNG（`NCryptSignHash`）保证签出来的 s ≤ n/2（低 S），
- * 服务端验签也按这个来。而 Node 的 `crypto.sign` **不保证** ——
- * 实测 3000 次里有 1499 次是高 S（正好 50%）。
- *
- * 不做这一步，内嵌私钥的方案会有近一半请求被判签名无效，
- * 而且表现为「时好时坏」，极难排查。实现见 shared-pool-sign.mjs。
- */
-
 function rawSign(canonical) {
-  // 有内嵌私钥就直接在 Node 里签，不碰系统密钥容器。
-  if (embeddedKey) {
-    const key = crypto.createPrivateKey(embeddedKey.privateKeyPem);
-    const der = normalizeLowS(crypto.sign('sha256', Buffer.from(canonical, 'utf8'), { key, dsaEncoding: 'der' }));
-    return { sign: der.toString('base64'), key: embeddedKey.publicKeyB64, line9: embeddedKey.keyHash };
-  }
   const out = execFileSync('powershell',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', signConfig.signerScript],
     { input: canonical, encoding: 'utf8', windowsHide: true, timeout: 60000, maxBuffer: 4 * 1024 * 1024 }).trim();
@@ -182,7 +136,7 @@ function rawSign(canonical) {
 function signedHeaders(method, path, body) {
   if (!signConfig) return {};
   try {
-    if (!signerCache.key && !embeddedKey) {
+    if (!signerCache.key) {
       const probe = rawSign(signConfig.probeCanonical || signConfig.canonical.join('\n'));
       signerCache = { key: probe.key, line9: probe.line9 };
     }
@@ -198,7 +152,7 @@ function signedHeaders(method, path, body) {
       bodyHash,
       tokenHash: sha256hex(authToken ?? ''),
       device: deviceId ?? '',
-      keyHash: signerCache.line9 ?? embeddedKey?.keyHash ?? '',
+      keyHash: signerCache.line9 ?? '',
     };
     const canonical = signConfig.canonical.map((k) => fields[k] ?? '').join('\n');
     const r = rawSign(canonical);

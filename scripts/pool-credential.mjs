@@ -83,9 +83,6 @@ export function validate(input) {
     canonical: Array.isArray(sig.canonical) ? sig.canonical.map(x => String(x)) : [],
     headers: sig.headers && typeof sig.headers === 'object' ? { ...sig.headers } : null,
     probeCanonical: String(sig.probeCanonical ?? ''),
-    // 内嵌设备私钥（可选）。有它 → 密钥文件在任意电脑都能用；
-    // 没有 → 退回本机系统密钥容器签名（只在这台生成过密钥的电脑上有效）。
-    privateKeyPem: String(sig.privateKeyPem ?? '').trim(),
     publicKeyB64: String(sig.publicKeyB64 ?? '').trim(),
     keyHash: String(sig.keyHash ?? '').trim(),
   } : null;
@@ -223,10 +220,6 @@ export function signNote(health) {
   switch (health.reason) {
     case 'no_container':
       return '这份密钥绑定了生成它的那台电脑，这台电脑上还没有对应的设备密钥，无法访问共享音源';
-    case 'bad_embedded_key':
-      return '密钥文件里的设备密钥无法读取，请重新导出这份密钥';
-    case 'export_blocked':
-      return '系统密钥容器不允许导出私钥，无法在这台电脑上使用这份密钥';
     case 'signer_failed':
       return '设备签名失败：' + (health.detail || '未知原因');
     default:
