@@ -83,7 +83,6 @@ export function validate(input) {
     canonical: Array.isArray(sig.canonical) ? sig.canonical.map(x => String(x)) : [],
     headers: sig.headers && typeof sig.headers === 'object' ? { ...sig.headers } : null,
     probeCanonical: String(sig.probeCanonical ?? ''),
-    publicKeyB64: String(sig.publicKeyB64 ?? '').trim(),
     keyHash: String(sig.keyHash ?? '').trim(),
   } : null;
 
