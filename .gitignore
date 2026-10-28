@@ -69,3 +69,11 @@ pool-credential.json
 
 # 音源清理时的备份目录（开发期临时物，不入库）
 /scripts/_lx-sources-removed-*/
+
+# Private shared-pool modules and native build artifacts
+/native/rhine-pool-host/target/
+pool-module.json
+pool-modules/
+
+# 施工与分析产物：本地保留，永不入库
+/scripts/_*
