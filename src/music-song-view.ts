@@ -8,6 +8,15 @@ import { parseLyrics, lyricIndex, untimedLyrics, backfillLyrics, type LyricLine 
 import { SongTextReveal } from './song-text-reveal';
 import { qualityTierOf, qualityTierLabels } from './quality-tier.ts';
 
+const wordMarkup = (line: LyricLine) => line.words?.length
+  ? line.words.map(w => `<span class="lyric-word" data-word-start="${w.start}" data-word-end="${w.end}">${esc(w.text)}</span>`).join('') : esc(line.text);
+const paintWords = (node: HTMLElement, time: number) => {
+  for (const word of node.querySelectorAll<HTMLElement>('[data-word-start]')) {
+    const start = Number(word.dataset.wordStart), end = Number(word.dataset.wordEnd);
+    const progress = `${(Math.max(0, Math.min(1, (time - start) / (end - start))) * 100).toFixed(2)}%`;
+    if (word.style.getPropertyValue('--word-progress') !== progress) word.style.setProperty('--word-progress', progress);
+  }
+};
 const clock = (value: number) => {
   const seconds = Math.floor(Number.isFinite(value) ? Math.max(0, value) : 0);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
@@ -49,11 +58,13 @@ export class MusicSongView {
   private drag?: { input: HTMLInputElement; trackId: string };
   private reveal = new SongTextReveal();
   private lastReduced = false;
+  private wordFrame?: number;
 
   constructor(
     private mini: HTMLElement,
     private seek: (seconds: number) => void,
     private reduced: () => boolean = () => false,
+    private position?: () => number,
   ) {}
 
   markup(album: MusicAlbum) {
@@ -156,9 +167,12 @@ export class MusicSongView {
       const index = cached ? lyricIndex(cached.lines, state.currentTime) : -1;
       const line = index >= 0 ? cached!.lines[index].text : cached?.info?.lyrics.instrumental ? '纯音乐' : '';
       const node = this.mini.querySelector<HTMLElement>('[data-mini-lyric]')!;
-      if (node.textContent !== line) node.textContent = line;
+      const miniKey = `${track.id}:${cached?.lyricAt || 0}:${index}`;
+      if (node.dataset.wordKey !== miniKey) { node.innerHTML = index >= 0 ? wordMarkup(cached!.lines[index]) : esc(line); node.dataset.wordKey = miniKey; }
+      paintWords(node, state.currentTime);
       if (track.onlineSource) this.ensure(track);
     }
+    this.wordClock();
     for (const input of document.querySelectorAll<HTMLInputElement>('.playback-seek')) {
       const owner = input.closest<HTMLElement>('[data-song]');
       const matching = active && owner?.dataset.song === state.currentTrack?.id;
@@ -242,6 +256,26 @@ export class MusicSongView {
   }
 
 
+  private wordClock() {
+    const mini = !this.mini.hidden && !this.mini.closest('[hidden]') ? this.mini.querySelector<HTMLElement>('[data-mini-lyric]') : null;
+    const root = document.querySelector<HTMLElement>('#song-view');
+    const detail = this.detailActive && root?.dataset.song === this.state?.currentTrack?.id && !root?.closest('[hidden]')
+      ? root?.querySelector<HTMLElement>('#song-lyric-view:not([hidden]) .current') : null;
+    const targets = [mini, detail].filter((n): n is HTMLElement => !!n?.querySelector('[data-word-start]'));
+    if (!targets.length || !this.state?.playing || document.hidden || this.disposed) {
+      if (this.wordFrame !== undefined) cancelAnimationFrame(this.wordFrame);
+      this.wordFrame = undefined; return;
+    }
+    if (this.wordFrame === undefined) this.wordFrame = requestAnimationFrame(() => {
+      this.wordFrame = undefined;
+      if (!this.disposed && !document.hidden) {
+        const time = this.position?.() ?? this.state?.currentTime ?? 0;
+        for (const node of targets) if (node.isConnected) paintWords(node, time);
+        this.wordClock();
+      }
+    });
+  }
+
   private paintLyrics(node: HTMLElement, cached: CachedSong | undefined, time: number, track: MusicTrack) {
     if (this.lyricNode !== node) {
       this.lyricEvents?.abort(); this.lyricEvents = new AbortController(); this.lyricNode = node;
@@ -261,7 +295,7 @@ export class MusicSongView {
     const content = `${track.id}:${cached?.lyricAt || 0}`, key = `${content}:${index}`;
     const resume = this.manualLyricsUntil > 0 && Date.now() >= this.manualLyricsUntil;
     if (resume) this.manualLyricsUntil = 0;
-    if (key === this.lyricKey && !resume && node.dataset.content === content) return;
+    if (key === this.lyricKey && !resume && node.dataset.content === content) { const current = node.querySelector<HTMLElement>('.current'); if (current) paintWords(current, time); return; }
     this.lyricKey = key;
     if (cached?.lines.length) {
       node.classList.remove('lyrics-untimed');
@@ -269,15 +303,17 @@ export class MusicSongView {
  // Playback changes two classes; it never replaces the scrolling document.
       const rebuilt = node.dataset.content !== content;
       if (rebuilt) {
-        node.innerHTML = cached.lines.map((line, position) => `<button type="button" class="lyric-line" data-lyric-index="${position}" data-lyric-time="${line.time}"><span data-song-reveal="entry">${esc(line.text)}</span>${line.translation ? `<small data-song-reveal="entry">${esc(line.translation)}</small>` : ''}</button>`).join('');
+        node.innerHTML = cached.lines.map((line, position) => `<button type="button" class="lyric-line" data-lyric-index="${position}" data-lyric-time="${line.time}"><span data-song-reveal="entry">${wordMarkup(line)}</span>${line.translation ? `<small data-song-reveal="entry">${esc(line.translation)}</small>` : ''}</button>`).join('');
         node.dataset.content = content; this.manualLyricsUntil = 0;
       }
       const previous = node.querySelector<HTMLElement>('.current');
       const current = index < 0 ? null : node.children[index] as HTMLElement;
       if (previous !== current) {
+        if (previous) paintWords(previous, -1);
         previous?.classList.remove('current'); previous?.removeAttribute('aria-current');
         current?.classList.add('current'); current?.setAttribute('aria-current', 'true');
       }
+      if (current) paintWords(current, time);
       if (current && !this.manualLyricsUntil) {
  // 丝滑跟随（用户要求）：行切换平滑滚动过渡；换歌重建文档的首定位仍瞬时，
  // 否则会从文档头一路扫到当前行。手动滚动（manualLyricsUntil）期间不干预。
@@ -321,12 +357,12 @@ export class MusicSongView {
           if (filled) info = { ...info, lyrics: filled };
         }
         const previous = this.cache.get(id), lyrics = info.lyrics, prior = previous?.info?.lyrics;
-        const sameLyrics = prior && prior.original === lyrics.original && prior.translated === lyrics.translated && prior.instrumental === lyrics.instrumental && prior.error === lyrics.error;
+        const sameLyrics = prior && prior.original === lyrics.original && JSON.stringify(prior.wordLines) === JSON.stringify(lyrics.wordLines) && prior.translated === lyrics.translated && prior.instrumental === lyrics.instrumental && prior.error === lyrics.error;
         const now = Date.now();
  // A metadata TTL refresh must not rebuild the same lyric document or
  // replay its entry masks while the user is listening / scrolling.
         this.cache.delete(id); this.cache.set(id, { info, at: now, lyricAt: sameLyrics ? previous!.lyricAt : now,
-          lines: sameLyrics ? previous!.lines : lyrics.instrumental ? [] : parseLyrics(lyrics.original, lyrics.translated) });
+          lines: sameLyrics ? previous!.lines : lyrics.instrumental ? [] : parseLyrics(lyrics.original, lyrics.translated, lyrics.wordLines) });
       } catch (error) {
         if (epoch !== this.epoch || controller.signal.aborted || this.disposed) return;
         const message = (error as Error).message, previous = this.cache.get(id), now = Date.now();
@@ -339,6 +375,8 @@ export class MusicSongView {
     })();
   }
   invalidate() {
+    if (this.wordFrame !== undefined) cancelAnimationFrame(this.wordFrame);
+    this.wordFrame = undefined;
     this.reveal.reset();
     this.epoch++; for (const controller of this.pending.values()) controller.abort();
     this.pending.clear(); this.cache.clear(); this.lyricKey = ''; this.paintedInfo = undefined; this.detailTrack = undefined;

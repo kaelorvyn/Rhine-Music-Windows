@@ -1,3 +1,6 @@
+import { coverResources } from './cover-resources.ts';
+import { playlistCoverPreload } from './playlist-cover-preload.ts';
+import { playlistPosition } from './data';
 import { setupTransportTitle } from "./music-transport-title";
 import "@kitlangton/rolling-number/styles.css";
 import "./style.css";
@@ -15,6 +18,8 @@ import "./music-shell.css";
 import './music-song-view.css';
 import './online-debug.css';
 // 全局滚动条放在最后引入：它的 ::-webkit-scrollbar 规则要压过各组件文件里的零散写法。
+import './music-responsive.css';
+import { mountMusicResponsiveLayout } from './music-responsive';
 import './scrollbar.css';
 // 原生 select 展开层的圆角（appearance: base-select），不支持的旧内核自动跳过。
 import './ui-select.css';
@@ -22,7 +27,7 @@ import { fetchOnline, mountOnlineDebug, onlineErrorReport } from './online-debug
 import { MusicVisualizer, normalizeVisualizer, visualizerMarkup, type VisualizerOptions } from "./music-visualizer";
 import { settingsCategories, settingsNavigation, groupSettingsContent, selectSettingsCategory, filterSettings, type SettingsCategory } from './music-settings';
 import { buildMusicFeedback, feedbackMarkup } from './music-feedback';
-import { clearAudioCache, clearPoolCredential, importPoolCredential, openFeedbackDraft, poolCredentialExportUrl, readAudioCacheUsage, readPoolCredential, syncCacheSettings, syncTrayPreference } from './desktop';
+import { clearAudioCache, clearPoolCredential, importPoolCredential, openFeedbackDraft, readAudioCacheUsage, readPoolCredential, syncCacheSettings, syncTrayPreference } from './desktop';
 import { version as appVersion } from "../package.json";
 import { MusicOverviewUI } from "./music-overview-ui";
 import { MusicSongView } from './music-song-view';
@@ -86,7 +91,8 @@ import { OnlineMusicSearch } from "./online-music-search";
 import { lookupVariants, normKey, artistMembers, titleParts } from "./online-search-core";
 import { MvPlayer } from "./mv-player";
 import { UpdateCenter } from "./update-center";
-import { NeteaseLogin, type NeteaseAccount } from "./netease-login";
+import { NeteaseLogin, type NeteaseAccount, type PlatformLogin } from "./netease-login";
+import { QishuiLogin } from "./qishui-login";
 import { localPlaylistName, musicPlatforms, musicProvider, playlistSourceName, type MusicProvider, type PlaylistSource } from "./music-platform";
 import { NeteasePlaylists } from './netease-playlists';
 import { LocalPlaylists, trackToLocalSong, localSortKeys, type LocalPlaylistSummary, type LocalSortKey } from './local-playlists';
@@ -95,6 +101,7 @@ import { setupLightingLab } from "./music-lighting-lab";
 import type { LightingLabController, LightingLabSettings } from "./music-lighting-lab";
 import { setupMotionLab } from "./music-motion-lab";
 import { getMusicMotionSpeed, normalizeMusicMotionSpeed, onMusicMotionSpeedChange, setMusicMotionSpeed } from "./music-motion-settings";
+import { mountMusicDragNavigation, type BrowseCell } from './music-drag-navigation';
 import { mountMusicWheelNavigation } from "./music-wheel-navigation";
 import {
   MusicKeyGestures,
@@ -104,7 +111,7 @@ import {
   sanitizeKeyBindings,
   type KeyBindings,
 } from "./music-keybindings";
-import { isDesktop, openExternal } from "./desktop";
+import { isAndroidApp, isDesktop, openExternal } from "./desktop";
 import { RenderScheduler } from "./render-scheduler";
 import {
   FRAME_RATE_MIN, FRAME_RATE_MAX, FRAME_RATE_UNLIMITED,
@@ -160,7 +167,7 @@ const preferences = {
     rememberColumnPosition: true,
     audioBackend: "browser" as "browser" | "coreaudio",
     outputDeviceId: "default",
-    quality: (isDesktop() ? "balanced" : "original") as QualityPreset,
+    quality: (isDesktop() || isAndroidApp() ? "balanced" : "original") as QualityPreset,
     qualityPipelineVersion: 0,
     qualityMode: undefined as QualityMode | undefined,
     reduced: false,
@@ -189,10 +196,12 @@ const preferences = {
  // ── 以下设置面板新增项 的新增项 ──────────────────────────────
     uiScale: 100,
     autoplay: false,
+    backgroundPlayback: true,
     cacheLimit: 2048,
+    coverCacheLimit: 512,
     cacheLocation: '',
     minimizeToTray: true,
-    // 音浪：默认开、进度条上方、细柱频谱（与预览版默认一致）。
+    // 音浪：默认开、窗口底边、细柱频谱（与预览版默认一致）。
     visualizer: normalizeVisualizer(undefined),
     // 键盘操作绑定：单击切歌 / 双击跳转 / 长按变速，用户可在设置里改键。
     keybindings: { ...DEFAULT_KEY_BINDINGS } as KeyBindings,
@@ -229,7 +238,9 @@ const preferences = {
       playlistSortDirection: 'ascending' | 'descending';
       uiScale: number;
       autoplay: boolean;
+      backgroundPlayback: boolean;
       cacheLimit: number;
+      coverCacheLimit: number;
       cacheLocation: string;
       minimizeToTray: boolean;
       visualizer: VisualizerOptions;
@@ -242,9 +253,15 @@ preferences.keybindings = sanitizeKeyBindings(preferences.keybindings);
 preferences.onlineErrorDisplay = preferences.onlineErrorDisplay === true;
 preferences.songTransition = normalizeSongTransition(preferences.songTransition, preferences.songFade);
 delete preferences.songFade;
-const initialQuality = initialDesktopQuality(preferences, isDesktop());
+const initialQuality = initialDesktopQuality(preferences, isDesktop() || isAndroidApp());
 let renderQuality = initialQuality.quality;
-preferences.qualityMode = initialQualityMode(preferences.qualityMode, renderQuality, isDesktop());
+preferences.qualityMode = initialQualityMode(preferences.qualityMode, renderQuality, isDesktop() || isAndroidApp());
+let graphicsSwitching=false;
+let queuedQuality: {quality: typeof renderQuality; preset: typeof preferences.quality; mode: QualityMode | undefined} | undefined;
+let graphicsRecoveryFailed=false, libraryRefreshPending=false, playbackRefreshPending=false;
+let workingQuality=structuredClone(renderQuality);
+let workingPreset=preferences.quality;
+let workingMode: QualityMode | undefined=preferences.qualityMode;
 let automaticProfile: ReturnType<typeof automaticQuality> | undefined;
 // Per-session comparison/debug control: resetting a preview starts optimized.
 let glassOcclusionMode: "on" | "off" | "debug" = "on";
@@ -266,8 +283,15 @@ preferences.developerMode = preferences.developerMode === true;
 preferences.motionDebug = preferences.motionDebug === true;
 preferences.arrayMode = normalizeMusicArrayMode(preferences.arrayMode);
 preferences.rememberColumnPosition = preferences.rememberColumnPosition !== false;
-preferences.audioBackend = !isDesktop() && preferences.audioBackend === "coreaudio" ? "coreaudio" : "browser";
+if (isAndroidApp()) {
+  preferences.audioBackend = "browser";
+  preferences.minimizeToTray = false;
+} else {
+  preferences.audioBackend = !isDesktop() && preferences.audioBackend === "coreaudio" ? "coreaudio" : "browser";
+}
 if (typeof preferences.outputDeviceId !== "string") preferences.outputDeviceId = "default";
+preferences.cacheLimit = Math.min(16384, Math.max(64, Math.round(Number(preferences.cacheLimit) || 2048)));
+preferences.coverCacheLimit = Math.min(2048, Math.max(512, Math.round((Number(preferences.coverCacheLimit) || 512) / 64) * 64));
 preferences.motionSpeed = normalizeMusicMotionSpeed(preferences.motionSpeed);
 // 帧率：清洗存量/脏值（0 或缺失 = 无限制；小于 24 的抬到 24）。
 preferences.frameRate = normalizeFrameRate(preferences.frameRate);
@@ -300,9 +324,29 @@ let browseLibraryDuringPlayback = false;
 let accountActive = false, accountView = false, accountKey = '';
 /** 歌单数据是否已引导过一次（本地歌单不依赖登录，启动时也要读）。 */
 let bootedPlaylists = false;
+let startupAccountsPending = true;
+let startupWarning = "";
+let backgroundResumeTimer: number | undefined;
+function resumeBackgroundAfterBoot() {
+  clearTimeout(backgroundResumeTimer);
+  backgroundResumeTimer = window.setTimeout(() => {
+    if (frameDisposed) return;
+    if (boot?.active) { resumeBackgroundAfterBoot(); return; }
+    coverResources.setPhase('browse'); playlistCoverPreload.setPaused(false);
+    if (startupWarning) { notify(startupWarning); startupWarning = ""; }
+    if (startupAccountsPending) {
+      startupAccountsPending = false;
+      onlineAccountChanged('netease', accountStates.netease ?? { loggedIn: false } as NeteaseAccount);
+      const initial = currentAlbum()?.playlistCell;
+      if (accountView && initial) void playlistLibrary.window(initial.playlistIndex, initial.songIndex);
+    }
+    if (playlistRebuildPending) { playlistRebuildPending = false; void rebuildPlaylistGrid(); }
+  }, 50);
+}
 let activeProvider = musicProvider(read('rhine-online-provider', 'netease'));
 let loginProvider: MusicProvider = activeProvider;
 let playlistPlaybackId: string | undefined, followedPlaylistTrack: string | undefined;
+let playlistRebuildPending = false;
 let playlistSelectionEpoch = 0, playlistRenderTimer: ReturnType<typeof setTimeout> | undefined;
 let playlistNavigationTarget: { row: number; song: number; cell: { lane: number; row: number } } | undefined;
 let playbackBrowseTrackId: string | undefined;
@@ -319,6 +363,9 @@ let introductionsStarting = false,
 let creditsStarting = false,
   creditsRequestError = "",
   creditsRequestAlbumId: string | undefined;
+let browseDrag: ReturnType<typeof mountMusicDragNavigation> | undefined;
+let dragLanding: MusicAlbum | undefined;
+let dragPreviewKey="",dragPrefetchAt=0;
 let viewer: ModelViewer | undefined;
 let boot: MusicBoot | undefined;
 // 开场动画的看门狗定时器（见 start()）：帧循环停摆时强制收尾，别卡住界面。
@@ -367,6 +414,7 @@ const stage = $("#stage");
 stage.className = "music-app";
 stage.dataset.mode = "archive";
 stage.dataset.theme = preferences.theme;
+if (isAndroidApp()) document.documentElement.classList.add("rhine-android");
 // 界面缩放在 DOM 就绪前就要生效，避免开场闪一下默认比例。
 document.documentElement.style.setProperty('--music-ui-scale', String(preferences.uiScale / 100));
 stage.innerHTML = `
@@ -415,8 +463,38 @@ stage.innerHTML = `
   <div id="music-loading" hidden></div>
 `;
 // 进入应用的整套动画：与预览版同一份实现（开机胶片 / 状态行 / 跳过 / 失败重试）。
-// 减少动态效果时整段不创建，加载页退化成一句状态文案。
-const entry = preferences.reduced ? undefined : new MusicEntry(stage);
+// The blocking surface exists even with reduced motion, until the scene is drawable.
+const entry = new MusicEntry(stage, { reduced: preferences.reduced });
+let startupGraphics: unknown, startupPreparationKey = "";
+function preparationKey() {
+  // Bump this revision when changing shaders or the preparation pipeline.
+  return JSON.stringify([3, appVersion, navigator.userAgent, startupGraphics, renderQuality,
+    lightingLab, new URLSearchParams(location.search).get("lighting") !== "baseline"]);
+}
+async function beginStartupPreparation() {
+  // Paint the blocking page before context creation or any driver work.
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  if (frameDisposed) return;
+  const canvas = document.createElement("canvas");
+  const gl = canvas.getContext("webgl2", { powerPreference: "high-performance", antialias: true });
+  if (gl) {
+    const debug = gl.getExtension("WEBGL_debug_renderer_info");
+    if(preferences.qualityMode==='auto') {
+      const detected=automaticQuality({renderer:String(gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER)),unmasked:Boolean(debug),cores:navigator.hardwareConcurrency,nativePixels:innerWidth*innerHeight*devicePixelRatio**2});
+      renderQuality=detected.quality;preferences.quality=detected.preset;
+    }
+    coverResources.configureLowMemory(renderQuality.pipeline==='lowIntegrated');
+    startupGraphics = [gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER),
+      gl.getParameter(debug ? debug.UNMASKED_VENDOR_WEBGL : gl.VENDOR), gl.getParameter(gl.VERSION)];
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+  }
+  startupPreparationKey = preparationKey();
+  const cached = Boolean(gl) && read("rhine-graphics-prepared", "") === startupPreparationKey;
+  // An interrupted or failed preparation must never become a successful cache hit.
+  save("rhine-graphics-prepared", "");
+  stage.dataset.startupPreparationMode = cached ? "parallel" : "first";
+  entry.startPreparation(cached);
+}
 const titleMotion = setupMusicTitleLayout(stage);
 const textMotion = setupMusicTextMotion(stage);
 // Keep the previous navigation available while the ruler version is on trial.
@@ -629,6 +707,8 @@ const presentation = new MusicPresentation({
 boot = new MusicBoot(stage, {
   reduced: () => preferences.reduced,
   onStart: () => {
+    scene?.beginMusicIntro();
+    coverResources.setPhase('intro'); playlistCoverPreload.setPaused(true);
     setOverview(false, false);
     cancelTrackReveal();
     presentation.reset();
@@ -645,6 +725,7 @@ boot = new MusicBoot(stage, {
     if (reason === "skip") scene?.showMusicArchiveImmediately(now);
     else scene?.finishMusicIntro(now);
     effects.setScene("archive");
+    resumeBackgroundAfterBoot();
     showBrowseSurface();
   },
 });
@@ -662,6 +743,8 @@ function showBrowseSurface() {
   if (!panel) $("#music-browse").focus({ preventScroll: true });
 }
 function setOverview(active: boolean, reveal = true) {
+  browseDrag?.cancel();
+  if(graphicsSwitching || graphicsRecoveryFailed)return;
   if (active && (!ready || (!albums.length && !accountView) || boot?.active || panel || mode !== "archive")) return;
   playlistOverviewRequested = false;
   overview = active;
@@ -721,7 +804,7 @@ async function openMyPlaylistsOverview() {
   cancelTrackReveal();
   if (boot?.active) boot.skip();
   setMode('archive');
-  if (!playlistLibrary.playlists.length && !playlistLibrary.loading) await playlistLibrary.load();
+  if (!playlistLibrary.playlists.length && !playlistLibrary.loading) await playlistLibrary.load({ keepSnapshot: true });
   if (!playlistOverviewRequested || !accountActive || !accountView || frameDisposed) return;
   await rebuildPlaylistGrid();
   tryEnterPlaylistOverview();
@@ -742,7 +825,15 @@ function savePrefs() {
  * 解码器正在用的，不是前端自己算的。
  */
 async function pushCacheSettings(refresh = true) {
-  const applied = await syncCacheSettings(preferences.cacheLimit, preferences.cacheLocation);
+  if (isAndroidApp()) {
+    if (refresh) await refreshCacheStatus();
+    return null;
+  }
+  const [applied] = await Promise.all([
+    syncCacheSettings(preferences.cacheLimit, preferences.cacheLocation),
+    fetch('/api/covers/cache/configure', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limitMb: preferences.coverCacheLimit, location: preferences.cacheLocation }) }).catch(() => null),
+  ]);
   // 把后端**真正生效**的缓存目录写回输入框的灰字提示：用户没自定义时也要
   // 看得见缓存落在哪（原来这里只有一句「留空使用默认位置」，等于没说）。
   const location = document.querySelector<HTMLInputElement>('#cache-location');
@@ -754,7 +845,12 @@ async function pushCacheSettings(refresh = true) {
 /** 刷新设置面板里的缓存占用 / 上限显示。 */
 async function refreshCacheStatus() {
   const status = document.querySelector('#cache-status');
-  const usage = await readAudioCacheUsage();
+  const [usage, covers] = await Promise.all([readAudioCacheUsage(),
+    fetch('/api/covers/cache').then(response => response.ok ? response.json() : null).catch(() => null)]);
+  const coverStatus = document.querySelector('#cover-cache-status');
+  if (coverStatus) coverStatus.textContent = covers
+    ? `已用 ${Math.round(covers.bytes / 1024 / 1024)} MB / ${Math.round(covers.limitBytes / 1024 / 1024)} MB · ${covers.files} 个文件`
+    : '无法读取封面缓存状态';
   if (!status) return usage;
   if (!usage) { status.textContent = "无法读取缓存状态"; return null; }
   const used = usage.bytes > 0 ? `${(usage.bytes / 1024 / 1024).toFixed(0)} MB / ${Math.round(usage.limitBytes / 1024 / 1024)} MB` : `0 MB / ${Math.round(usage.limitBytes / 1024 / 1024)} MB`;
@@ -763,19 +859,18 @@ async function refreshCacheStatus() {
 }
 
 
-/** 共享音源密钥：把后端状态画到设置面板上。
- * 只显示账号名与到期时间，不显示凭据本体。 */
+
 async function refreshPoolCredentialStatus() {
   const status = document.querySelector('#pool-credential-status') as HTMLElement | null;
   const state = await readPoolCredential();
   if (!status) return state;
-  if (!state) { status.textContent = "无法读取密钥状态"; return null; }
+  if (!state) { status.textContent = "无法读取模块状态"; return null; }
   if (state.configured) {
     // 只给到期时间。账号名不进 UI。
     const until = state.expiresAt ? `${new Date(state.expiresAt).toLocaleDateString("zh-CN")} 到期` : "有效期未知";
-    status.textContent = `已启用 · ${until}`;
+    status.textContent = `${state.poolEnabled ? '已启用' : '已停用'} · ${until}`;
   } else {
-    status.textContent = state.note ?? "未导入密钥，当前只使用备用音源";
+    status.textContent = state.note?.replace(/密钥/g, '模块') ?? "未导入模块，当前只使用备用音源";
   }
   // 【2026-10-26】签名失败单独提示：不然用户只看到「取源失败」，
   // 根本不知道是自己这台电脑缺设备密钥。
@@ -799,7 +894,7 @@ async function refreshPoolCredentialStatus() {
  * 【2026-10-23】原来只刷新状态文字：探测结果留在页面上，看起来像「移除了还能测」。
  * 后端现在会把线路表与令牌一起作废，这里同步把残留的旧数字擦掉。
  */
-function clearPoolConnectivityBox(note = "未导入密钥，没有可检测的线路") {
+function clearPoolConnectivityBox(note = "未导入模块，没有可检测的线路") {
   const box = document.querySelector<HTMLElement>("#pool-connectivity");
   if (box) box.innerHTML = `<p class="pool-connectivity-note">${esc(note)}</p>`;
 }
@@ -843,7 +938,7 @@ async function runPoolConnectivity() {
   }
 }
 
-/** 「导入密钥文件」：打开文件选择器，读文本后交给后端。 */
+/** 「导入模块」：打开文件选择器，将原始字节交给后端。 */
 function pickPoolCredentialFile() {  const input = document.querySelector("#pool-credential-file") as HTMLInputElement | null;
   if (input) input.click();
 }
@@ -852,22 +947,29 @@ async function handlePoolCredentialFile(input: HTMLInputElement) {
   const status = document.querySelector('#pool-credential-status') as HTMLElement | null;
   const file = input.files?.[0];
   if (!file) return;
-  if (status) status.textContent = "正在导入…";
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  // 密钥文件是二进制信封，按 base64 原样交给后端；前端不解析内容。
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
-  const result = await importPoolCredential(btoa(binary));
-  if (!result.ok) {
-    if (status) status.textContent = `导入失败：${result.error ?? "未知原因"}`;
+  if (!/\.dll$/i.test(file.name)) {
+    if (status) status.textContent = "请选择 .dll 音源模块。";
     input.value = "";
     return;
   }
-  input.value = "";
-  await refreshPoolCredentialStatus();
+  if (status) status.textContent = "正在导入模块…";
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    // 模块按 base64 原样交给后端；前端不解析内容。
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+    const result = await importPoolCredential(btoa(binary), file.name);
+    if (!result.ok) {
+      if (status) status.textContent = `模块导入失败：${result.error ?? "未知原因"}`;
+      return;
+    }
+    await refreshPoolCredentialStatus();
+  } catch {
+    if (status) status.textContent = "无法读取模块文件，请重新选择。";
+  } finally { input.value = ""; }
 }
 
-/** 「移除」：删掉本地密钥文件，共享池立即停用。 */
+
 async function removePoolCredential() {
   const status = document.querySelector('#pool-credential-status') as HTMLElement | null;
   if (status) status.textContent = "正在移除…";
@@ -898,7 +1000,7 @@ function applySetting(key: string, el: HTMLSelectElement | HTMLInputElement) {
     : (el as HTMLSelectElement).value;
   const record = preferences as unknown as Record<string, string | number | boolean>;
  // 布尔类：勾选框。
-  if (['autoplay', 'minimizeToTray'].includes(key)) {
+  if (['autoplay', 'minimizeToTray', 'backgroundPlayback'].includes(key)) {
     if (typeof value !== 'boolean') return;
     record[key] = value;
     savePrefs();
@@ -920,7 +1022,7 @@ function applySetting(key: string, el: HTMLSelectElement | HTMLInputElement) {
       playlistLibrary.setLocalSort(preferences.playlistSort, preferences.playlistSortDirection);
       if (accountView) {
         clearTimeout(playlistRenderTimer);
-        void playlistLibrary.load().then(() => void playlistLibrary.window(firstPlayablePlaylist(), 0));
+        void playlistLibrary.load({ keepSnapshot: true }).then(() => void playlistLibrary.window(firstPlayablePlaylist(), 0));
       }
     }
     return;
@@ -935,7 +1037,7 @@ function applySetting(key: string, el: HTMLSelectElement | HTMLInputElement) {
     return;
   }
  // 数值区间类：滑杆。只接受范围内的整数。
-  const ranges: Record<string, [number, number]> = { uiScale: [80, 140], cacheLimit: [64, 8192] };
+  const ranges: Record<string, [number, number]> = { uiScale: [80, 140], cacheLimit: [64, 16384], coverCacheLimit: [512, 2048] };
   if (key in ranges) {
     const [min, max] = ranges[key];
     const next = Math.round(Number(el.value));
@@ -943,9 +1045,9 @@ function applySetting(key: string, el: HTMLSelectElement | HTMLInputElement) {
     record[key] = Math.min(max, Math.max(min, next));
     savePrefs();
     if (key === 'uiScale') applyUiScale();
-    if (key === 'cacheLimit') {
-      const status = document.querySelector('#cache-limit-status');
-      if (status) status.textContent = `${record.cacheLimit} MB`;
+    if (key === 'cacheLimit' || key === 'coverCacheLimit') {
+      const status = document.querySelector(key === 'coverCacheLimit' ? '#cover-cache-limit-status' : '#cache-limit-status');
+      if (status) status.textContent = `${record[key]} MB`;
  // 上限以前是死值 4GB，滑块只改数字。现在真的下发给解码器。
       void pushCacheSettings();
     }
@@ -989,60 +1091,7 @@ function coverSelectionCell() {
 /** 首屏预热窗口：选中列两侧各一列，纵向覆盖开场镜头能看到的这一段。 */
 const FIRST_SCREEN_COVER_LANES = [-1, 0, 1];
 const FIRST_SCREEN_COVER_ROWS = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
-/** 已经建过连的封面：避免重复请求（二次进入本来就走 HTTP 缓存，零等待）。 */
-const warmedCoverUrls = new Set<string>();
-/** 保住未完成的 Image 引用：否则浏览器可能在响应回来前丢掉请求。 */
-const warmingCoverImages = new Set<HTMLImageElement>();
-/**
- * 用户要求：封面**启动一开始就下**，不再等加载动画结束后一张张来。
- *
- * 开场动画期间三维专辑架还没进视口，浏览器不会为它建连（这正是原来
- * `loading="lazy"` + 场景就绪后才预载造成的「动画后才一张张下」）。
- * 这里直接用 `new Image()` 提前建连并把响应放进 HTTP 缓存；等场景真正
- * 开始解码时就是缓存命中。
- */
-/** 待建连的封面与在飞计数。全库预热有几百张，必须限流：一次 new 几百个
- * Image 会把浏览器连接池占满，最该先到的那几张反而更慢。 */
-const warmCoverQueue: string[] = [];
-const WARM_COVER_CONCURRENCY = 8;
-let warmCoverActive = 0;
-/**
- * 用户要求：封面**启动一开始就下**，不再等加载动画结束后一张张来。
- *
- * 开场动画期间三维专辑架还没进视口，浏览器不会为它建连（这正是原来
- * `loading="lazy"` + 场景就绪后才预载造成的「动画后才一张张下」）。
- * 这里直接用 `new Image()` 提前建连并把响应放进 HTTP 缓存；等场景真正
- * 开始解码时就是缓存命中。
- */
-function warmCoverUrl(url?: string) {
-  if (!url || warmedCoverUrls.has(url)) return;
- // 只当书签用，别让它无限长（全库预热会把整个曲库都过一遍）。
-  if (warmedCoverUrls.size > 4096) warmedCoverUrls.clear();
-  warmedCoverUrls.add(url);
-  warmCoverQueue.push(url);
-  pumpWarmCovers();
-}
-/** 队列泵：始终维持至多 WARM_COVER_CONCURRENCY 个在飞的 Image。 */
-function pumpWarmCovers() {
-  while (warmCoverActive < WARM_COVER_CONCURRENCY && warmCoverQueue.length) {
-    const url = warmCoverQueue.shift()!;
-    warmCoverActive++;
-    const image = new Image();
-  // 与 CoverAtlas 用同一种请求模式（crossOrigin="anonymous"），保证命中同一条
-  // HTTP 缓存记录，而不是被浏览器分到另一个缓存分区。
-    image.crossOrigin = "anonymous";
-    image.decoding = "async";
-    const release = () => {
-      warmCoverActive--;
-      warmingCoverImages.delete(image);
-      pumpWarmCovers();
-    };
-    image.addEventListener("load", release, { once: true });
-    image.addEventListener("error", release, { once: true });
-    warmingCoverImages.add(image);
-    image.src = url;
-  }
-}
+function warmCoverUrl(url?: string) { if (url) void coverResources.load(url, renderQuality.pipeline==='lowIntegrated'?128:256, true); }
 function warmFirstScreenCovers() {
   if (!records.length) return;
   const current = coverSelectionCell();
@@ -1062,7 +1111,8 @@ function warmFirstScreenCovers() {
 function warmAllCovers() {
   if (!records.length) return;
   warmFirstScreenCovers();
-  for (const record of records) warmCoverUrl(record?.album?.coverUrl);
+  const collection = records;
+  coverResources.warmAll((function* () { for (const record of collection) yield record?.album?.coverUrl; })());
   // 关键一步：只建连还不够 —— 用户切过去时仍要现解码。
   // 这里把整库交给 CoverAtlas，让它在后台把每张的 tile 都解码成 canvas 常驻，
   // 之后无论切到哪一张都是「已解码、直接上传纹理」。
@@ -1082,6 +1132,7 @@ function preloadNearbyCovers() {
 async function copyPerformanceReport() {
   const host = $("#three-scene");
   const report = {
+    coverLoading: { ...coverResources.stats(), playlists: playlistCoverPreload.stats() },
     version: `${appVersion}-preview`, browser: navigator.userAgent,
     gpuPreference: (window as unknown as { __RHINE_GPU_REQUEST__?: string }).__RHINE_GPU_REQUEST__ || 'webgl-high-performance',
     automaticQuality: { mode: preferences.qualityMode, profile: automaticProfile },
@@ -1117,6 +1168,8 @@ function setTheme(theme: Theme) {
 function fit() {
  // Use the same stage dimensions and aspect boundary as the scene framing.
   stage.dataset.layout = viewportLayout(stage.clientWidth, stage.clientHeight, false).kind;
+  stage.dataset.compactHeader = String(stage.clientWidth <= 900);
+  measureMusicHeader();
   scene?.resize();
   viewer?.resize();
   if (mode === "detail") {
@@ -1125,9 +1178,14 @@ function fit() {
   }
 }
 window.addEventListener("resize", fit);
+// One measurement when controls or viewport change; never read layout per frame.
+function measureMusicHeader() {
+  headerObserver.refresh();
+}
+const headerObserver = mountMusicResponsiveLayout(stage);
 
 async function request<T>(url: string, body?: unknown): Promise<T> {
-  const onlineProvider = /^\/api\/online\/(netease|qq|bodian)\//.exec(url)?.[1] as MusicProvider | undefined;
+  const onlineProvider = /^\/api\/online\/(netease|qq|joox|qishui)\//.exec(url)?.[1] as MusicProvider | undefined;
   const response = await (onlineProvider ? (target: string, options: RequestInit) => fetchOnline(onlineProvider, 'request', target, options) : fetch)(
     url,
     body === undefined
@@ -1246,6 +1304,7 @@ function albumWithoutCredits(album: MusicAlbum) {
   return detail;
 }
 async function applyLibrary() {
+  if(graphicsSwitching || graphicsRecoveryFailed || scene?.isBrowseDragging){libraryRefreshPending=true;return;}
   if (accountActive && accountView) { updateStatus(); return; }
   if (!browseLibraryDuringPlayback && records[0]?.album?.playback && playerState.currentTrack && playerState.transport !== 'idle') { updateStatus(); return; }
   const hadAlbums = albums.length > 0;
@@ -1437,7 +1496,7 @@ function commitSelection(index: number, navigation?: ArchiveNavigation, keepDeta
   else scene?.select(selected, navigation);
   preloadNearbyCovers();
   const playlist = records[selected]?.album?.playlistCell;
-  if (playlist && scene && !playlistNavigationTarget) void playlistLibrary.window(playlist.playlistIndex, scene.musicSelectionCell.row - 12);
+  if (playlist && scene && !playlistNavigationTarget && !startupAccountsPending) void playlistLibrary.window(playlist.playlistIndex, scene.musicSelectionCell.row - 12);
   updateSelection(navigation);
   effects.play(
     navigation && "axis" in navigation && navigation.axis === "lane"
@@ -1446,6 +1505,8 @@ function commitSelection(index: number, navigation?: ArchiveNavigation, keepDeta
   );
 }
 function select(index: number, navigation?: ArchiveNavigation, openAfter = presentation.openingOrDetail, route?: AlbumSelection["route"]) {
+  if(graphicsSwitching || graphicsRecoveryFailed)return;
+  browseDrag?.cancel();
   if (!records.length || !ready || boot?.active || index < 0) return;
   if (route !== "archive") cancelTrackReveal();
   const pending = libraryRebuilding && libraryIntent && "index" in libraryIntent
@@ -1532,7 +1593,7 @@ function syncAlbumNavigation() {
   }
   if (records[0]?.album?.playback) {
     for (const button of stage.querySelectorAll<HTMLButtonElement>('[data-action="prev"], [data-action="next"]')) {
-      button.disabled = button.dataset.action === 'prev' ? playerState.currentIndex <= 0 : playerState.currentIndex >= playerState.queue.length - 1;
+      button.disabled = playerState.queue.length < 2;
       button.setAttribute('aria-label', button.dataset.action === 'prev' ? '上一首' : '下一首');
       if (button.closest('.detail-album-navigation')) button.textContent = button.dataset.action === 'prev' ? '↑ 上一首' : '下一首 ↓';
     }
@@ -1550,6 +1611,8 @@ function syncAlbumNavigation() {
   }
 }
 function stepAlbum(direction: number) {
+  browseDrag?.cancel();
+  if(graphicsSwitching || graphicsRecoveryFailed)return;
   const playlist = records[navigationSelection()]?.album?.playlistCell;
   if (playlist) {
     const row = playlistNavigationTarget?.row ?? playlist.playlistIndex, song = (playlistNavigationTarget?.song ?? playlist.songIndex) + direction;
@@ -1593,6 +1656,8 @@ function resolveColumnSelection(lane: number): { index: number; row?: number } {
   return { index: fileAtCell({ lane, row }), row };
 }
 function stepGenre(direction: number) {
+  browseDrag?.cancel();
+  if(graphicsSwitching || graphicsRecoveryFailed)return;
   overviewUI.collapse();
   const playlist = records[navigationSelection()]?.album?.playlistCell;
   if (playlist) {
@@ -1612,7 +1677,9 @@ function stepGenre(direction: number) {
   });
 }
 function setMode(next: "archive" | "detail") {
+  if(graphicsSwitching || graphicsRecoveryFailed)return;
   if (boot?.active) return;
+  browseDrag?.cancel();
   if (next === "archive") cancelTrackReveal();
   if (libraryRebuilding) { libraryIntent = { mode: next }; syncAlbumNavigation(); return; }
   if (next === "detail") {
@@ -2106,13 +2173,21 @@ async function refreshPlaylistTrackCount(index: number) {
   } catch { /* 计数刷新失败不影响收藏动作本身 */ }
 }
 function rebuildPlaylistGrid() {
+  if (boot?.active || startupAccountsPending || graphicsSwitching || graphicsRecoveryFailed || scene?.isBrowseDragging) { playlistRebuildPending = true; return Promise.resolve(); }
   if (!accountActive || !accountView || !scene || !ready || frameDisposed) return Promise.resolve();
   clearTimeout(playlistRenderTimer);
   const generation = ++playbackVisualGeneration;
   playbackVisualTask = playbackVisualTask.then(async () => {
     if (generation !== playbackVisualGeneration || !accountActive || !accountView || !scene || frameDisposed) return;
+    if (boot?.active || startupAccountsPending || graphicsSwitching || graphicsRecoveryFailed || scene?.isBrowseDragging) { playlistRebuildPending = true; return; }
     const previousId = currentAlbum()?.id;
-    const next = playlistLibrary.albums();
+    let next = playlistLibrary.albums();
+    if(dragLanding){
+      const info=dragLanding.playlistCell;
+      const valid=info && playlistLibrary.playlists[info.playlistIndex]?.id===info.playlistId && playlistLibrary.playlists[info.playlistIndex]?.provider===info.provider && info.songIndex<Math.max(1,playlistLibrary.playlists[info.playlistIndex].trackCount);
+      if(!valid || next.some(album=>album.id===dragLanding!.id))dragLanding=undefined;
+      else next=[...next,dragLanding];
+    }
     if (next === albums && stage.classList.contains('playlist-grid')) { updateStatus(); return; }
     const preserveSurface = stage.classList.contains('playlist-grid') && next.some(album => album.id === previousId);
     if (!preserveSurface) { cancelTrackReveal(); presentation.reset(); detailTransition.hide(true); browseTransition.hide(true); }
@@ -2126,7 +2201,8 @@ function rebuildPlaylistGrid() {
       if (playable >= 0) selected = playable;
     }
     setPlaylistAlbums(albums, playlistLibrary.playlists.map(playlist => playlist.name));
-    scene.setMusicArrayMode('filled'); libraryRebuilding = true;
+    scene.setMusicArrayMode('filled');
+    libraryRebuilding = true;
     try { await scene.refreshLibrary(selected, true); } finally { libraryRebuilding = false; }
     if (frameDisposed || !accountView || !accountActive) return;
     stage.classList.remove('playback-albums'); stage.classList.add('playlist-grid');
@@ -2171,6 +2247,42 @@ async function navigatePlaylist(row: number, song: number, navigation?: ArchiveN
     updateStatus();
     void playlistLibrary.window(row, cell.row - 12);
   } catch (error) { if (generation === playlistSelectionEpoch && accountActive) { playlistNavigationTarget = undefined; updateStatus(); notify((error as Error).message); } }
+}
+function previewBrowseDrag(cell:BrowseCell){
+  if(!scene)return;
+  const rounded={lane:Math.round(cell.lane),row:Math.round(cell.row)};
+  const record=scene.browseRecord(rounded),album=record?.album;if(!record || !album)return;
+  const logical=album.playlistCell,index=fileAtCell(rounded),location=fileLocation(index),files=columnFiles(location.lane);
+  const key=logical?`${logical.provider}:${logical.playlistId}:${logical.songIndex}`:record.id;
+  if(key===dragPreviewKey)return;dragPreviewKey=key;
+  textMotion.preview({number:logical?logical.total?logical.songIndex+1:0:files.indexOf(index)+1,total:logical?.total??files.length,
+    code:logical?logical.songIndex+1:index+1,genreIndex:logical?logical.playlistIndex+1:location.lane+1,
+    genre:logical?.playlistName??archiveColumns[location.lane],genreName:logical?.playlistName??archiveColumns[location.lane],artist:album.artist});
+  titleMotion.update(album.title,false);$('#selection-title').title=album.title;
+  if(logical && performance.now()-dragPrefetchAt>=100){dragPrefetchAt=performance.now();void playlistLibrary.window(logical.playlistIndex,logical.songIndex).catch(()=>{});}
+}
+function finishBrowseDrag(cell:BrowseCell){
+  dragPreviewKey='';
+  if(!scene || frameDisposed)return;
+  let index=fileAtCell(cell);
+  if(accountView && accountActive){
+    const row=wrap(cell.lane-2,playlistLibrary.playlists.length),playlist=playlistLibrary.playlists[row];
+    if(!playlist){scene.abandonBrowseDrag();return;}
+    const song=wrap(cell.row-12,Math.max(1,playlist.trackCount));
+    if(index<0){
+      const template=albums.find(album=>album.playlistCell?.playlistIndex===row);
+      if(!template){scene.abandonBrowseDrag();return;}
+      const id=`playlist-${playlist.provider}-${playlist.id}-${song}`;
+      dragLanding={...template,id,title:playlist.name,tracks:[],coverUrl:playlistCoverPreload.coverAt(playlist.provider,playlist.id,song),playlistCell:{...template.playlistCell!,songIndex:song,total:playlist.trackCount}};
+      albums=[...albums,dragLanding];setPlaylistAlbums(albums,playlistLibrary.playlists.map(item=>item.name));index=fileAtCell(cell);
+    }
+    void playlistLibrary.window(row,song);
+  }
+  if(index<0){scene.abandonBrowseDrag();return;}
+  selected=index;scene.finishBrowseDrag(index,cell);updateSelection({cell});updateStatus();preloadNearbyCovers();
+  if(preferences.rememberColumnPosition && !accountView)columnMemory.set(archiveColumns[fileLocation(index).lane],records[index].id);
+  if(playlistRebuildPending){playlistRebuildPending=false;void rebuildPlaylistGrid();}
+  if(libraryRefreshPending){libraryRefreshPending=false;void applyLibrary();}
 }
 function syncPlaylistNavigation() {
   const cell = records[navigationSelection()]?.album?.playlistCell; if (!cell) return;
@@ -2227,6 +2339,7 @@ async function playPlaylistSong() {
   } catch (error) { if (generation === playlistPlayEpoch && accountActive) notify((error as Error).message); }
 }
 function followPlaylistPlayback(state: MusicPlayerState) {
+  if(scene?.isBrowseDragging){followedPlaylistTrack=state.currentTrack?.id;return;}
   if (!playlistPlaybackId || !state.currentTrack || state.transport === 'idle') return;
   const row = playlistLibrary.playlists.findIndex(playlist => playlist.id === playlistPlaybackId);
   const album = albums.find(album => album.playlistCell?.playlistId === playlistPlaybackId && album.tracks[0]?.id === state.currentTrack?.id);
@@ -2345,7 +2458,7 @@ function loggedInProviders(): MusicProvider[] {
 }
 /** 歌单来源选择器的平台显示顺序。用户指定：
  * 网易云 → 酷狗 → QQ → 莱茵（本地，最后）
- * 未在此列出的平台（波点/酷我/JOOX）按原顺序跟在 QQ 之后、莱茵之前，
+ * 未在此列出的平台（酷我/JOOX/汽水）按原顺序跟在 QQ 之后、莱茵之前，
  * 这样以后新增平台也不会被静默丢掉。 */
 const playlistSourceRank: Partial<Record<PlaylistSource, number>> = {
   netease: 0, kugou: 1, qq: 2,
@@ -2419,7 +2532,7 @@ function applyPlaylistPlatformView() {
   if (!accountActive) return;
   accountView = true; playlistSelectionEpoch++;
   const key = accountKey;
-  void playlistLibrary.load().then(() => { if (key === accountKey && accountActive && accountView) void playlistLibrary.window(firstPlayablePlaylist(), 0); });
+  void playlistLibrary.load({ keepSnapshot: true }).then(() => { if (key === accountKey && accountActive && accountView) void playlistLibrary.window(firstPlayablePlaylist(), 0); });
 }
 function paintOverviewHeading() {
  // 用户要求：这一页就是「我的歌单」，不要再拼来源（原来会变成
@@ -2428,6 +2541,7 @@ function paintOverviewHeading() {
 }
 function onlineAccountChanged(provider: MusicProvider, account: NeteaseAccount) {
   accountStates[provider] = account;
+  playlistCoverPreload.setAccount(provider, account.loggedIn ? String(account.profile?.userId || account.profile?.nickname || provider) : undefined);
   renderPlaylistPlatformOptions();
   if (account.loggedIn && (provider === activeProvider || provider === loginProvider)) { activeProvider = provider; save("rhine-online-provider", provider); }
   const anyAccount = loggedInProviders().length > 0;
@@ -2438,11 +2552,24 @@ function onlineAccountChanged(provider: MusicProvider, account: NeteaseAccount) 
  // 歌单视图不再依赖登录：本地歌单不登录也要能看能建，
  // 这与上游一致 —— 上游的本地歌单在没有账号时照常可用。
   $('#my-playlists-button').hidden = false;
+  if (startupAccountsPending) return;
   const nextKey = [...loggedInProviders()].sort().map(p => `${p}:${accountStates[p]?.profile?.userId || accountStates[p]?.profile?.nickname || p}`).join('|');
  // 首次进入（含「没有任何账号」）也要把歌单读进来：本地歌单不依赖登录。
   const firstBoot = !bootedPlaylists;
   bootedPlaylists = true;
   if (nextKey === accountKey && !firstBoot) return;
+  if (nextKey === accountKey && accountActive && accountView) {
+    // A partial startup catalog is not an account change. Keep the live wall,
+    // playback and selection while completing this same session's snapshot.
+    const key = accountKey, initial = currentAlbum()?.playlistCell;
+    void playlistLibrary.load({ keepSnapshot: true }).then(() => {
+      if (key !== accountKey || !accountActive || !accountView) return;
+      const row = initial ? playlistLibrary.playlists.findIndex(item => item.provider === initial.provider && item.id === initial.playlistId) : -1;
+      void playlistLibrary.window(row >= 0 ? row : firstPlayablePlaylist(), initial?.songIndex || 0);
+    });
+    return;
+  }
+  browseDrag?.cancel(false);dragLanding=undefined;
   accountKey = nextKey; accountActive = true; playlistSelectionEpoch++; playlistPlayEpoch++; playlistNavigationTarget = undefined;
   playlistOverviewRequested = false;
   if (overview) setOverview(false, false);
@@ -2482,17 +2609,17 @@ function firstPlayablePlaylist(): number {
   const index = playlistLibrary.playlists.findIndex(playlist => playlist.trackCount > 0);
   return index < 0 ? 0 : index;
 }
-const platformLogins: Record<MusicProvider, NeteaseLogin> = {
+const platformLogins: Record<MusicProvider, PlatformLogin> = {
   netease: new NeteaseLogin(account => onlineAccountChanged("netease", account)),
   qq: new NeteaseLogin(account => onlineAccountChanged("qq", account), "qq"),
-  bodian: new NeteaseLogin(account => onlineAccountChanged("bodian", account), "bodian"),
+  qishui: new QishuiLogin(account => onlineAccountChanged("qishui", account)),
   kugou: new NeteaseLogin(account => onlineAccountChanged("kugou", account), "kugou"),
  // 酷我与 JOOX 搜索免账号、播放不要求登录（JOOX 播放本身未接入），登录页签不展示它们；
  // 条目仅为 Record 完整性而存在。
   kuwo: new NeteaseLogin(account => onlineAccountChanged("kuwo", account), "kuwo"),
   joox: new NeteaseLogin(account => onlineAccountChanged("joox", account), "joox"),
 };
-const loginHiddenProviders = new Set<MusicProvider>(["kuwo", "joox"]);
+const loginHiddenProviders = new Set<MusicProvider>(["joox"]);
 function disposePlatformLogin() { Object.values(platformLogins).forEach(login => login.dispose()); }
 function renderLoginPanel() {
   disposePlatformLogin();
@@ -2556,6 +2683,12 @@ let playbackVisualGeneration = 0;
  * playback cards settle; ordinary playback keeps the established behavior. */
 let openDetailAfterQueueSettle = false;
 function syncPlaybackAlbums(state: MusicPlayerState) {
+  if(scene?.isBrowseDragging){
+    if(accountActive && accountView)followedPlaylistTrack=state.currentTrack?.id;
+    else playbackVisualKey=state.currentTrack && state.transport!=='idle' ? JSON.stringify([state.currentTrack.id,state.queue.map(track=>[track.id,track.albumId,track.onlineSource?.coverUrl])]) : '';
+    return;
+  }
+  if(graphicsSwitching || graphicsRecoveryFailed){playbackRefreshPending=true;return;}
   if (accountActive && accountView) { followPlaylistPlayback(state); return; }
   if (!ready || !scene || boot?.active) return;
   if (browseLibraryDuringPlayback && playbackBrowseTrackId === state.currentTrack?.id && state.transport !== 'idle') return;
@@ -2566,6 +2699,7 @@ function syncPlaybackAlbums(state: MusicPlayerState) {
   playbackVisualKey = key;
   const generation = ++playbackVisualGeneration;
   playbackVisualTask = playbackVisualTask.then(async () => {
+    if(graphicsSwitching || graphicsRecoveryFailed){playbackRefreshPending=true;playbackVisualKey='';return;}
     if (generation !== playbackVisualGeneration || frameDisposed || !scene) return;
     if (!active) { await applyLibrary(); scene.setMusicArrayMode(preferences.arrayMode); return; }
     const nextAlbums = playbackAlbums(state.queue, library.albums);
@@ -2601,7 +2735,7 @@ function persistPlaybackIfChanged() {
   playbackPersistSignature = signature;
   saveSavedPlayback({ mode: playerState.mode, tracks: [...playerState.queue] });
 }
-const songView = new MusicSongView($('#mini-playback-below'), seconds => player.seek(seconds), () => preferences.reduced);
+const songView = new MusicSongView($('#mini-playback-below'), seconds => player.seek(seconds), () => preferences.reduced, () => player.playbackPosition);
 // 音浪画布：挂在 stage 上，自己按「进度条上方 / 窗口底边」找位置搬过去。
 // 注意 playerState 要到启动流程里才有值，这里必须按「可能还没有」写 ——
 // configure() 会立刻读一次状态，读崩了会让整个模块初始化中断、开场卡死。
@@ -2778,12 +2912,51 @@ interface LxSourceRow {
 interface LxSourcesPayload {
   plugins?: LxSourceRow[];
   counts?: { total: number; loaded: number };
+  progress?: LxCheckProgress;
   error?: string;
 }
-/** 音源清单一行：名称 · 延迟 · 停用/启用 · 移除（内置源置灰）。 */
+interface LxCheckProgress {
+  origin?: "startup" | "manual";
+  running?: boolean;
+  phase?: string;
+  sourceTotal?: number;
+  sourceDone?: number;
+  sourceRemaining?: number;
+  activeSources?: (string | { id?: string; name?: string })[];
+}
+let lxCheckPending = false;
+let lxCheckProgress: LxCheckProgress = {};
+let lxPlugins: LxSourceRow[] = [];
+let lxCounts: LxSourcesPayload['counts'];
+let lxPollTimer: ReturnType<typeof setTimeout> | undefined;
+let lxPollGeneration = 0;
+function lxCheckRunning() {
+  return lxCheckPending || !!lxCheckProgress.running || lxPlugins.some(plugin => plugin.testing || plugin.selfCheckRunning);
+}
+function syncLxCheckUI() {
+  const running = lxCheckRunning();
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-action="lx-sources-test"], [data-action="lx-source-test"]')) {
+    button.disabled = running;
+  }
+  const progress = document.querySelector<HTMLElement>('#lx-sources-progress');
+  if (!progress) return;
+  const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : undefined;
+  const total = count(lxCheckProgress.sourceTotal) ?? lxPlugins.length;
+  const done = Math.min(total, count(lxCheckProgress.sourceDone) ?? Math.max(0, total - (count(lxCheckProgress.sourceRemaining) ?? total)));
+  const remaining = Math.min(total - done, count(lxCheckProgress.sourceRemaining) ?? total - done);
+  const active = (Array.isArray(lxCheckProgress.activeSources) ? lxCheckProgress.activeSources : []).map(source => {
+    const id = typeof source === 'string' ? source : source?.id;
+    return (typeof source === 'object' && source?.name) || lxPlugins.find(plugin => plugin.id === id)?.name || id;
+  }).filter(Boolean);
+  progress.hidden = !running && lxCheckProgress.sourceTotal === undefined;
+  progress.textContent = `${running && lxCheckProgress.origin === "startup" ? "启动自检 · " : ""}正在检测：${running ? lxCheckProgress.phase === 'prepare' ? '正在准备' : active.join('、') || '等待中' : '无'} 已检测：${done} 剩余：${remaining}`;
+}
+/** 音源清单一行：名称 · 延迟 · 测试 · 停用/启用 · 移除（内置源置灰）。 */
 const PLATFORM_LABEL = { wy: '网易', tx: 'QQ', kg: '酷狗', kw: '酷我' } as const;
 
 function renderLxSourcesRows(plugins: LxSourceRow[], counts?: { total: number; loaded: number }) {
+  lxPlugins = plugins;
+  lxCounts = counts;
   const list = document.querySelector<HTMLElement>('#lx-sources-list');
   const counter = document.querySelector<HTMLElement>('#lx-sources-count');
   if (list) {
@@ -2796,14 +2969,12 @@ function renderLxSourcesRows(plugins: LxSourceRow[], counts?: { total: number; l
       const platformCount = plugin.platforms?.length ?? 0;
       const platformName = PLATFORM_LABEL[(health?.source ?? '') as keyof typeof PLATFORM_LABEL] ?? '';
       const errorText = (health?.error ?? '').replace(/\s+/g, ' ');
-      const meter = !plugin.enabled
-        ? '已停用'
+      const result = health?.ok
+        ? `${health.ms ?? '—'}ms${health.quality ? ` · ${health.quality}` : ''}${platformName ? ` · ${platformName}` : ''}${plugin.testing ? ' · 测试中' : ''}`
         : plugin.testing
           ? '测试中'
           : health
-            ? (health.ok
-                ? `${health.ms ?? '—'}ms${health.quality ? ` · ${health.quality}` : ''}${platformName ? ` · ${platformName}` : ''}`
-                : /需要歌曲ID/.test(errorText)
+            ? (/需要歌曲ID/.test(errorText)
                   ? '待验证'
                   : /需要配置/.test(errorText)
                     ? '需配置 Key'
@@ -2811,9 +2982,11 @@ function renderLxSourcesRows(plugins: LxSourceRow[], counts?: { total: number; l
             : plugin.selfCheckRunning
               ? '等待中'
               : '未测';
+      const meter = `${plugin.enabled ? '' : '已停用 · '}${result}`;
       return `<li class="lx-source-row${plugin.enabled ? '' : ' lx-source-off'}" data-id="${esc(plugin.id)}">
         <span class="lx-source-name">${esc(plugin.name)}</span>
-        <span class="lx-source-meter">${esc(meter)}</span>
+        <span class="lx-source-meter" title="${esc(meter)}">${esc(meter)}</span>
+        <button type="button" class="text-button" data-action="lx-source-test" data-id="${esc(plugin.id)}" aria-label="测试 ${esc(plugin.name)}"${lxCheckRunning() ? ' disabled' : ''}>测试</button>
         <button type="button" class="text-button" data-action="lx-source-toggle" data-id="${esc(plugin.id)}" data-enabled="${plugin.enabled}">${plugin.enabled ? '停用' : '启用'}</button>
         <button type="button" class="text-button" data-action="lx-source-remove" data-id="${esc(plugin.id)}" ${plugin.builtin ? 'disabled title="内置音源不能移除，只能停用"' : ''}>移除</button>
       </li>`;
@@ -2842,15 +3015,28 @@ function renderLxSourcesRows(plugins: LxSourceRow[], counts?: { total: number; l
     const loaded = counts?.loaded ?? plugins.filter(plugin => plugin.enabled).length;
     counter.textContent = `已加载 ${loaded}/${total} 个音源`;
   }
+  syncLxCheckUI();
 }
 async function hydrateLxSources(): Promise<void> {
+  const generation = lxPollGeneration;
   try {
-    const response = await fetch('/api/lx/status');
-    const value = await response.json() as LxSourcesPayload;
-    renderLxSourcesRows(value.plugins ?? [], value.counts);
+    const [value, progress] = await Promise.all([
+      fetch('/api/lx/status').then(response => response.ok ? response.json() as Promise<LxSourcesPayload> : null).catch(() => null),
+      fetch('/api/lx/progress').then(response => response.ok ? response.json() as Promise<LxCheckProgress> : null).catch(() => null),
+    ]);
+    if (generation !== lxPollGeneration) return;
+    const nextProgress = progress ?? value?.progress;
+    if (nextProgress) lxCheckProgress = nextProgress;
+    if (value) renderLxSourcesRows(value.plugins ?? [], value.counts);
+    else syncLxCheckUI();
     const status = document.querySelector<HTMLElement>('#lx-sources-status');
-    if (status && !(value.plugins ?? []).length) status.textContent = '还没有加载到音源。点「添加音源」选 .js 插件。';
-  } catch { /* 设置页不依赖音源服务 */ }
+    if (status && value && !(value.plugins ?? []).length) status.textContent = '还没有加载到音源。点「添加音源」选 .js 插件。';
+  } finally {
+    if (generation === lxPollGeneration && lxCheckRunning()) {
+      clearTimeout(lxPollTimer);
+      lxPollTimer = setTimeout(() => void hydrateLxSources(), 700);
+    }
+  }
 }
 async function lxSourcesRequest(path: string, body?: unknown): Promise<LxSourcesPayload> {
   const status = document.querySelector<HTMLElement>('#lx-sources-status');
@@ -2883,37 +3069,41 @@ async function addLxSources(files: FileList | null): Promise<void> {
   try { await lxSourcesRequest('/api/lx/sources/add', { files: payload }); }
   catch { /* 错误文案已在 lxSourcesRequest 里写过 */ }
 }
-async function testLxSources(): Promise<void> {
+async function testLxSources(id?: string): Promise<void> {
+  if (lxCheckRunning()) return;
+  ++lxPollGeneration;
+  lxCheckPending = true;
+  const total = id ? 1 : lxPlugins.filter(plugin => plugin.enabled).length;
+  lxCheckProgress = { running: true, phase: 'prepare', sourceTotal: total, sourceDone: 0, sourceRemaining: total, activeSources: id ? [id] : [] };
+  renderLxSourcesRows(lxPlugins.map(plugin => ({ ...plugin, testing: !id || plugin.id === id })), lxCounts);
   const status = document.querySelector<HTMLElement>('#lx-sources-status');
-  const button = document.querySelector<HTMLButtonElement>('[data-action="lx-sources-test"]');
-  if (button) { button.disabled = true; button.textContent = '测试中…'; }
-  if (status) status.textContent = '逐个音源试取一首歌，超时的会标超时…';
-  // 自检在 worker 里跑，health 是实时更新的：每 700ms 拉一次清单+进度，
-  // 测一个就显示一个，不用等整轮跑完。
-  let polling = true;
-  const tick = async () => {
-    try {
-      const list = await fetch('/api/lx/status');
-      if (list.ok) {
-        const value = await list.json() as LxSourcesPayload;
-        renderLxSourcesRows(value.plugins ?? [], value.counts);
-      }
-      const progress = await fetch('/api/lx/progress');
-      if (progress.ok && status) {
-        const p = await progress.json() as { running?: boolean; done?: number; total?: number; alive?: number };
-        if (p.running) status.textContent = `测试中 ${p.done ?? 0}/${p.total ?? 0} · 活 ${p.alive ?? 0}`;
-      }
-    } catch { /* 轮询失败不影响主流程 */ }
-    if (polling) setTimeout(tick, 700);
-  };
-  void tick();
+  if (status) status.textContent = '';
+  // POST 等待整轮结束，期间每 700ms 更新状态和进度。
+  clearTimeout(lxPollTimer);
+  lxPollTimer = setTimeout(() => void hydrateLxSources(), 700);
   try {
-    await lxSourcesRequest('/api/lx/selfcheck', {});
-    if (status) status.textContent = '测试完成。';
-  } catch { /* 错误文案已在 lxSourcesRequest 里写过 */ }
+    await lxSourcesRequest('/api/lx/selfcheck', id ? { id } : {});
+    ++lxPollGeneration;
+    clearTimeout(lxPollTimer);
+    const progress = await fetch('/api/lx/progress').then(response => response.ok ? response.json() as Promise<LxCheckProgress> : null).catch(() => null);
+    const confirmed = progress && !progress.running && progress.sourceTotal !== undefined;
+    lxCheckProgress = confirmed ? progress : { ...lxCheckProgress, running: false, activeSources: [] };
+    const status = document.querySelector<HTMLElement>('#lx-sources-status');
+    if (status) status.textContent = !confirmed
+      ? '测试已结束，最终进度未能确认。'
+      : (lxCheckProgress.sourceRemaining ?? 0) > 0
+        ? `测试已结束，仍有 ${lxCheckProgress.sourceRemaining} 个音源未完成。`
+        : '测试完成。';
+  } catch (error) {
+    lxCheckProgress = { ...lxCheckProgress, running: false, activeSources: [] };
+    const status = document.querySelector<HTMLElement>('#lx-sources-status');
+    if (status) status.textContent = error instanceof Error ? error.message : '测试失败，请重试。';
+  }
   finally {
-    polling = false;
-    if (button) { button.disabled = false; button.textContent = '测试连通性 ↗'; }
+    lxCheckPending = false;
+    ++lxPollGeneration;
+    clearTimeout(lxPollTimer);
+    renderLxSourcesRows(lxPlugins.map(plugin => ({ ...plugin, testing: false, selfCheckRunning: false })), lxCounts);
   }
 }
 /** 全曲解析（后台静默）: 播放前先问一遍其他音源，能拿到全曲就直接播全曲。
@@ -3101,6 +3291,7 @@ player.subscribe((state) => {
 });
 
 function audioOutputMarkup() {
+  if (isAndroidApp()) return '<section class="panel-section mobile-audio-output"><h3>音频输出</h3><p class="scan-status">手机系统音频输出</p><p id="audio-output-status" role="status">由 Android 系统管理扬声器、蓝牙和耳机输出。</p></section>';
   return `<section class="panel-section"><h3>音频输出</h3><label class="settings-row"><span>输出方式</span><select id="audio-backend" aria-label="音频输出方式">${isDesktop() ? '<option value="browser">Windows 系统输出</option>' : '<option value="browser">浏览器输出</option><option value="coreaudio">Mac 原生 CoreAudio</option>'}</select></label><label class="settings-row" id="audio-device-row"><span>输出设备</span><select id="audio-device" aria-label="音频输出设备"></select></label><p id="audio-output-status" role="status"></p><button class="text-button" data-action="refresh-output">刷新输出设备 ↻</button></section>`;
 }
 function syncAudioOutputUI() {
@@ -3125,6 +3316,12 @@ function syncAudioOutputUI() {
   $<HTMLButtonElement>('[data-action="refresh-output"]').disabled = outputBusy || !apiAvailable || lightingDemo;
 }
 async function refreshAudioOutputs(restore = false) {
+  if (isAndroidApp()) {
+    audioOutputsChecked = true;
+    outputStatus = "手机系统音频输出已交给 Android 管理。";
+    syncAudioOutputUI();
+    return;
+  }
   if (lightingDemo || !apiAvailable) { syncAudioOutputUI(); return; }
   outputBusy = true; syncAudioOutputUI();
   try {
@@ -3193,6 +3390,7 @@ function closePanel(after?: () => void) {
 let settingsCategory: SettingsCategory = "personalization";
 let feedbackDescription = "";
 function openPanel(next: Panel) {
+  browseDrag?.cancel();
   if (!next) return closePanel();
   playlistOverviewRequested = false;
   onlineSearch.dispose(); disposePlatformLogin();
@@ -3376,16 +3574,17 @@ function renderSettingsPanel() {
     `<section class="panel-section" data-settings-group="personalization"><h3>外观主题</h3><div class="theme-cards">${(["day", "night", "dusk"] as Theme[]).map((t) => `<button data-theme="${t}" aria-pressed="${preferences.theme === t}" class="${t}"><i></i><strong>${themeNames[t]}</strong><span>${t === "day" ? "暖白玻璃与日光" : t === "dusk" ? "冷调薄雾与雾蓝玻璃" : "极简星空与透光白卡"}</span></button>`).join("")}</div></section>
 
     <section class="panel-section" data-settings-group="playback"><h3>播放</h3><label class="settings-row"><span>进入软件自动播放</span><input type="checkbox" id="autoplay-setting" data-settings-key="autoplay" ${preferences.autoplay ? "checked" : ""}></label></section>
-    ${keybindingsSectionMarkup(preferences.keybindings)}
-    <section class="panel-section" data-settings-group="cache"><h3>缓存</h3><label class="settings-row"><span>缓存上限</span><input type="range" id="cache-limit" data-settings-key="cacheLimit" min="64" max="8192" step="64" value="${preferences.cacheLimit}" aria-label="缓存上限"></label><p class="scan-status" id="cache-limit-status" role="status">${preferences.cacheLimit} MB</p><label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" data-settings-key="cacheLocation" placeholder="读取中…" aria-label="缓存位置" value="${esc(preferences.cacheLocation)}"></label><button class="text-button" data-action="cache-clear">清理缓存 ↗</button><p class="scan-status" id="cache-status" role="status" aria-live="polite"></p></section>
-    <section class="panel-section" data-settings-group="library"><h3>共享音源</h3><p class="scan-status" id="pool-credential-status" role="status" aria-live="polite">检查中…</p><p class="scan-status pool-sign-note" id="pool-credential-signnote" role="alert" hidden></p><div class="pool-credential-actions"><button class="text-button" data-action="pool-connectivity">检测连通性 ↗</button><button class="text-button" data-action="pool-credential-import">导入密钥文件 ↗</button><button class="text-button" data-action="pool-credential-export">导出密钥 ↗</button><button class="text-button" data-action="pool-credential-clear">移除 ↗</button></div><div class="pool-connectivity" id="pool-connectivity" role="status" aria-live="polite"></div><input type="file" id="pool-credential-file" accept=".rhinekey,.json" hidden><p class="scan-status">密钥由你自己提供，程序不内置任何凭据。没导入时只使用备用音源。<br>换一台电脑用？把这份密钥文件拷过去导入即可。</p></section>
-    <section class="panel-section" data-settings-group="display"><h3>窗口</h3><label class="settings-row"><span>关闭窗口时最小化到托盘</span><input type="checkbox" id="minimize-to-tray" data-settings-key="minimizeToTray" ${preferences.minimizeToTray ? "checked" : ""}></label></section>
+    ${isAndroidApp() ? "" : keybindingsSectionMarkup(preferences.keybindings)}
+    <section class="panel-section" data-settings-group="cache"><h3>缓存</h3><label class="settings-row"><span>音频缓存上限</span><input type="range" id="cache-limit" data-settings-key="cacheLimit" min="64" max="16384" step="64" value="${preferences.cacheLimit}" aria-label="缓存上限"></label><p class="scan-status" id="cache-limit-status" role="status">${preferences.cacheLimit} MB</p><label class="settings-row"><span>封面缓存上限</span><input type="range" id="cover-cache-limit" data-settings-key="coverCacheLimit" min="512" max="2048" step="64" value="${preferences.coverCacheLimit}" aria-label="封面缓存上限"></label><p class="scan-status" id="cover-cache-limit-status" role="status">${preferences.coverCacheLimit} MB</p><button class="text-button" data-action="cover-cache-clear">清理封面缓存 ↗</button><p class="scan-status" id="cover-cache-status" role="status" aria-live="polite"></p>${isAndroidApp() ? '<label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" value="应用缓存（系统管理）" aria-label="缓存位置" disabled></label>' : '<label class="settings-row"><span>缓存位置</span><input type="text" id="cache-location" data-settings-key="cacheLocation" placeholder="读取中…" aria-label="缓存位置" value="${esc(preferences.cacheLocation)}"></label>'}<button class="text-button" data-action="cache-clear">清理音频缓存 ↗</button><p class="scan-status" id="cache-status" role="status" aria-live="polite"></p></section>
+    ${isAndroidApp() ? '<section class="panel-section mobile-pool-status" data-settings-group="library"><h3>共享音源</h3><p class="scan-status">内置模块 · 私有构建</p><div class="pool-credential-actions"><button class="text-button" data-action="pool-connectivity">检测连通性 ↗</button></div><div class="pool-connectivity" id="pool-connectivity" role="status" aria-live="polite"></div></section>' : '<section class="panel-section" data-settings-group="library"><h3>共享音源</h3><p class="scan-status" id="pool-credential-status" role="status" aria-live="polite">检查中…</p><p class="scan-status pool-sign-note" id="pool-credential-signnote" role="alert" hidden></p><div class="pool-credential-actions"><button class="text-button" data-action="pool-connectivity">检测连通性 ↗</button><button class="text-button" data-action="pool-credential-import">导入模块 ↗</button><button class="text-button" data-action="pool-credential-clear">移除 ↗</button></div><div class="pool-connectivity" id="pool-connectivity" role="status" aria-live="polite"></div><input type="file" id="pool-credential-file" accept=".dll" hidden><p class="scan-status">选择 .dll 音源模块导入。未导入时只使用备用音源。</p></section>'}
+    ${isAndroidApp() ? '<section class="panel-section" data-settings-group="display"><h3>后台播放</h3><label class="settings-row"><span>切至后台继续播放</span><input type="checkbox" id="background-playback" data-settings-key="backgroundPlayback" checked></label><p class="scan-status">锁屏、切换应用时保持播放；系统强制停止应用除外。</p></section>' : '<section class="panel-section" data-settings-group="display"><h3>窗口</h3><label class="settings-row"><span>关闭窗口时最小化到托盘</span><input type="checkbox" id="minimize-to-tray" data-settings-key="minimizeToTray" ${preferences.minimizeToTray ? "checked" : ""}></label></section>'}
     ${visualizerMarkup(normalizeVisualizer(preferences.visualizer))}
     <section class="panel-section" data-settings-group="personalization"><h3>账号头像</h3><div class="avatar-settings"><span class="account-avatar avatar-large" id="avatar-preview"></span><label class="text-button" for="avatar-upload">上传头像 ↗</label><input type="file" id="avatar-upload" accept="image/png,image/jpeg,image/webp" hidden><button class="text-button" data-action="avatar-reset">恢复默认头像</button></div><p class="scan-status">未上传时使用默认头像。</p></section>
     <section class="panel-section" data-settings-group="local"><h3>音乐库排列</h3><label class="settings-row"><span>排列方式</span><select id="music-sort" aria-label="音乐库排列方式">${(["genre", "artist", "album"] as MusicSortMode[]).map((value) => `<option value="${value}" ${preferences.sortMode === value ? "selected" : ""}>${sortLabels[value].name}</option>`).join("")}</select></label></section>
-    <section class="panel-section" data-settings-group="download"><h3>歌曲下载</h3><label class="settings-row"><span>下载目录</span><input type="text" id="download-directory" placeholder="读取中…" aria-label="下载目录"></label><label class="settings-row"><span>下载音质</span><select id="download-quality" aria-label="下载音质"><option value="lossless">无损</option><option value="master">母带</option><option value="surround">环绕</option><option value="hifi">HiFi</option><option value="hires">Hi-Res</option><option value="high">高品</option><option value="standard">标准</option></select></label><label class="settings-row"><span>文件命名</span><select id="download-naming" aria-label="文件命名"><option value="{artist} - {title}">歌手 - 歌名</option><option value="{title} - {artist}">歌名 - 歌手</option><option value="{title}">仅歌名</option></select></label><p class="scan-status" id="download-settings-status" role="status">下载仅保存平台提供给当前账号的音源，请遵守平台协议与版权法。</p></section>
+    <section class="panel-section" data-settings-group="download"><h3>歌曲下载</h3><label class="settings-row"><span>下载目录</span><input type="text" id="download-directory" ${isAndroidApp() ? 'value="Download/Rhine Music" disabled' : 'placeholder="读取中…"'} aria-label="下载目录"></label><label class="settings-row"><span>下载音质</span><select id="download-quality" aria-label="下载音质"><option value="lossless">无损</option><option value="master">母带</option><option value="surround">环绕</option><option value="hifi">HiFi</option><option value="hires">Hi-Res</option><option value="high">高品</option><option value="standard">标准</option></select></label><label class="settings-row"><span>文件命名</span><select id="download-naming" aria-label="文件命名"><option value="{artist} - {title}">歌手 - 歌名</option><option value="{title} - {artist}">歌名 - 歌手</option><option value="{title}">仅歌名</option></select></label><p class="scan-status" id="download-settings-status" role="status">下载仅保存平台提供给当前账号的音源，请遵守平台协议与版权法。</p></section>
     <section class="panel-section" id="lx-sources-settings" data-settings-group="library"><h3>备用音源</h3>
       <div class="lx-sources-actions"><button class="text-button" data-action="lx-sources-add">添加音源 ↗</button><button class="text-button" data-action="lx-sources-test">测试连通性 ↗</button><input type="file" id="lx-sources-files" accept=".js" multiple hidden></div>
+      <p class="lx-sources-progress" id="lx-sources-progress" role="status" aria-live="polite" hidden></p>
       <ul class="lx-sources-list" id="lx-sources-list"></ul>
       <p class="lx-sources-count" id="lx-sources-count" role="status" aria-live="polite">读取中…</p>
       <p class="scan-status" id="lx-sources-status" role="status" aria-live="polite"></p></section>
@@ -3407,7 +3606,7 @@ function renderSettingsPanel() {
  // 缓存偏好在启动与每次打开设置面板时都要同步一次：面板上要显示后端真正
  // 在用的目录与占用，而不是前端自己记的数字。
   void pushCacheSettings();
- // 共享音源密钥状态：面板上直接显示有没有导入，而不是等用户点开才发现。
+
   void refreshPoolCredentialStatus();
   void hydrateLxSources();
   renderMusicBrainzSettings();
@@ -3429,6 +3628,7 @@ function renderSettingsPanel() {
 let disposeShortcutEditor: (() => void) | undefined;
 function mountShortcutEditor() {
   disposeShortcutEditor?.();
+  if (isAndroidApp()) return;
   disposeShortcutEditor = mountKeybindingEditor(
     $("#panel-body"),
     () => preferences.keybindings,
@@ -3440,19 +3640,66 @@ function mountShortcutEditor() {
     },
   );
 }
-function updateQuality() {
+async function updateQuality() {
+  browseDrag?.cancel();
+  if(graphicsSwitching){queuedQuality={quality:normalizeQuality(renderQuality),preset:preferences.quality,mode:preferences.qualityMode};return;}
+  const target=normalizeQuality(renderQuality), previous=workingQuality;
+  let targetPreset=preferences.quality,targetMode=preferences.qualityMode;
+  if(scene && (target.pipeline!==previous.pipeline || graphicsRecoveryFailed)){
+    graphicsSwitching=true;
+    const overlay=document.createElement('section');overlay.className='graphics-preparation';
+    overlay.setAttribute('role','status');overlay.innerHTML='<div><strong>RHINE MUSIC</strong><p>正在切换渲染模式…</p></div>';
+    document.body.append(overlay);
+    const locked=[...stage.querySelectorAll<HTMLElement>('#music-panel-root, #music-browse, .music-topnav > :not(.minimal-transport)')].map(node=>({node,inert:node.inert}));
+    for(const {node}of locked)node.inert=true;
+    try {
+      // Existing metadata commits finish first. New responses stay queued while
+      // graphicsSwitching is true and are merged from current business state.
+      while(libraryRebuilding && !frameDisposed)await new Promise(resolve=>setTimeout(resolve,16));
+      await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));
+      await scene.rebuildGraphics(target);
+      if(frameDisposed)return;
+      graphicsRecoveryFailed=false;renderQuality=target;
+    } catch(error) {
+      if(frameDisposed)return;
+      try { await scene.rebuildGraphics(previous);graphicsRecoveryFailed=false;renderQuality=previous;targetPreset=workingPreset;targetMode=workingMode;notify('切换失败，已恢复原画质。'); }
+      catch(restoreError){
+        graphicsRecoveryFailed=true;
+        overlay.querySelector('p')!.textContent='图形恢复失败，请重试。';
+        for(const [label,quality] of [['重试',target],['恢复原画质',previous]] as const){const button=document.createElement('button');button.className='text-button';button.textContent=label;button.onclick=()=>{overlay.remove();renderQuality=quality;preferences.quality=label==='重试'?targetPreset:workingPreset;preferences.qualityMode=label==='重试'?targetMode:workingMode;void updateQuality();};overlay.firstElementChild!.append(button);}
+        return;
+      }
+    } finally {
+      graphicsSwitching=false;
+      for(const {node,inert}of locked)node.inert=inert;
+      if(overlay.querySelectorAll('button').length===0)overlay.remove();
+      resetFrameTiming();
+    }
+  }
+  if(frameDisposed)return;
+  preferences.quality=targetPreset;preferences.qualityMode=targetMode;
+  workingQuality=structuredClone(renderQuality);workingPreset=targetPreset;workingMode=targetMode;
+
   renderQuality = normalizeQuality(renderQuality);
   preferences.renderQuality = renderQuality;
   scene?.setQuality(renderQuality);
   scene?.setGlassOcclusion(glassOcclusionMode);
   viewer?.setQuality(renderQuality);
+  const qualitySection=document.querySelector('.quality-settings');
+  if(qualitySection && target.pipeline!==previous.pipeline)qualitySection.outerHTML=qualityMarkup(renderQuality);
   syncQualityUI(renderQuality);
   const summary = document.querySelector("#quality-summary");
   if (summary)
-    summary.textContent = `${preferences.qualityMode === 'auto' ? '自动适配' : '手动设置'} · 渲染 ${renderQuality.scale}% · 上限 ${Math.round(renderQuality.pixelBudget / 10000)} 万像素 · 透射 ${renderQuality.transmission * 100}% · 遮蔽 ${renderQuality.aoResolution * 100}% · 景深 ${renderQuality.depthOfFieldResolution * 100}%`;
+    summary.textContent = renderQuality.pipeline==='lowIntegrated'
+      ? `${preferences.qualityMode==='auto'?'自动适配':'手动设置'} · 轻量立体阵列 · 背景动态分辨率 · 选中封面清晰输出`
+      : `${preferences.qualityMode === 'auto' ? '自动适配' : '手动设置'} · 渲染 ${renderQuality.scale}% · 上限 ${Math.round(renderQuality.pixelBudget / 10000)} 万像素 · 透射 ${renderQuality.transmission * 100}% · 遮蔽 ${renderQuality.aoResolution * 100}% · 景深 ${renderQuality.depthOfFieldResolution * 100}%`;
   const qualityMode = document.querySelector<HTMLSelectElement>('#quality-mode');
   if (qualityMode) qualityMode.value = preferences.qualityMode!;
   savePrefs();
+  if(queuedQuality){const next=queuedQuality;queuedQuality=undefined;renderQuality=next.quality;preferences.quality=next.preset;preferences.qualityMode=next.mode;await updateQuality();return;}
+  if(playlistRebuildPending){playlistRebuildPending=false;await rebuildPlaylistGrid();}
+  if(libraryRefreshPending){libraryRefreshPending=false;await applyLibrary();}
+  if(playbackRefreshPending){playbackRefreshPending=false;syncPlaybackAlbums(playerState);}
 }
 async function editGenres() {
   const body = document.querySelector("#panel-body");
@@ -3675,7 +3922,7 @@ document.addEventListener("click", (e) => {
     void localPlaylists.create(name.trim()).then(async () => {
       await refreshLocalPlaylistsPanel();
       playlistLibrary.dispose(); clearTimeout(playlistRenderTimer);
-      void playlistLibrary.load();
+      void playlistLibrary.load({ keepSnapshot: true });
       notify('已创建本地歌单');
     }).catch(error => notify(`新建歌单失败：${(error as Error).message}`));
     return;
@@ -3688,7 +3935,7 @@ document.addEventListener("click", (e) => {
     void localPlaylists.rename(id, next.trim()).then(async () => {
       await refreshLocalPlaylistsPanel();
       playlistLibrary.dispose(); clearTimeout(playlistRenderTimer);
-      void playlistLibrary.load();
+      void playlistLibrary.load({ keepSnapshot: true });
     }).catch(error => notify(`重命名失败：${(error as Error).message}`));
     return;
   }
@@ -3699,7 +3946,7 @@ document.addEventListener("click", (e) => {
     void localPlaylists.remove(id).then(async () => {
       await refreshLocalPlaylistsPanel();
       playlistLibrary.dispose(); clearTimeout(playlistRenderTimer);
-      void playlistLibrary.load();
+      void playlistLibrary.load({ keepSnapshot: true });
       notify('已删除');
     }).catch(error => notify(`删除失败：${(error as Error).message}`));
     return;
@@ -3719,7 +3966,7 @@ document.addEventListener("click", (e) => {
     void localPlaylists.addSongs(id, addToPlaylistTracks).then(async result => {
       await refreshLocalPlaylistsPanel();
       playlistLibrary.dispose(); clearTimeout(playlistRenderTimer);
-      void playlistLibrary.load();
+      void playlistLibrary.load({ keepSnapshot: true });
  // 文案对齐上游：allExist / skipped>0 / 全部新增。
       if (result.allExist) notify('所选歌曲已在该歌单中');
       else if (result.skipped > 0) notify(`部分歌曲已存在，已添加 ${result.added} 首`);
@@ -3994,6 +4241,10 @@ document.addEventListener("click", (e) => {
     case "locate-playing":
       locatePlaying();
       break;
+    case 'cover-cache-clear':
+      coverResources.reset();
+      void fetch('/api/covers/cache/clear', { method: 'POST' }).then(() => refreshCacheStatus()).catch(() => notify('封面缓存清理失败'));
+      break;
     case "cache-clear":
  // 这个按钮以前完全没有处理器：HTML 里声明了 data-action="cache-clear"，
  // 但事件委托的 switch 里没有对应分支，点了什么都不会发生。
@@ -4013,9 +4264,6 @@ document.addEventListener("click", (e) => {
       break;
     case "pool-credential-import":
       pickPoolCredentialFile();
-      break;
-    case "pool-credential-export":
-      openExternal(poolCredentialExportUrl());
       break;
     case "pool-credential-clear":
       void removePoolCredential();
@@ -4042,6 +4290,9 @@ document.addEventListener("click", (e) => {
       break;
     case "lx-sources-test":
       void testLxSources();
+      break;
+    case "lx-source-test":
+      if (target.dataset.id) void testLxSources(target.dataset.id);
       break;
     case "lx-group-toggle": {
       // 折叠/展开「自带音源」。状态存本地，重渲染后保持原样。
@@ -4129,7 +4380,7 @@ document.addEventListener("click", (e) => {
       playerState.currentTrack ? void player.toggle() : playAlbum();
       break;
     case 'refresh-playlists':
-      if (accountActive) { accountView = true; playlistSelectionEpoch++; void playlistLibrary.load().then(() => playlistLibrary.window(firstPlayablePlaylist(), 0)); }
+      if (accountActive) { accountView = true; playlistSelectionEpoch++; void playlistLibrary.load({ keepSnapshot: true }).then(() => playlistLibrary.window(firstPlayablePlaylist(), 0)); }
       break;
     case "scan":
       void scan(true);
@@ -4255,7 +4506,7 @@ function paintTransportVolume(input?: HTMLInputElement) {
   range.style.setProperty('--volume', `${Number(range.value) * 100}%`);
 }
 document.addEventListener("change", (e) => {  const el = e.target as HTMLInputElement;
- // 共享音源密钥文件：选中后读文本交给后端。
+
   if (el.id === "pool-credential-file") {
     void handlePoolCredentialFile(el);
     return;
@@ -4426,7 +4677,7 @@ document.addEventListener("change", (e) => {  const el = e.target as HTMLInputEl
  * 变速走 `player.setRate`，跳转走 `player.seek`，两者都不重载音频。
  */
 const keyGestures = new MusicKeyGestures({
-  enabled: () => !panel && !boot?.active && !viewer?.isOpen && !mvPlayer.isOpen,
+  enabled: () => !isAndroidApp() && !panel && !boot?.active && !viewer?.isOpen && !mvPlayer.isOpen,
   active: () => Boolean(playerState.currentTrack),
   playing: () => playerState.playing,
   bindings: () => preferences.keybindings,
@@ -4536,6 +4787,7 @@ const renderScheduler = new RenderScheduler();
  */
 function applyFrameRate() {
   renderScheduler.setFrameRate(preferences.frameRate);
+  scene?.setFrameRate(preferences.frameRate);
  // 改上限后清掉帧计时基准，避免用旧基准算出的第一帧间隔异常，
  // 让 FPS 读数也立刻反映新值。
   resetFrameTiming();
@@ -4550,6 +4802,7 @@ let textMotionTime = 0, textMotionLastFrame: number | undefined;
 function frame(ms: number) {
   frameHandle = 0;
   if (frameDisposed || frameSuspended) return;
+  if(graphicsSwitching || graphicsRecoveryFailed){textMotionLastFrame=undefined;frameHandle=requestAnimationFrame(frame);return;}
   if (!renderScheduler.shouldRender(ms, Boolean(boot?.active || viewer?.isOpen || scene?.musicRenderTransitioning),
     (isDesktop() || new URLSearchParams(location.search).get("scheduler") === "1") &&
       new URLSearchParams(location.search).get("render") !== "reference")) {
@@ -4562,8 +4815,9 @@ function frame(ms: number) {
     frameTiming.begin(ms);
     if (lastFrame === undefined) lastFrame = ms;
     textMotionTime += textDt * (preferences.reduced ? 1 : getMusicMotionSpeed());
+    browseDrag?.tick(ms);
     const opening = boot?.update(ms / 1000);
-    if (!viewer?.isOpen && opening?.renderScene !== false) scene.update(ms / 1000, opening?.cinema);
+    if (!graphicsSwitching && !graphicsRecoveryFailed && !viewer?.isOpen && opening?.renderScene !== false) scene.update(ms / 1000, opening?.cinema);
     updateOverview();
     if (overviewRevealPending && !overview && !boot?.active &&
       scene.musicOverviewProgress < .02 && scene.musicArchiveReady) {
@@ -4636,6 +4890,7 @@ function resetFrameTiming() {
   frameTiming.reset();
 }
 function suspendPage() {
+  browseDrag?.cancel();
   songView.setVisible(false);
   frameSuspended = true;
   cancelAnimationFrame(frameHandle);
@@ -4654,8 +4909,11 @@ function disposePage() {
   playlistLibrary.dispose(); clearTimeout(playlistRenderTimer); playlistPlayEpoch++; playlistSelectionEpoch++;
   if (frameDisposed) return;
   frameDisposed = true;
+  browseDrag?.dispose();
+  entry?.dispose();
+  clearTimeout(backgroundResumeTimer); coverResources.reset(); playlistCoverPreload.dispose();
   onlineDebug.dispose();
-  songView.dispose(); disposePlatformLogin();
+  headerObserver.disconnect(); songView.dispose(); disposePlatformLogin();
   playlistSongBars.destroy();
   onlineSearch.dispose(); playbackVisualGeneration++;
   suspendPage();
@@ -4708,7 +4966,55 @@ function showStartupFailure(message: string) {
     `<button data-action="settings">打开设置</button>`;
 }
 
+/** Establish an actionable first view before the scene captures its cell mapping. */
+async function prepareStartupPlaylists() {
+  playlistLibrary.setProviders(playlistViewProviders());
+  await playlistLibrary.load({ keepSnapshot: true, prepareFirstPage: false });
+  if (frameDisposed) return;
+  const warnings = [startupWarning, playlistLibrary.error].filter(Boolean);
+  let landing: { row: number; song: number } | undefined;
+  for (let row = 0; row < playlistLibrary.playlists.length; row++) {
+    if (!playlistLibrary.playlists[row].trackCount) continue;
+    entry?.setStatus(`正在读取首页歌曲：${playlistLibrary.playlists[row].name}…`);
+    try {
+      await playlistLibrary.ensure(row, 0, true);
+      if (frameDisposed) return;
+      const song = Array.from({ length: Math.min(50, playlistLibrary.playlists[row].trackCount) }, (_, i) => i)
+        .find(i => Boolean(playlistLibrary.track(row, i)));
+      if (song !== undefined) { landing = { row, song }; break; }
+    } catch (error) { warnings.push((error as Error).message); }
+  }
+  const expectedSongs = playlistLibrary.playlists.some(playlist => playlist.trackCount > 0);
+  if (expectedSongs && !landing) throw new Error(`首页歌曲尚未就绪，请重试。${warnings.at(-1) || ''}`);
+  if (!landing && playlistLibrary.error) throw new Error(`首页歌单未能读取，请重试。${playlistLibrary.error}`);
+  if (landing) {
+    entry?.setStatus("正在准备首屏歌曲与导航…");
+    await playlistLibrary.window(landing.row, landing.song);
+    if (frameDisposed) return;
+    if (!playlistLibrary.track(landing.row, landing.song)) throw new Error("首页选中歌曲尚未就绪，请重试。");
+    if (playlistLibrary.error) warnings.push(playlistLibrary.error);
+  }
+  startupWarning = [...new Set(warnings)].join('；');
+  accountActive = true; bootedPlaylists = true;
+  accountKey = [...loggedInProviders()].sort().map(provider => `${provider}:${accountStates[provider]?.profile?.userId || accountStates[provider]?.profile?.nickname || provider}`).join('|');
+  if (!loggedInProviders().length && (library.albums.length || !landing)) return;
+  accountView = true; demo = false;
+  albums = playlistLibrary.albums(); genres = [];
+  selected = Math.max(0, albums.findIndex(album => album.playlistCell?.playlistIndex === landing?.row && album.playlistCell?.songIndex === landing?.song));
+  setPlaylistAlbums(albums, playlistLibrary.playlists.map(playlist => playlist.name));
+  stage.classList.add('playlist-grid');
+  $<HTMLButtonElement>('[data-action="overview"]').hidden = false;
+}
+
 async function start() {
+  await beginStartupPreparation();
+  if (frameDisposed) return;
+  coverResources.enabled = true;
+  coverResources.setPhase('film'); playlistCoverPreload.setPaused(true);
+  void pushCacheSettings(false);
+  playlistCoverPreload.setAccount('local', `local:${playlistLibrary.localSort.key}:${playlistLibrary.localSort.direction}`);
+  const loginProviders = (Object.keys(platformLogins) as MusicProvider[]).filter(p => !loginHiddenProviders.has(p));
+  const accountPreparation = Promise.allSettled(loginProviders.map(provider => platformLogins[provider].status()));
  // This local application owns its live index. An old archive PWA must not serve stale UI.
   if ("serviceWorker" in navigator) {
     const registrations = await navigator.serviceWorker.getRegistrations();
@@ -4736,12 +5042,25 @@ async function start() {
   preloadNearbyCovers();
   if (frameDisposed) return;
   try {
+    if (frameDisposed) return;
+    coverResources.setPhase('preparation');
+    entry?.setStatus("正在确认账号状态…");
+    await runStartupStage("确认账号状态", () => accountPreparation, 20000);
+    if (frameDisposed) return;
+    const unknownAccounts = loginProviders.filter(provider => !accountStates[provider]);
+    if (unknownAccounts.length) startupWarning = `${unknownAccounts.map(provider => musicPlatforms[provider]).join('、')}账号状态暂时不可用，可在账号面板重试`;
+    entry?.setStatus("正在读取首页歌单…");
+    await runStartupStage("读取首页歌单与首屏歌曲", prepareStartupPlaylists, 60000);
+    if (frameDisposed) return;
+    warmAllCovers(); preloadNearbyCovers();
     fit();
-    scene = new ArchiveScene($("#three-scene"));
+    scene = new ArchiveScene($("#three-scene"),undefined,undefined,undefined,renderQuality);
     detectAutomaticQuality();
     scene.setQuality(renderQuality);
-    scene.setMusicArrayMode(preferences.arrayMode);
-    stage.dataset.arrayMode = preferences.arrayMode;
+    // Playlist walls always loop. Establish their layout before the intro,
+    // rather than switching from the album preference on the first page refresh.
+    scene.setMusicArrayMode(accountView ? 'filled' : preferences.arrayMode);
+    stage.dataset.arrayMode = accountView ? 'filled' : preferences.arrayMode;
  // Keep a direct visual comparison URL without adding another user setting.
     if (lightingLab || new URLSearchParams(location.search).get("lighting") !== "baseline")
       scene.enableSelectionLighting();
@@ -4790,8 +5109,12 @@ async function start() {
     preferences.renderQuality = renderQuality; savePrefs();
     scene.setQuality(renderQuality);
     scene.setReduced(preferences.reduced);
-    await runStartupStage("准备渲染器", () => scene!.prepareMusicRenderer(), 60000);
+    await runStartupStage("准备渲染器", () => scene!.prepareMusicRenderer({ duringFilm: stage.dataset.startupPreparationMode === "parallel" }), 60000);
     if (frameDisposed) return;
+    if (startupGraphics && JSON.parse($("#three-scene").dataset.startupPreparation || "{}").glError === 0) {
+      startupPreparationKey = preparationKey();
+      save("rhine-graphics-prepared", startupPreparationKey);
+    }
  // Browser playback does not need a Swift compiler at startup. A saved
  // native output is restored after graphics preparation; otherwise discover
  // native devices only when the user opens the output settings.
@@ -4802,15 +5125,19 @@ async function start() {
       });
     }
     if (frameDisposed) return;
+    workingQuality=structuredClone(renderQuality);workingPreset=preferences.quality;workingMode=preferences.qualityMode;
     ready = true;
  // 本地歌单不依赖登录：先把歌单视图带起来，平台登录态稍后合并。
-    onlineAccountChanged('netease', accountStates.netease ?? { loggedIn: false } as NeteaseAccount);
  // Every login-eligible platform reports its session at boot so the playlist
  // platform selector can show the logged-in platforms from the start.
-    for (const provider of (Object.keys(platformLogins) as MusicProvider[]).filter(p => !loginHiddenProviders.has(p))) void platformLogins[provider].status();
     $<HTMLButtonElement>('[data-action="overview"]').disabled = false;
     scene.onSelect = (index, cell, selectedModel) => {
       if (!boot?.active && presentation.phase === "archive" && !panel) {
+        if (index < 0 && accountView && cell) {
+          const logical = playlistPosition(cell.lane, cell.row);
+          if (logical) void navigatePlaylist(logical.playlistIndex, logical.songIndex, { cell });
+          return;
+        }
         const playlist = records[index]?.album?.playlistCell;
         if (playlist) {
           const fromOverview = overview;
@@ -4825,27 +5152,32 @@ async function start() {
         if (overview) setOverview(false);
       }
     };
-    scene.onNavigate = (axis, direction) => {
-      if (!boot?.active && presentation.phase === "archive" && !panel)
-        axis === "lane" ? stepGenre(direction) : stepAlbum(direction);
-    };
+    scene.externalBrowseNavigation=true;
+    browseDrag=mountMusicDragNavigation(stage,{
+      enabled:()=>ready && !boot?.active && presentation.phase==='archive' && !panel && !overview && !graphicsSwitching && !graphicsRecoveryFailed && !libraryRebuilding,
+      reduced:()=>preferences.reduced,
+      wake:()=>renderScheduler.wake(performance.now()),
+      position:()=>scene!.musicBrowsePosition,basis:()=>scene!.musicBrowseBasis,
+      allowed:axis=>axis==='lane' ? !(records[0]?.album?.playback) && (accountView?playlistLibrary.playlists.length:archiveColumns.length)>1 : (currentAlbum()?.playlistCell?.total ?? columnFiles(fileLocation(selected).lane).length)>1,
+      bounds:axis=>preferences.arrayMode==='realistic' && !accountView && !records[0]?.album?.playback ? axis==='lane'?[0,Math.max(0,archiveColumns.length-1)]:[12,Math.max(12,11+columnFiles(fileLocation(selected).lane).length)] : undefined,
+      begin:()=>{dragPreviewKey='';playlistSelectionEpoch++;playlistNavigationTarget=undefined;scene!.beginBrowseDrag();},move:cell=>{scene!.moveBrowseDrag(cell);previewBrowseDrag(cell);},
+      abandon:()=>{scene?.abandonBrowseDrag();dragPreviewKey='';if(ready&&!frameDisposed)updateSelection();},finish:finishBrowseDrag,
+    });
     mountMusicWheelNavigation(stage, {
       enabled: () => ready && !boot?.active && presentation.phase === "archive" && !panel &&
         (accountView ? (currentAlbum()?.playlistCell?.total || 0) > 1 : columnFiles(fileLocation(navigationSelection()).lane).length > 1),
       navigate: stepAlbum,
       context: () => fileLocation(navigationSelection()).lane,
     });
+    updateSelection(); updateStatus();
     $("#music-loading").remove();
-    // 胶片放完（或被跳过）才继续 —— 与预览版一致；跳过键随时可以提前结束。
+    // First preparation starts the film here; later launches have already been playing it.
+    // A skipped film still owns the blocking page until this readiness gate is reached.
     if (entry) {
-      // 胶片靠 requestAnimationFrame 推进：窗口在后台时 rAF 会停，胶片就永远
-      // 放不完。这里给一个硬上限 —— 到点直接收摊，绝不把进入应用卡死。
-      await Promise.race([
-        entry.completeLoading(),
-        new Promise<void>((resolve) => { window.setTimeout(resolve, 30000); }),
-      ]);
+      await entry.completeLoading();
       entry.dispose();
     }
+    if (frameDisposed) return;
     updateSelection();
  // 加载页撤掉之后播开场动画（用户要求：等加载完毕之后再放开场动画）。
  //
@@ -4874,6 +5206,9 @@ async function start() {
  // 兜底：boot 不存在、或已自行结束（reduced 会立刻 skip），
  // 仍要保证档案架可见、可交互。
       scene.showMusicArchiveImmediately(performance.now() / 1000);
+      coverResources.setPhase('browse'); playlistCoverPreload.setPaused(false);
+      startupAccountsPending = false;
+      onlineAccountChanged('netease', accountStates.netease ?? { loggedIn: false } as NeteaseAccount);
       effects.setScene("archive");
       if (albums.length) showBrowseSurface();
       else browseTransition.hide(true);
@@ -4903,6 +5238,7 @@ async function start() {
 // 万一某个阶段静默卡死，这里兜底亮出「启动未能完成 + 重新加载」，
 // 而不是让用户对着一个转圈的圈发呆。
 window.setTimeout(() => {
+  if (ready) return;
   if (!entry?.active && !document.querySelector("#music-loading")) return;
   console.warn("[启动] 加载页超时未撤下，转入失败页");
   showStartupFailure("启动时间过长，某个环节没有完成。");
@@ -4943,6 +5279,7 @@ Object.assign(window, {
       };
     },
     stats: () => scene?.getStats(),
+    coverLoading: () => ({ ...coverResources.stats(), playlists: playlistCoverPreload.stats() }),
     get presentation() {
       return { phase: presentation.phase, cameraPhase: scene?.musicPresentationPhase,
         pendingIndex: presentation.pendingSelection?.index,

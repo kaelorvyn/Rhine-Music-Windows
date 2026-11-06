@@ -6,7 +6,7 @@ export function playbackAlbums(queue: readonly MusicTrack[], library: readonly M
   return queue.map(track => {
     const source = track.onlineSource, original = local.get(track.albumId);
     let coverUrl = source?.coverUrl || original?.coverUrl;
-    if (source?.provider === "netease" && coverUrl) { const url = new URL(coverUrl); url.searchParams.set('param', '512y512'); coverUrl = url.href; }
+    if (source?.provider === "netease" && coverUrl && /^https?:\/\//i.test(coverUrl)) { const url = new URL(coverUrl); url.searchParams.set('param', '512y512'); coverUrl = url.href; }
  // 每张卡片 = 一首歌：主标题是歌名，专辑名降为次要信息（用户报的「倒反天罡」：
  // 以前 title 优先取 albumTitle，搜《青花瓷》详情页大标题却是《我很忙》）。
     const albumName = source?.albumTitle || original?.title || '';

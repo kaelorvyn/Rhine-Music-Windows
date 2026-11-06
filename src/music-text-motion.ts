@@ -185,6 +185,11 @@ export function setupMusicTextMotion(root: HTMLElement) {
   };
   return {
     setEnabled,
+    preview(value:Partial<SelectionText>){
+      setEnabled(false);
+      for(const key of Object.keys(numbers) as (keyof typeof numbers)[])if(value[key]!==undefined)numbers[key].update({value:value[key]!});
+      for(const key of Object.keys(texts) as (keyof typeof texts)[])if(value[key]!==undefined)texts[key].update({text:value[key]!});
+    },
     update(
       value: SelectionText,
       animated: boolean,

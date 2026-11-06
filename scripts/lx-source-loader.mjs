@@ -233,6 +233,7 @@ class LxPlugin {
     this.id = id
     this.filePath = filePath
     this.content = content
+    this.fingerprint = crypto.createHash('sha256').update(content).digest('hex')
     this.meta = extractMeta(content)
     /** 平台键 → 能力声明 */
     this.sources = new Map()
@@ -608,51 +609,69 @@ export class LxSourceRuntime {
    * 不阻塞启动：由调用方以 background 方式跑（见 music-server），自检期间
    * 播放照常可用（退化顺序试）。
    */
-  async selfCheck({ probes = DEFAULT_PROBES, concurrency = 6, budgetMs = 120000, callTimeoutMs = SELFCHECK_CALL_TIMEOUT, onProgress, resolveId } = {}) {
-    const started = Date.now()
-    // 新一轮自检从零开始：清掉上一轮的结论/in-flight，界面才能按
-    // 「等待中 → 测试中 → 延迟/超时」如实推进（不留旧数字冒充新结果）。
-    this.health.clear()
-    this.inFlight.clear()
-    // 进度状态：前端加载页据此画进度条（首次启动时会等它跑完才进应用）。
-    this.selfCheckState = { running: true, done: 0, total: 0, alive: 0, startedAt: started, finishedAt: null }
-    const publish = () => {
-      if (!this.selfCheckState) return
-      this.selfCheckState.alive = [...this.health.values()].filter((h) => h.ok).length
-      try { onProgress?.(this.selfCheckState) } catch { /* 进度回调不能影响自检 */ }
+  async selfCheck({ pluginIds, probes = DEFAULT_PROBES, concurrency = 6, budgetMs = 120000, callTimeoutMs = SELFCHECK_CALL_TIMEOUT, onProgress, resolveId } = {}) {
+    if (this.selfCheckState?.running) throw new Error('音源自检正在进行')
+    if (pluginIds !== undefined && (!Array.isArray(pluginIds) || !pluginIds.length
+      || pluginIds.some((id) => typeof id !== 'string' || !this.plugins.has(id)))) {
+      throw new Error('无效的音源 id')
     }
-    // 探针的真实 id 由平台搜索提供（每个平台搜一次即可，供所有插件复用）。
-    await this._prepareProbeIds(probes, resolveId)
-    // 按「插件 × 它声明的每个探针平台」建任务。
-    //
-    // 【2026-10-15 修复自检误判】原来每个插件只挑**第一个**匹配的探针平台
-    // （顺序恒为 wy→kg→kw→tx），于是所有插件都只用「网易」测。但实测音源
-    // 常常只有部分平台可用：
-    //     星海音乐源   wy ✅ master      kg/kw/tx ✗
-    //     K×H测试      wy ✅ master      kw ✅ master   kg ✅ atmos   tx ✗
-    // 只测网易会把「酷狗/酷我还能用」的源整个判死（星海就被误判了）。
-    // 现在逐平台都测，健康表按 `${pluginId}|${平台键}` 存，取曲时按平台筛。
-    const pluginIds = [...this.plugins.keys()]
+    if (!Number.isFinite(budgetMs) || budgetMs < 0
+      || ![callTimeoutMs, concurrency].every((n) => Number.isFinite(n) && n > 0)
+      || !Number.isInteger(concurrency)) throw new Error('无效的自检预算或并发数')
+    const started = Date.now()
+    const ids = [...new Set(pluginIds ?? this.plugins.keys())]
+      .filter((id) => pluginIds?.length === 1 || !this.disabled?.has(id))
+    const selected = new Set(ids)
+    this.healthScope = ids
+    this._clearHealth(selected)
+    this.inFlight.clear()
+    probes = probes.map((probe) => ({ ...probe }))
     const jobs = []
-    for (const id of pluginIds) {
+    const remaining = new Map(ids.map((id) => [id, 0]))
+    for (const id of ids) {
       const plugin = this.plugins.get(id)
-      if (!plugin?.sources?.size) continue
       for (const probe of probes) {
-        if (plugin.sources.has(probe.source)) jobs.push({ id, plugin, probe })
+        if (plugin.sources.has(probe.source)) {
+          jobs.push({ id, plugin, probe })
+          remaining.set(id, remaining.get(id) + 1)
+        }
       }
     }
-    this.selfCheckState.total = jobs.length
+    this.selfCheckState = {
+      running: true, phase: 'prepare', pluginIds: ids, done: 0, total: jobs.length, alive: 0,
+      sourceTotal: ids.length, sourceDone: 0, sourceRemaining: ids.length, activeSources: [],
+      budgetExhausted: false, startedAt: started, finishedAt: null,
+    }
+    const publish = () => {
+      const state = this.selfCheckState
+      state.alive = [...this.health.entries()].filter(([key, h]) => selected.has(key.split('|')[0]) && h.ok).length
+      state.sourceDone = [...remaining.values()].filter((n) => n === 0).length
+      state.sourceRemaining = state.sourceTotal - state.sourceDone
+      state.activeSources = [...new Set([...this.inFlight].map((key) => key.split('|')[0]))]
+        .map((id) => ({ id, name: this.plugins.get(id)?.meta.name ?? id }))
+      try { onProgress?.({ ...state }) } catch { /* 进度回调不能影响自检 */ }
+    }
+    const timeLeft = () => budgetMs - (Date.now() - started)
+    const withinBudget = (run, limit = callTimeoutMs) => {
+      const ms = Math.min(limit, timeLeft())
+      if (ms <= 0) return Promise.reject(new Error('自检预算已耗尽'))
+      return withTimeout(Promise.resolve().then(run), ms, '自检')
+    }
     publish()
-
-    let done = 0
+    try {
+    await this._prepareProbeIds(probes, typeof resolveId === 'function'
+      ? (source, keyword) => withinBudget(() => resolveId(source, keyword)) : undefined)
+    this.selfCheckState.phase = 'check'
+    publish()
     const worker = async () => {
       while (jobs.length) {
-        if (Date.now() - started > budgetMs) return
+        if (timeLeft() <= 0) return
         const job = jobs.shift()
         if (!job) return
         const { id, plugin, probe } = job
         const healthKey = `${id}|${probe.source}`
         this.inFlight.add(healthKey)
+        publish()
         const t0 = Date.now()
         const result = { ok: false, quality: null, attempts: 0, ms: 0, at: Date.now(), error: '', source: probe.source }
         // 候选 id：三类音源实现都要覆盖（实测三类都存在）
@@ -661,7 +680,7 @@ export class LxSourceRuntime {
         //   ③ 纯「歌名+歌手」—— getMusicUrl 内部再按关键字搜索的源（闻音）
         const candidates = []
         if (probe.info) candidates.push({ info: probe.info, via: '平台id' })
-        const searchId = await this._searchViaPlugin(plugin, probe)
+        const searchId = await withinBudget(() => this._searchViaPlugin(plugin, probe)).catch(() => null)
         if (searchId) candidates.push({ info: searchId, via: '插件搜索' })
         if (probe.keyword) {
           const [name, singer = ''] = String(probe.keyword).split(/\s+/)
@@ -672,7 +691,9 @@ export class LxSourceRuntime {
           result.ms = Date.now() - t0
           this.health.set(healthKey, result)
           this.inFlight.delete(healthKey)
-          done++
+          remaining.set(id, remaining.get(id) - 1)
+          this.selfCheckState.done++
+          publish()
           continue
         }
         result.hasSearch = candidates.some((c) => c.via === '插件搜索')
@@ -688,13 +709,14 @@ export class LxSourceRuntime {
         let used = 0
         outer: for (const tier of tiers) {
           for (const c of candidates) {
+            if (timeLeft() <= 0) { lastError = '自检预算已耗尽'; break outer }
             if (used >= MAX_SELFCHECK_ATTEMPTS) { lastError = lastError || '超过自检尝试上限'; break outer }
             used++
             result.attempts++
             try {
-              const url = await withTimeout(plugin.musicUrl(probe.source, { ...c.info }, tier), callTimeoutMs, 'musicUrl')
+              const url = await withinBudget(() => plugin.musicUrl(probe.source, { ...c.info }, tier))
               if (!url) { lastError = '未返回地址'; continue }
-              const verified = await this._verifyUrl(url)
+              const verified = await withinBudget(() => this._verifyUrl(url))
               if (verified.ok) {
                 result.ok = true; result.quality = tier; result.host = safeHost(url)
                 result.via = c.via; result.error = ''
@@ -716,24 +738,31 @@ export class LxSourceRuntime {
         result.needsId = true
       } else if (!result.ok) result.error = lastError
         result.ms = Date.now() - t0
-        this.health.set(healthKey, result)
+        // ponytail: 未完成的任务保留为未知；预算耗尽不代表音源已判死。
+        if (!result.ok && timeLeft() <= 0) {
+          this.selfCheckState.budgetExhausted = true
+        } else {
+          this.health.set(healthKey, result)
+          remaining.set(id, remaining.get(id) - 1)
+          this.selfCheckState.done++
+        }
         this.inFlight.delete(healthKey)
-        done++
-        if (this.selfCheckState) this.selfCheckState.done = done
         publish()
       }
     }
-    await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length || 1) }, worker))
+    await Promise.all(Array.from({ length: Math.min(Math.floor(concurrency), jobs.length || 1) }, worker))
 
-    const alive = [...this.health.values()].filter((h) => h.ok)
     // alive 是「插件 × 平台」的可用条数（同一个插件在多个平台可用会计多条），
     // 另外给出去重后的插件数，两个数字含义不同，日志/界面都别混。
-    const alivePlugins = new Set([...this.health.entries()].filter(([, h]) => h.ok).map(([k]) => String(k).split('|')[0]))
+    const alivePlugins = new Set([...this.health.entries()].filter(([key, h]) => selected.has(key.split('|')[0]) && h.ok).map(([k]) => String(k).split('|')[0]))
     this.selfCheckReport = {
-      checked: this.health.size,
-      alive: alive.length,
+      checked: this.selfCheckState.done,
+      alive: this.selfCheckState.alive,
       alivePlugins: alivePlugins.size,
-      dead: this.health.size - alive.length,
+      dead: this.selfCheckState.done - this.selfCheckState.alive,
+      total: this.selfCheckState.total,
+      remaining: this.selfCheckState.total - this.selfCheckState.done,
+      budgetExhausted: this.selfCheckState.done < this.selfCheckState.total && timeLeft() <= 0,
       ms: Date.now() - started,
       at: Date.now(),
     }
@@ -742,17 +771,24 @@ export class LxSourceRuntime {
     this.inFlight.clear()
     if (this.selfCheckState) {
       this.selfCheckState.running = false
-      this.selfCheckState.done = this.selfCheckState.total
+      this.selfCheckState.phase = 'done'
+      this.selfCheckState.budgetExhausted = this.selfCheckReport.budgetExhausted
       this.selfCheckState.finishedAt = Date.now()
     }
     publish()
     return this.selfCheckReport
+    } finally {
+      this.inFlight.clear()
+      this.selfCheckState.running = false
+      this.selfCheckState.finishedAt = Date.now()
+      publish()
+    }
   }
 
   /**
    * 自检进度（前端加载页画进度条用）。 */
   get selfCheckProgress() {
-    return this.selfCheckState ?? { running: false, done: 0, total: 0, alive: 0, startedAt: null, finishedAt: null }
+    return this.selfCheckState ?? { running: false, phase: 'idle', done: 0, total: 0, alive: 0, sourceTotal: 0, sourceDone: 0, sourceRemaining: 0, activeSources: [], startedAt: null, finishedAt: null }
   }
 
   /**
@@ -822,7 +858,15 @@ export class LxSourceRuntime {
     for (const [key, h] of this.health) {
       rows[key] = { ok: h.ok, quality: h.quality, host: h.host ?? '', error: h.error ?? '', ms: h.ms, at: h.at, source: h.source ?? '' }
     }
-    return { at: Date.now(), report: this.selfCheckReport, sources: rows }
+    const fingerprints = Object.fromEntries([...this.plugins].map(([id, plugin]) => [id, plugin.fingerprint]))
+    const complete = [...this.plugins].every(([id, plugin]) => this.disabled?.has(id)
+      || DEFAULT_PROBES.every(({ source }) => !plugin.sources.has(source) || this.health.has(`${id}|${source}`)))
+    return { at: Date.now(), report: this.selfCheckReport, sources: rows, fingerprints, complete,
+      ...(this.healthScope ? { pluginIds: this.healthScope } : {}) }
+  }
+
+  _clearHealth(ids) {
+    for (const key of this.health.keys()) if (ids.has(key.split('|')[0])) this.health.delete(key)
   }
 
   /**
@@ -831,10 +875,14 @@ export class LxSourceRuntime {
    */
   importHealth(snapshot) {
     if (!snapshot?.sources) return false
+    const scope = new Set((snapshot.pluginIds ?? [...this.plugins.keys()])
+      .filter((id) => this.plugins.has(id) && snapshot.fingerprints?.[id] === this.plugins.get(id).fingerprint))
+    this._clearHealth(scope)
     let applied = 0
     // 健康表的键是 `${pluginId}|${平台键}`，快照按同一格式写盘（见 exportHealth）。
     for (const [key, row] of Object.entries(snapshot.sources)) {
-      if (!row) continue
+      const [id, source] = key.split('|')
+      if (!row || !scope.has(id) || !this.plugins.get(id).sources.has(source)) continue
       this.health.set(key, { ok: !!row.ok, quality: row.quality ?? null, host: row.host ?? '', error: row.error ?? '', ms: row.ms ?? 0, at: row.at ?? Date.now(), attempts: 0, source: row.source ?? '' })
       applied++
     }
@@ -933,6 +981,7 @@ export class LxSourceRuntime {
    * 插件记下自己来自哪个根，界面据此区分「内置不可移除」与「用户可移除」。
    */
   async loadDirectories(dirs, { dedupe = true } = {}) {
+    if (this.selfCheckState?.running) throw new Error('音源自检正在进行，无法重新加载')
     const roots = dirs.filter(Boolean).map((dir) => path.resolve(dir))
     this.builtinDir = roots[0] ?? null
     const found = []
@@ -971,6 +1020,13 @@ export class LxSourceRuntime {
       // 而内置源文件名大多以 "[V2602] "/"[ZIP] " 开头 → 前缀相同 → 同一 id，
       // Map 后写覆盖前写，108 个文件只剩 22 个（用户看到的"22 个共享源"）。
       const id = `lx-${crypto.createHash('sha1').update(name).digest('hex').slice(0, 16)}`
+      // Reuse unchanged live plugins: removing one file must not re-run every
+      // third-party initializer or duplicate their timers/network requests.
+      const existing = this.plugins.get(id)
+      if (existing?.filePath === filePath && existing.root === root
+        && existing.fingerprint === crypto.createHash('sha256').update(content).digest('hex')) {
+        return { name, filePath, ok: true, plugin: existing, id }
+      }
       const plugin = new LxPlugin({ id, filePath, content })
       plugin.root = root
       plugin.builtin = root === this.builtinDir
@@ -995,6 +1051,8 @@ export class LxSourceRuntime {
      * 代价只是多注册几个插件（死源在竞速里自然被淘汰，不额外等待）。
      */
     const report = []
+    const previous = this.plugins
+    this.plugins = new Map()
     settled.forEach((item, index) => {
       const [name, filePath, root] = entries[index]
       if (item.status !== 'fulfilled') {
@@ -1013,6 +1071,12 @@ export class LxSourceRuntime {
       })
     })
     this.loadReport = report
+    const invalid = new Set([...previous.keys()].filter((id) =>
+      !this.plugins.has(id) || previous.get(id).fingerprint !== this.plugins.get(id).fingerprint))
+    this._clearHealth(invalid)
+    this.healthScope = undefined
+    this.selfCheckState = null
+    this.selfCheckReport = null
     this._rebuildBySource()
     return report
   }
@@ -1056,6 +1120,7 @@ export class LxSourceRuntime {
         name: plugin.meta.name ?? path.basename(plugin.filePath, path.extname(plugin.filePath)),
         version: plugin.meta.version ?? '',
         file: path.basename(plugin.filePath),
+        fingerprint: plugin.fingerprint,
         builtin: Boolean(plugin.builtin),
         enabled: !this.disabled?.has(id),
         platforms: keys,
@@ -1087,6 +1152,9 @@ export class LxSourceRuntime {
         out.push({
           pluginId: plugin.id,
           pluginName: plugin.meta.name ?? path.basename(plugin.filePath),
+          file: path.basename(plugin.filePath),
+          fingerprint: plugin.fingerprint,
+          enabled: !this.disabled?.has(plugin.id),
           version: plugin.meta.version ?? '',
           author: plugin.meta.author ?? '',
           source: source.key,

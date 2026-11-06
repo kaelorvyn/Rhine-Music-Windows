@@ -1,8 +1,8 @@
 //! 应用自更新：下载 GitHub Release 里的便携包，退出后覆盖自身再自动拉起。
 //!
 //! 为什么必须「退出后替换」：Windows 上正在运行的 exe 不能被覆盖，所以这里
-//! 只负责下载与解压，然后写一个 detached 的 .cmd —— 它等本进程退出后
-//! robocopy 覆盖安装目录、重新启动新版本、删掉自己。用户看到的就是
+//! 只负责下载与解压，然后启动无窗口的 PowerShell —— 它等本进程退出后
+//! robocopy 覆盖安装目录、重新启动新版本、清理本轮临时目录。用户看到的就是
 //! 「关一下又自动打开，已经是最新版」，不需要重新跑安装器。
 //!
 //! 刻意不引入 HTTP / zip 依赖：Windows 10+ 自带 curl.exe 与 bsdtar（tar.exe，
@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 /// 问服务器要总大小。拿不到就返回 None —— 后面只做「能解开」的校验。
@@ -99,6 +99,157 @@ fn spawn_hidden(command: &mut Command) -> &mut Command {
     command
 }
 
+/// 每轮独占一个目录；旧版本的临时文件和研究资料都不能顺手清理。
+fn create_update_work() -> Result<PathBuf, String> {
+    let temp = std::env::temp_dir();
+    if !temp.is_absolute() { return Err("临时目录必须是绝对路径".to_string()); }
+    for ancestor in temp.ancestors() { reject_reparse_point(ancestor)?; }
+    let root = temp.join("rhine-update");
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    reject_reparse_point(&root)?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let name = format!("run-{}-{nonce}", std::process::id());
+    let work = root.join(&name);
+    // create_dir (not create_dir_all) refuses to adopt an existing run.
+    fs::create_dir(&work).map_err(|e| e.to_string())?;
+    fs::write(work.join(".rhine-update-owner"), &name).map_err(|e| e.to_string())?;
+    Ok(work)
+}
+
+fn reject_reparse_point(path: &Path) -> Result<(), String> {
+    let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let linked = {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let linked = meta.file_type().is_symlink();
+    if linked { Err(format!("更新路径不允许包含链接：{}", path.display())) } else { Ok(()) }
+}
+
+fn validate_update_tree(path: &Path) -> Result<(), String> {
+    reject_reparse_point(path)?;
+    if path.is_dir() {
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            validate_update_tree(&entry.map_err(|e| e.to_string())?.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn ps_literal(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+}
+
+fn apply_script(work: &Path, payload: &Path, target: &Path, exe: &Path, parent: u32) -> String {
+    let header = format!(
+        "$work = {}\n$payload = {}\n$target = {}\n$exe = {}\n$parentId = {parent}\n",
+        ps_literal(work), ps_literal(payload), ps_literal(target), ps_literal(exe),
+    );
+    header + r#"$ErrorActionPreference = 'Stop'
+function Assert-NoLink([string] $path) {
+    if (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing linked update path: $path"
+    }
+}
+function Assert-Tree([string] $path) {
+    Assert-NoLink $path
+    if ([IO.Directory]::Exists($path)) {
+        foreach ($child in [IO.Directory]::GetFileSystemEntries($path)) { Assert-Tree $child }
+    }
+}
+function Assert-OwnedWork {
+    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    $root = [IO.Path]::Combine($temp, 'rhine-update')
+    $name = [IO.Path]::GetFileName($work)
+    if ([IO.Path]::GetDirectoryName($work) -ine $root -or $name -notmatch '^run-\d+-\d+$') {
+        throw 'Update directory is not a unique child of TEMP\rhine-update'
+    }
+    # Validate before reading the marker or traversing/deleting any child.
+    $ancestor = [IO.DirectoryInfo] $temp
+    while ($null -ne $ancestor) { Assert-NoLink $ancestor.FullName; $ancestor = $ancestor.Parent }
+    Assert-NoLink $root
+    Assert-NoLink $work
+    $marker = [IO.Path]::Combine($work, '.rhine-update-owner')
+    Assert-NoLink $marker
+    if ([IO.File]::ReadAllText($marker) -cne $name) { throw 'Update ownership marker mismatch' }
+}
+function File-Digest([string] $path) {
+    $stream = [IO.File]::OpenRead($path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($stream)) }
+    finally { $sha.Dispose(); $stream.Dispose() }
+}
+try {
+    Assert-OwnedWork
+    $prefix = $work + '\staging'
+    if (($payload -ine $prefix -and -not $payload.StartsWith($prefix + '\', [StringComparison]::OrdinalIgnoreCase)) -or
+        $target -ieq $work -or $target.StartsWith($work + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        $work.StartsWith($target.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetDirectoryName($exe) -ine $target) { throw 'Invalid update paths' }
+    Assert-Tree $work
+    Assert-NoLink $target
+    # Wait for the actual old process, not a fixed ping delay. A timeout keeps diagnostics.
+    $old = Get-Process -Id $parentId -ErrorAction SilentlyContinue
+    if ($null -ne $old -and -not $old.WaitForExit(60000)) { throw 'Application did not exit within 60 seconds' }
+    $copyArgs = '"{0}" "{1}" /E /IS /XJ /XD music-data-v3 /R:2 /W:1 /NFL /NDL /NJH /NJS' -f $payload, $target
+    $copy = Start-Process -FilePath "$env:SystemRoot\System32\robocopy.exe" -ArgumentList $copyArgs -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput "$work\copy.log" -RedirectStandardError "$work\copy-error.log"
+    if ($null -eq $copy.ExitCode -or $copy.ExitCode -lt 0 -or $copy.ExitCode -ge 8) {
+        throw "Robocopy failed: $($copy.ExitCode)"
+    }
+    $sourceExe = [IO.Path]::Combine($payload, [IO.Path]::GetFileName($exe))
+    if ((File-Digest $sourceExe) -ne (File-Digest $exe)) {
+        throw 'Updated executable does not match the downloaded program'
+    }
+    # Explicitly show the GUI; there is no cmd/start console in the restart chain.
+    $restarted = Start-Process -FilePath $exe -WorkingDirectory $target -WindowStyle Normal -PassThru
+    if ($null -eq $restarted -or $restarted.WaitForExit(2000)) { throw 'Restarted application exited immediately' }
+    # Copy and restart both succeeded. Never clean a sibling or the shared root.
+    Assert-OwnedWork
+    Assert-Tree $work
+    Remove-Item -LiteralPath $work -Recurse -Force
+} catch {
+    # A failed copy/restart keeps the ZIP, staging, script and logs for diagnosis.
+    # Do not write through a replaced work-directory link, even on the error path.
+    $failure = $_.ToString()
+    try {
+        Assert-OwnedWork
+        $log = [IO.Path]::Combine($work, 'apply-error.log')
+        if ([IO.File]::Exists($log)) { Assert-NoLink $log }
+        [IO.File]::AppendAllText($log, $failure + [Environment]::NewLine)
+    } catch {}
+    exit 1
+}
+"#
+}
+
+fn apply_command(script: &Path, log: &Path) -> Result<Command, String> {
+    // CREATE_NO_WINDOW must not be combined with DETACHED_PROCESS (Windows ignores it).
+    // A child process survives normal parent exit; no cmd/start or job breakaway is needed.
+    let powershell = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    // Script writes its own diagnostics; no inherited log handle can hold cleanup open.
+    let _ = log;
+    let mut command = Command::new(powershell);
+    command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
+        .arg(script)
+        // The worker deletes its own run directory; never keep it as the process cwd.
+        .current_dir(std::env::temp_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    spawn_hidden(&mut command);
+    Ok(command)
+}
+
+#[cfg(test)]
+#[path = "update_tests.rs"]
+mod tests;
+
 /// 更新进度事件：前端据此在对话框里画进度条。
 #[derive(Clone, Serialize)]
 struct UpdateProgress {
@@ -163,6 +314,10 @@ fn download_package(
             curl.arg("--proxy").arg(proxy);
         }
         let mut child = spawn_hidden(&mut curl)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(fs::OpenOptions::new().create(true).append(true)
+                .open(zip.with_file_name("download.log")).map_err(|e| e.to_string())?))
             .spawn()
             .map_err(|e| format!("无法启动 curl：{e}"))?;
         let mut last_reported = have;
@@ -296,6 +451,18 @@ fn find_payload_root(root: &Path, exe_name: &str, depth: usize) -> Option<PathBu
     None
 }
 
+fn prepare_payload_executable(payload: &Path, exe_name: &str) -> Result<(), String> {
+    if payload.join(exe_name).is_file() { return Ok(()); }
+    let executables: Vec<_> = fs::read_dir(payload).map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")))
+        .collect();
+    if executables.len() != 1 { return Err("更新包主程序不唯一，无法安全更新。".to_string()); }
+    fs::copy(&executables[0], payload.join(exe_name)).map_err(|e| format!("无法准备主程序替换：{e}"))?;
+    Ok(())
+}
+
 /// 下载并准备好更新，然后让进程退出以完成替换。
 ///
 /// 返回 Ok 表示「脚本已经排上队、应用即将重启」，前端不必等它回来。
@@ -319,9 +486,7 @@ pub async fn desktop_update_install(app: tauri::AppHandle, url: String, size: Op
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .ok_or_else(|| "无法确定主程序文件名。".to_string())?;
 
-    let work = std::env::temp_dir().join("rhine-update");
-    let _ = fs::remove_dir_all(&work);
-    fs::create_dir_all(&work).map_err(|e| format!("无法创建临时目录：{e}"))?;
+    let work = create_update_work().map_err(|e| format!("无法创建独占更新目录：{e}"))?;
     let zip = work.join("update.zip");
     let staging = work.join("staging");
     fs::create_dir_all(&staging).map_err(|e| format!("无法创建解压目录：{e}"))?;
@@ -369,7 +534,7 @@ pub async fn desktop_update_install(app: tauri::AppHandle, url: String, size: Op
     }
     if !downloaded {
         let _ = report(&app, "error", 0, total);
-        return Err(last_error);
+        return Err(format!("{last_error} 临时文件与日志保留于 {}", work.display()));
     }
     // 收尾对齐：让进度条停到 100%。
     let final_size = fs::metadata(&zip).map(|meta| meta.len()).unwrap_or(0);
@@ -391,61 +556,39 @@ pub async fn desktop_update_install(app: tauri::AppHandle, url: String, size: Op
     // 直接把临时目录删了，用户看到的就是「更新失败」。一个插件文件不该
     // 让整次更新作废 —— 解压结果后面还会核对主程序在不在。
     report(&app, "unpack", 0, 0);
+    let unpack_log = fs::File::create(work.join("unpack.log")).map_err(|e| e.to_string())?;
     let unpacked = spawn_hidden(
         Command::new("tar").arg("-xf").arg(&zip).arg("-C").arg(&staging),
     )
+    .stdin(Stdio::null())
+    .stdout(Stdio::from(unpack_log.try_clone().map_err(|e| e.to_string())?))
+    .stderr(Stdio::from(unpack_log))
     .status()
     .map_err(|e| format!("无法启动 tar：{e}"))?;
     if unpacked.code().unwrap_or(2) >= 2 {
-        let _ = fs::remove_dir_all(&work);
-        return Err("更新包解压失败，文件可能已损坏。".to_string());
+        return Err(format!("更新包解压失败，文件与日志保留于 {}", work.display()));
     }
 
     // 3) 定位真正的程序目录。
+    validate_update_tree(&staging)?;
     let payload = find_payload_root(&staging, &exe_name, 3)
         .ok_or_else(|| "更新包里没有找到主程序。".to_string())?;
 
-    // 4) 写替换脚本。等 2 秒让本进程彻底退出、文件句柄释放。
+    // 4) 写隐藏替换脚本：确认退出、复制成功且新进程存活，才清理本轮目录。
     //
     // `/XD music-data-v3`：包里带了一份默认的 music-data-v3（配置与流派规则），
     // 但那是**用户数据目录** —— 更新程序不该把人家的歌单索引覆盖成出厂状态。
-    let script = work.join("apply-update.cmd");
-    let body = format!(
-        "@echo off\r\n\
-chcp 65001 >nul\r\n\
-ping -n 3 127.0.0.1 >nul\r\n\
-robocopy \"{payload}\" \"{target}\" /E /IS /MOVE /XD music-data-v3 /R:2 /W:1 /NFL /NDL /NJH /NJS >nul\r\n\
-start \"\" \"{exe}\"\r\n\
-rd /s /q \"{work}\"\r\n\
-del \"%~f0\"\r\n",
-        payload = payload.display(),
-        target = target_dir.display(),
-        exe = target_dir.join(&exe_name).display(),
-        work = work.display(),
-    );
-    fs::write(&script, body).map_err(|e| format!("无法写入更新脚本：{e}"))?;
+    prepare_payload_executable(&payload, &exe_name)?;
+    let script = work.join("apply-update.ps1");
+    let body = apply_script(&work, &payload, &target_dir, &target_dir.join(exe_name), std::process::id());
+    // Windows PowerShell 5.1 needs a BOM to read Unicode paths as UTF-8.
+    fs::write(&script, format!("\u{feff}{body}")).map_err(|e| format!("无法写入更新脚本：{e}"))?;
 
-    // 5) 以完全独立的进程启动替换脚本，随后自己退出。
-    //
-    // 这里必须是 DETACHED_PROCESS 而不是 start /b：
-    //   · start /b 起的是控制台程序，会**新开一个黑窗口**（就是用户说的那个
-    //     「弹出命令提示符又消失」）；
-    //   · DETACHED_PROCESS 干脆不给它分配控制台，全程静默；
-    //   · 再加 CREATE_BREAKAWAY_FROM_JOB，避免它被当前进程的作业对象连带收走。
+    // 5) 无窗口 PowerShell + 显式隐藏 robocopy；GUI 直接启动，不经过 cmd/start。
     report(&app, "apply", 0, 0);
-    let mut apply = Command::new("cmd");
-    apply.args(["/C"]).arg(&script);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        apply.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
-    }
-    apply
+    apply_command(&script, &work.join("worker.log"))?
         .spawn()
-        .map_err(|e| format!("无法启动更新脚本：{e}"))?;
+        .map_err(|e| format!("无法启动更新脚本：{e}；诊断目录：{}", work.display()))?;
 
     report(&app, "restart", 0, 0);
     // 让「正在重启应用…」和 100% 的进度条停留一下再关，别一闪而过。

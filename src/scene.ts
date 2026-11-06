@@ -1,3 +1,6 @@
+import { createLowCaseGeometry, createLowCaseMaterial, createContactShadows, LowPixelBudget } from './low-integrated-pipeline';
+import { coverResources } from './cover-resources';
+import { playlistCoverPreload } from './playlist-cover-preload.ts';
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { createArchiveLighting, type LightingLook } from "./archive-lighting";
@@ -20,7 +23,7 @@ import { applyTextureQuality, resizeQuality, graphicsIdentity } from "./quality-
 import { CardAppearance } from "./appearance";
 import { configureInternalOptics } from "./internal-optics";
 import { DecryptionController } from "./decryption";
-import { archiveColumns, columnFiles, fileAtSlot, fileLocation, musicLibrary, records, slotStride, playlistRows } from "./data";
+import { archiveColumns, columnFiles, fileAtSlot, fileLocation, musicLibrary, records, slotStride, playlistRows, playlistPosition, playlistTemplate } from "./data";
 import type { ArchiveRecord } from './data';
 import { CoverAtlas } from "./cover-atlas";
 import { MusicSelectionLighting } from "./music-lighting";
@@ -80,16 +83,16 @@ export const MUSIC_INSPECTION_LIFT = MUSIC_MODEL.height + 0.12;
 const MUSIC_DETAIL_ELEVATION = THREE.MathUtils.degToRad(20);
 const MUSIC_ALBUM_SWITCH_RATE = 9;
 export class ArchiveScene {
-  readonly renderer: THREE.WebGLRenderer;
+  renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
  // The reference uses a long lens 72–140 units from the cassette. A 0.1 near
  // plane quantizes adjacent optical layers to the same depth (visible shimmer).
  // All visible foreground geometry is beyond 5; retain the framing and lens.
   readonly camera = new THREE.PerspectiveCamera(34, 16 / 9, 5, 300);
-  private composer: EffectComposer;
+  private composer!: EffectComposer;
   private glassVisibility?: GlassVisibilityRenderPass;
-  private ao: SSAOPass;
-  private bokeh: BokehPass;
+  private ao!: SSAOPass;
+  private bokeh!: BokehPass;
   private coverClarity?: CoverClarityPass;
   private coverClarityState = new CoverClarityState();
   private gpuTiming?: GpuFrameTiming;
@@ -115,10 +118,13 @@ export class ArchiveScene {
   private raycaster = new THREE.Raycaster();
   private dummy = new THREE.Object3D();
   private playlistGrid = false;
+  private playlistTopology = '';
   private columnExtentOffset = new THREE.Vector3();
   private positions: THREE.Vector3[] = [];
   private poolRows = LOOP_ROWS;
   private cells: ArchiveCell[] = [];
+  private introCells?: ArchiveCell[];
+  private introCenter?: ArchiveCell;
   private selectedCell: ArchiveCell = { lane: 2, row: 12 };
   private looping = false;
   private coordinateOrigin: ArchiveCell = { lane: 0, row: 0 };
@@ -184,7 +190,24 @@ export class ArchiveScene {
   private quality = normalizeQuality(undefined);
   private appliedQuality = "";
   private disposed = false;
-  private smaa = new SMAAPass();
+  private smaa!: SMAAPass;
+  private standardInstances: THREE.InstancedMesh[] = [];
+  private lowInstances: THREE.InstancedMesh[] = [];
+  private contacts?: THREE.InstancedMesh;
+  private lowBudget = new LowPixelBudget();
+  private lowGpuReadAt=0;
+  private lowGpuSnapshot?: ReturnType<GpuFrameTiming['snapshot']>;
+  private frameCap = 60;
+  private lowDepth?: THREE.DepthTexture;
+  private lowUniforms = { focus: { value: 25 }, aperture: { value: .0018 }, maxblur: { value: .011 } };
+  externalBrowseNavigation=false;
+  private browsePointerConsumed=false;
+  private browseDrag?: ArchiveCell;
+  private graphicsBusy = false;
+  private pendingGraphicsCover?: ReturnType<CoverAtlas['captureSelected']>;
+  private timeOffset = 0;
+  get lowIntegrated() { return this.quality.pipeline === "lowIntegrated"; }
+  setFrameRate(cap: number) { this.frameCap = cap; }
   private aoKernelSize = 32;
   private displayHeight = 0;
   private layoutKind = "";
@@ -196,9 +219,11 @@ export class ArchiveScene {
     private readonly selectionPulse = baselineSelectionWave,
     private readonly deferSelectionPulse = false,
     private readonly lightingLook: LightingLook = "baseline",
+    initialQuality?: RenderQuality,
   ) {
+    if (initialQuality) this.quality = normalizeQuality(initialQuality);
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !this.lowIntegrated,
       alpha: false,
       powerPreference: "high-performance",
     });
@@ -211,7 +236,9 @@ export class ArchiveScene {
     this.gpuTiming = new GpuFrameTiming(this.renderer.getContext() as WebGL2RenderingContext);
     this.graphicsDevice = graphicsIdentity(this.renderer);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // Three converts deprecated PCFSoft to PCF on the first draw. Use the
+    // actual mode up front so preparation compiles the shaders we will render.
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.domElement.setAttribute(
@@ -257,25 +284,48 @@ export class ArchiveScene {
     this.cameraAim.set(-0.5, 1.1, 0.4);
     this.camera.fov = 6.15;
     this.camera.lookAt(this.cameraAim);
+    this.createPipeline();
+    this.profilePasses();
+    this.bindPointer();
+  }
+  private createPipeline() {
     this.composer = new EffectComposer(this.renderer);
+    if (this.lowIntegrated) {
+      this.scene.matrixWorldAutoUpdate=false;
+      for (const target of [this.composer.renderTarget1, this.composer.renderTarget2]) target.depthTexture = new THREE.DepthTexture(target.width,target.height,THREE.UnsignedIntType);
+      const pass = new RenderPass(this.scene,this.camera), render = pass.render.bind(pass);
+      pass.render = (...args) => { this.lowDepth = args[2].depthTexture ?? undefined; render(...args); };
+      this.composer.addPass(pass);this.composer.addPass(new OutputPass());
+      this.coverClarity = new CoverClarityPass(this.scene,this.camera,this.coverClarityState);
+      this.coverClarity.selectedOnly = true;
+      this.coverClarity.depthSource = () => this.lowDepth ? {texture:this.lowDepth,packed:false} : null;
+      this.composer.addPass(this.coverClarity);
+      return;
+    }
     if (musicLibrary && this.optimize) {
  // Independent depth textures permit optional diagnostic snapshots. The
  // normal optimization reuses the actual main buffer's hardware depth.
       for (const target of [this.composer.renderTarget1, this.composer.renderTarget2])
         target.depthTexture = new THREE.DepthTexture(target.width, target.height, THREE.UnsignedIntType);
       this.glassVisibility = new GlassVisibilityRenderPass(this.scene, this.camera);
+      this.glassVisibility.matricesPrepared = true;
+      this.scene.matrixWorldAutoUpdate = false;
       this.glassVisibility.measure = (label, draw) => this.gpuTiming ? this.gpuTiming.measure(label, draw) : draw();
       this.composer.addPass(this.glassVisibility);
     } else this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.smaa = new SMAAPass();
+    this.aoKernelSize=this.quality.aoSamples || 8;
     this.ao = new (musicLibrary && this.optimize ? BudgetSSAOPass : SSAOPass)(
       this.scene,
       this.camera,
-      container.clientWidth,
-      container.clientHeight,
+      this.container.clientWidth,
+      this.container.clientHeight,
+      this.aoKernelSize,
     );
-    this.ao.kernelRadius = lightingLook === "refined" ? 0.44 : 0.38;
+    this.ao.kernelRadius = this.lightingLook === "refined" ? 0.44 : 0.38;
     this.ao.minDistance = 0.001;
     this.ao.maxDistance = 0.09;
+    if(this.selectionLighting)this.softenMusicContactShadows();
     this.composer.addPass(this.ao);
     this.bokeh = new (this.optimize ? SharedDepthBokehPass : BokehPass)(this.scene, this.camera, {
       focus: 25,
@@ -283,7 +333,7 @@ export class ArchiveScene {
       maxblur: 0.011,
     });
     if (this.bokeh instanceof SharedDepthBokehPass) this.bokeh.depthSource = () =>
-      this.ao.enabled && (this.ao instanceof BudgetSSAOPass || this.quality.aoResolution === 1)
+      this.ao?.enabled && (this.ao instanceof BudgetSSAOPass || this.quality.aoResolution === 1)
         ? this.ao.normalRenderTarget.depthTexture : null;
     this.composer.addPass(this.bokeh);
     this.smaa.enabled = false;
@@ -292,16 +342,28 @@ export class ArchiveScene {
     if (musicLibrary && this.optimize) {
       this.coverClarity = new CoverClarityPass(this.scene, this.camera, this.coverClarityState);
       this.coverClarity.depthSource = () => {
-        if (this.ao.enabled && this.ao.normalRenderTarget.depthTexture)
+        if (this.ao?.enabled && this.ao.normalRenderTarget.depthTexture)
           return { texture: this.ao.normalRenderTarget.depthTexture, packed: false };
-        if (this.bokeh.enabled)
+        if (this.bokeh?.enabled)
           return { texture: (this.bokeh.uniforms as Record<string, THREE.IUniform>).tDepth.value as THREE.Texture, packed: true };
+        if (this.glassVisibility?.mainDepth) return { texture: this.glassVisibility.mainDepth, packed: false };
         return null;
       };
       this.composer.addPass(this.coverClarity);
     }
-    this.profilePasses();
-    this.bindPointer();
+  }
+  private activateArray() {
+    for (const mesh of [...this.standardInstances,...this.lowInstances]) this.scene.remove(mesh);
+    if (this.lowIntegrated && !this.lowInstances.length) {
+      const mesh = new THREE.InstancedMesh(createLowCaseGeometry(),createLowCaseMaterial(),this.cells.length);
+      (mesh.material as THREE.MeshLambertMaterial).color.set(this.theme==='night'?'#93a6bd':this.theme==='dusk'?'#b7c5ce':'#e2d6c5');
+      mesh.frustumCulled=false;mesh.userData.fullInstanceMatrix=mesh.instanceMatrix;this.lowInstances=[mesh];
+      this.contacts=createContactShadows(this.cells.length);
+    }
+    this.instances = this.lowIntegrated ? this.lowInstances : this.standardInstances;
+    for(const mesh of this.instances)this.scene.add(mesh);
+    if(this.contacts){this.contacts.visible=this.lowIntegrated;if(this.lowIntegrated)this.scene.add(this.contacts);}
+    if(this.shadowArray)this.shadowArray.castShadow=!this.lowIntegrated;
   }
   private profilePasses() {
     for (const pass of this.composer.passes) {
@@ -491,10 +553,12 @@ export class ArchiveScene {
       this.instances.push(inst);
       this.scene.add(inst);
     }
+    this.standardInstances = [...this.instances];
+    if (this.lowIntegrated) this.activateArray();
     if (this.instanceBudget && this.instances[0]) {
-      this.arrayPicking = new THREE.InstancedMesh(this.instances[0].geometry, this.instances[0].material, count);
+      this.arrayPicking = new THREE.InstancedMesh(this.standardInstances[0].geometry, this.standardInstances[0].material, count);
       this.arrayPicking.instanceMatrix = this.instanceBudget.visibleMatrices;
-      const caster = this.instances.find((mesh) => mesh.userData.originalCastShadow);
+      const caster = this.standardInstances.find((mesh) => mesh.userData.originalCastShadow);
       if (caster) {
  // The soft shelf shadow needs the case outline, not every rounded bevel
  // and internal tray triangle. Selected/outgoing cases retain real geometry.
@@ -505,7 +569,7 @@ export class ArchiveScene {
         this.shadowArray = new THREE.InstancedMesh(proxy, new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, side: (caster.material as THREE.Material).side }), count);
         this.shadowArray.name = "Unclipped shelf shadow casters";
         this.shadowArray.instanceMatrix = this.instanceBudget.shadowMatrices;
-        this.shadowArray.frustumCulled = false; this.shadowArray.castShadow = true;
+        this.shadowArray.frustumCulled = false; this.shadowArray.castShadow = !this.lowIntegrated;
  // Public shadow hooks submit this independent list only to shadow maps.
  // Color/AO passes see count 0, with no proxy geometry drawn into them.
         this.shadowArray.count = 0;
@@ -515,7 +579,7 @@ export class ArchiveScene {
       }
     }
     this.covers = new CoverAtlas(count, this.renderer.capabilities.maxTextureSize, this.renderer.capabilities.getMaxAnisotropy(), this.selectionLighting,
-      256, this.coverClarity ? this.coverClarityState : undefined);
+      this.lowIntegrated ? 128 : 256, this.coverClarity ? this.coverClarityState : undefined);
     this.scene.add(this.covers.array);
     this.model.add(this.covers.selected);
     if (!musicLibrary) {
@@ -552,11 +616,19 @@ export class ArchiveScene {
  /** Call after setMusicAlbums; reuse the allocated display pool and cover atlas. */
   async refreshLibrary(selectedIndex = 0, preserveCovers = false) {
     if (!this.loaded || !this.covers) return;
+    const topology = playlistRows.length ? JSON.stringify(playlistRows.map((_, index) => {
+      const cell = playlistTemplate(index)?.playlistCell;
+      return [cell?.provider, cell?.playlistId, cell?.total];
+    })) : '';
+    if (!preserveCovers || topology !== this.playlistTopology) {
+      this.introCells = undefined; this.introCenter = undefined;
+    }
+    this.playlistTopology = topology;
     this.musicColumnCounts = archiveColumns.map((_, lane) => columnFiles(lane).length);
     if (preserveCovers && playlistRows.length && this.playlistGrid) {
       const location = fileLocation(selectedIndex);
       this.selectedSlot = location.slot; this.selectedCell = selectionCell(selectedIndex, this.selectedCell);
-      this.covers.selected.visible = !!records[selectedIndex]?.album?.tracks.length;
+      this.covers.selected.visible = (records[selectedIndex]?.album?.playlistCell?.total || 0) > 0;
  // The existing print remains usable while a sharper cover decodes.
  // Do not hold playlist navigation behind that asynchronous image work.
       void this.covers.select(records[selectedIndex]); return;
@@ -574,7 +646,7 @@ export class ArchiveScene {
     if (!preserveCovers) this.covers.reset();
     this.covers.array.visible = musicLibrary && records.length > 0;
     this.covers.selected.visible = musicLibrary && records.length > 0;
-    if (playlistRows.length) this.covers.selected.visible = !!records[selectedIndex]?.album?.tracks.length;
+    if (playlistRows.length) this.covers.selected.visible = (records[selectedIndex]?.album?.playlistCell?.total || 0) > 0;
  // An empty library retains the authored glass array without album prints.
     this.model.visible = true;
     for (const inst of this.instances) inst.visible = true;
@@ -598,7 +670,7 @@ export class ArchiveScene {
     this.shoulder = { value: location.row, velocity: 0 };
     this.laneFocus = { value: location.lane, velocity: 0 };
     this.columnCamera = { value: (location.lane - 2) * COLUMN_SPACING, velocity: 0 };
-    await this.covers.select(records[index]);
+    void this.covers.select(records[index]);
   }
 
   enableSelectionLighting() {
@@ -613,6 +685,7 @@ export class ArchiveScene {
   }
 
   private softenMusicContactShadows() {
+    if (this.lowIntegrated) return;
     this.light.shadow.intensity = 0.32;
     this.ao.kernelRadius = 0.18;
     this.ao.maxDistance = 0.035;
@@ -630,7 +703,7 @@ export class ArchiveScene {
     this.theme = theme;
  // A new request samples the currently rendered colors/intensities. It
  // replaces the previous targets without finishing the previous transition.
-    const targets = new ThemeTransition();
+    const targets = new ThemeTransition(.65,this.clock);
     targets.number(this.themeWarmth, "value", theme === "day" ? 1 : 0);
     const background = theme === "night" ? "#07111f" : theme === "dusk" ? "#b9c7cc" : "#eae5e1";
     targets.color(this.scene.background as THREE.Color, background);
@@ -647,6 +720,8 @@ export class ArchiveScene {
     }
     if (this.stars) targets.number(this.stars.material, "opacity", theme === "night" ? .6 : 0);
     this.appearance.setTheme(theme, targets);
+    for (const mesh of this.lowInstances) targets.color((mesh.material as THREE.MeshLambertMaterial).color,
+      theme === 'night' ? '#93a6bd' : theme === 'dusk' ? '#b7c5ce' : '#e2d6c5');
     this.selectionLighting?.setTheme(theme, this.light, targets);
     this.themeTransition = animate && !this.reduced && musicLibrary ? targets : undefined;
     if (!this.themeTransition) targets.finish();
@@ -817,6 +892,7 @@ export class ArchiveScene {
   }
   setMusicArrayMode(mode: MusicArrayMode) {
     if (mode === this.musicArrayMode) return;
+    this.introCells = undefined; this.introCenter = undefined;
     this.musicArrayMode = mode;
     if (!this.loaded || !records.length) return;
     const location = fileLocation(fileAtSlot(this.selectedSlot));
@@ -838,8 +914,27 @@ export class ArchiveScene {
     this.pendingPulse = null;
     this.selectionLighting?.resetRowMotion();
   }
+  private placeholderPrints = new Map<string, ArchiveRecord>();
+  private recordAtCell(cell: ArchiveCell): ArchiveRecord | undefined {
+    const record = records[fileAtCell(cell)];
+    if (record?.album?.tracks.length || !playlistRows.length) return record;
+    const position = playlistPosition(cell.lane, cell.row);
+    if (!position) return record;
+    const template = playlistTemplate(position.playlistIndex), info = template?.playlistCell;
+    if (!template || !info) return record;
+    const coverUrl = playlistCoverPreload.coverAt(info.provider || 'netease', info.playlistId, position.songIndex);
+    const id = `pending-${info.provider}-${info.playlistId}-${position.songIndex}`;
+    const existing = this.placeholderPrints.get(id);
+    if (existing && existing.album?.coverUrl === coverUrl && existing.title === template.title) return existing;
+    const placeholder: ArchiveRecord = { id, title: template.title, en: '', department: '', category: '', date: '',
+      lead: '', clearance: '', abstract: '', findings: [], source: '',
+      album: { ...template, id, coverUrl, tracks: [], playlistCell: { ...info, songIndex: position.songIndex } } };
+    this.placeholderPrints.set(id, placeholder);
+    while (this.placeholderPrints.size > 1024) this.placeholderPrints.delete(this.placeholderPrints.keys().next().value!);
+    return placeholder;
+  }
   private actualCell(cell: ArchiveCell) {
-    if (playlistRows.length) return fileAtCell(cell) >= 0;
+    if (playlistRows.length) return Boolean(playlistPosition(cell.lane, cell.row));
     if (musicLibrary && !records.length) return false;
     if (records[0]?.album?.playback) return fileAtCell(cell) >= 0;
     return !musicLibrary || this.musicArrayMode === "filled" ||
@@ -865,6 +960,26 @@ export class ArchiveScene {
  /** Actual displayed depth, including while a previous selection is moving. */
   get musicBrowseRow() { return (-this.rail.value - 2.17) / ROW_SPACING + 15.5; }
   get musicSelectionCell() { return { ...this.selectedCell }; }
+  get isBrowseDragging(){return Boolean(this.browseDrag);}
+  get musicBrowsePosition(){return {lane:this.columnCamera.value/COLUMN_SPACING+2,row:this.musicBrowseRow};}
+  get musicBrowseBasis(){
+    const center=this.cameraAim.clone(),base=center.clone().project(this.camera);
+    const delta=(x:number,z:number)=>{const point=center.clone().add(new THREE.Vector3(x,0,z)).project(this.camera);
+      const rect=this.renderer.domElement.getBoundingClientRect();return {x:(point.x-base.x)*rect.width/2,y:(base.y-point.y)*rect.height/2};};
+    return {row:delta(0,ROW_SPACING),lane:delta(COLUMN_SPACING,0)};
+  }
+  browseRecord(cell:ArchiveCell){return this.recordAtCell(cell);}
+  beginBrowseDrag(){this.browsePointerConsumed=true;this.musicArchiveMotion.reset();this.pendingPulse=null;this.pulses=[];this.browseDrag=this.musicBrowsePosition;this.lastInteraction=this.clock;}
+  moveBrowseDrag(cell:ArchiveCell){this.browseDrag={...cell};this.lastInteraction=this.clock;}
+  abandonBrowseDrag(){this.browseDrag=undefined;}
+  finishBrowseDrag(index:number,cell:ArchiveCell){
+    this.browseDrag=undefined;this.lift.value=this.lift.velocity=0;
+    this.select(index,{cell});this.musicArchiveMotion.reset();this.pendingPulse=null;this.pulses=[];
+    this.rail={value:-2.17-(cell.row-15.5)*ROW_SPACING,velocity:0};
+    this.columnCamera={value:(cell.lane-2)*COLUMN_SPACING,velocity:0};
+    this.shoulder={value:cell.row,velocity:0};this.laneFocus={value:cell.lane,velocity:0};
+    if(this.musicArrayMode==='realistic')this.musicRealColumns.follow(cell);
+  }
 
  /** The target shelf's own displayed depth; inactive real shelves stay centered. */
   musicBrowseRowForColumn(lane: number) {
@@ -943,11 +1058,18 @@ export class ArchiveScene {
         x: (point.x + 1) * width / 2, y: (1 - point.y) * height / 2, selected: lane === selectedLane }];
     });
   }
- /** The intro has already rendered the archive pose; hand over its same state. */
+  /** Freeze cell ownership, not picture contents, through the first home frame. */
+  beginMusicIntro() {
+    if (!musicLibrary || !this.loaded) return;
+    const chosen = this.cellPosition(this.selectedCell);
+    this.introCenter = { lane: chosen.x / COLUMN_SPACING + 2, row: chosen.z / ROW_SPACING + 15.5 };
+    this.introCells = this.positions.map((_, index) => this.visibleMusicCell(index, this.introCenter!));
+  }
+  /** The intro has already rendered the archive pose; hand over its same state. */
   finishMusicIntro(nowSeconds: number) {
     if (!musicLibrary || !this.loaded) return;
     this.musicNavigationLift = false;
-    this.clock = this.last = this.lastInteraction = nowSeconds;
+    this.clock = this.last = this.lastInteraction = nowSeconds - this.timeOffset;
     this.setMode("archive");
     this.reveal = this.targetReveal = 1;
     this.detail = this.targetDetail = 0;
@@ -972,7 +1094,7 @@ export class ArchiveScene {
     this.musicPlacement = new MusicPlacementMotion();
     this.musicArchiveMotion = new MusicArchiveMotion();
     this.musicNavigationLift = false;
-    this.clock = this.last = this.lastInteraction = nowSeconds;
+    this.clock = this.last = this.lastInteraction = nowSeconds - this.timeOffset;
     this.setMode("archive");
     this.reveal = this.targetReveal = 1;
     this.detail = this.targetDetail = 0;
@@ -1017,11 +1139,12 @@ export class ArchiveScene {
       typeof value === "boolean"
         ? normalizeQuality(undefined, value)
         : normalizeQuality(value);
+    if (quality.pipeline !== this.quality.pipeline) throw new Error("Rendering pipeline requires rebuildGraphics");
     const key = JSON.stringify(quality);
     if (this.appliedQuality === key) return;
     this.appliedQuality = key;
     this.quality = quality;
-    if (quality.aoSamples && quality.aoSamples !== this.aoKernelSize) {
+    if (!this.lowIntegrated && quality.aoSamples && quality.aoSamples !== this.aoKernelSize) {
       const old = this.ao;
       this.ao = new (musicLibrary && this.optimize ? BudgetSSAOPass : SSAOPass)(this.scene, this.camera, 1, 1, quality.aoSamples);
       this.ao.kernelRadius = old.kernelRadius;
@@ -1035,11 +1158,14 @@ export class ArchiveScene {
       this.aoKernelSize = quality.aoSamples;
       if (this.selectionLighting) this.softenMusicContactShadows();
     }
+    if (!this.lowIntegrated) {
     this.ao.enabled = quality.aoSamples > 0;
     if (this.ao instanceof BudgetSSAOPass) this.ao.setSamplingScale(quality.aoResolution);
     this.bokeh.enabled = quality.depthOfField > 0;
+    if (this.glassVisibility) this.glassVisibility.captureDepth = !this.ao?.enabled && !this.bokeh?.enabled;
     if (this.bokeh instanceof SharedDepthBokehPass) this.bokeh.setResolutionScale(quality.depthOfFieldResolution);
     this.smaa.enabled = quality.antialias === "smaa";
+    }
     this.renderer.shadowMap.enabled = quality.shadows > 0;
     const size = Math.min(
       quality.shadows || 1024,
@@ -1212,7 +1338,7 @@ export class ArchiveScene {
     this.targetRotation = 0;
     if (!musicLibrary) this.drawLabel(index);
     if (musicLibrary) {
-      if (playlistRows.length && this.covers) this.covers.selected.visible = !!records[index]?.album?.tracks.length;
+      if (playlistRows.length && this.covers) this.covers.selected.visible = (records[index]?.album?.playlistCell?.total || 0) > 0;
       void this.covers?.select(records[index]);
     }
   }
@@ -1267,25 +1393,25 @@ export class ArchiveScene {
       this.renderer,
       this.composer,
       this.container,
-      this.quality,
+      this.lowIntegrated ? { ...this.quality, pixelBudget: Math.min(this.quality.pixelBudget,this.lowBudget.pixels) } : this.quality,
       Boolean(this.coverClarity),
     );
-    if (!(this.ao instanceof BudgetSSAOPass)) this.ao.setSize(
+    if (this.ao && !(this.ao instanceof BudgetSSAOPass)) this.ao.setSize(
       Math.max(1, Math.floor(dimensions.width * this.quality.aoResolution)),
       Math.max(1, Math.floor(dimensions.height * this.quality.aoResolution)),
     );
     this.container.dataset.renderQuality = JSON.stringify({
       ...JSON.parse(this.container.dataset.renderQuality!),
-      aoSamples: this.ao.enabled ? this.aoKernelSize : 0,
-      aoWidth: this.ao.width,
-      aoHeight: this.ao.height,
-      depthWidth: this.ao.normalRenderTarget.width,
-      depthHeight: this.ao.normalRenderTarget.height,
+      aoSamples: this.ao?.enabled ? this.aoKernelSize : 0,
+      aoWidth: this.ao?.width,
+      aoHeight: this.ao?.height,
+      depthWidth: this.ao?.normalRenderTarget.width ?? 0,
+      depthHeight: this.ao?.normalRenderTarget.height ?? 0,
       depthOfFieldResolution: this.bokeh instanceof SharedDepthBokehPass ? this.bokeh.getBudget() : { scale: 1 },
       shadows: this.renderer.shadowMap.enabled
         ? this.light.shadow.mapSize.x
         : 0,
-      depthOfField: this.bokeh.enabled ? this.quality.depthOfField : 0,
+      depthOfField: this.bokeh?.enabled ? this.quality.depthOfField : 0,
     });
   }
   private bindPointer() {
@@ -1296,7 +1422,8 @@ export class ArchiveScene {
     const pointers = new Set<number>();
     canvas.addEventListener("pointerdown", (e) => {
       if (e.pointerType === "mouse" && e.button !== 0) return;
-      pointers.add(e.pointerId);
+      this.browsePointerConsumed=Boolean(this.browseDrag);
+      if(!this.externalBrowseNavigation || this.detail>.2) pointers.add(e.pointerId);
       if (pointers.size > 1) { cancelled = true; this.dragging = false; return; }
       activePointer = e.pointerId;
       cancelled = false;
@@ -1304,7 +1431,7 @@ export class ArchiveScene {
       started = performance.now();
       startX = e.clientX;
       startY = e.clientY;
-      canvas.setPointerCapture(e.pointerId);
+      if(!this.externalBrowseNavigation || this.canInspect)canvas.setPointerCapture(e.pointerId);
       if (this.canInspect) {
         this.dragging = true;
         canvas.setPointerCapture(e.pointerId);
@@ -1356,8 +1483,9 @@ export class ArchiveScene {
       if (e.pointerId !== activePointer) return;
       activePointer = null;
       this.dragging = false;
+      if(this.externalBrowseNavigation && this.browsePointerConsumed)return;
       if (cancelled) return;
-      if (e.pointerType !== "mouse" && this.detail < 0.2 && this.reveal >= 0.8 && this.loaded) {
+      if (!this.externalBrowseNavigation && e.pointerType !== "mouse" && this.detail < 0.2 && this.reveal >= 0.8 && this.loaded) {
         const swipe = swipeDirection(e.clientX - startX, e.clientY - startY, performance.now() - started);
         if (swipe) { this.onNavigate?.(swipe.axis, swipe.direction); return; }
       }
@@ -1416,7 +1544,8 @@ export class ArchiveScene {
     this.scene.updateMatrixWorld(true);
     this.light.shadow.updateMatrices(this.light);
     budget.update(this.camera, this.light.shadow.getFrustum(), focus, aperture, maxBlur,
-      this.ao.normalRenderTarget.width, dt, this.musicRenderTransitioning);
+      this.ao?.normalRenderTarget.width ?? 0, dt, this.musicRenderTransitioning);
+    if(this.contacts){this.contacts.instanceMatrix=budget.visibleMatrices;this.contacts.count=budget.visibleSlots.length;}
     for (const inst of this.instances) {
       inst.instanceMatrix = budget.visibleMatrices;
       inst.count = budget.visibleSlots.length;
@@ -1442,17 +1571,17 @@ export class ArchiveScene {
       this.coverPriority.length = 0;
       for (const slot of budget.prioritySlots) if (this.coverEligible[slot]) this.coverPriority.push(slot);
       const requests = this.coverPriority
-        .map((slot) => ({ slot, record: records[fileAtCell(this.cells[slot])] }));
+        .map((slot) => ({ slot, record: this.recordAtCell(this.cells[slot]) }));
       const moving = this.musicRenderTransitioning;
       const now = performance.now();
       if (now >= this.coverPrefetchAt) {
         this.coverPrefetchAt = now + 250;
-        const current = records[fileAtCell(this.selectedCell)];
+        const current = this.recordAtCell(this.selectedCell);
  // Neighbouring songs and playlists are prepared before their lift;
  // visible requests follow in the existing focus order.
         const ahead = [current];
         for (const [lane, row] of [[0, -1], [0, 1], [-1, 0], [1, 0]])
-          ahead.push(records[fileAtCell({ lane: this.selectedCell.lane + lane, row: this.selectedCell.row + row })]);
+          ahead.push(this.recordAtCell({ lane: this.selectedCell.lane + lane, row: this.selectedCell.row + row }));
         this.covers.prefetch([...ahead, ...requests.map(request => request.record)], 3);
       }
       this.covers.prepareFrame(requests, moving ? 2 : 6, moving ? 1 : 2);
@@ -1471,7 +1600,6 @@ export class ArchiveScene {
       for (let i = 0; i < 16; i++) state.push(budget.pool[offset + i] * (i < 12 ? 3 : 1));
     }
     for (const group of [this.model, ...this.outgoing.map((item) => item.group)]) {
-      group.updateMatrixWorld(true);
       state.push(group.id, Number(group.visible));
       for (let i = 0; i < 16; i++) state.push(group.matrixWorld.elements[i] * (i < 12 ? 3 : 1));
     }
@@ -1490,7 +1618,9 @@ export class ArchiveScene {
     cinematic?: { reveal: number; lift: number; zoom: number; time: number; musicIntro?: boolean },
     render = true,
   ) {
-    if (this.disposed) return;
+    if (this.disposed || this.graphicsBusy) return;
+    const frameStart=performance.now();
+    time -= this.timeOffset;
     const realDt = Math.min(time - this.last || 0.016, 0.05);
  // Advance a shared animation timeline, preserving the authored intro and
  // reduced-motion response. Row lighting receives this same dt exactly once.
@@ -1535,7 +1665,7 @@ export class ArchiveScene {
       this.scanTime += dt;
       this.scanBlend *= Math.exp(-dt * 3);
     }
-    if (this.looping && !cinematic) this.rebaseCoordinates();
+    if (this.looping && !cinematic && !this.browseDrag) this.rebaseCoordinates();
     const chosen = this.cellPosition(this.selectedCell);
     const selectedRow = this.selectedCell.row;
     const selectedLane = this.selectedCell.lane;
@@ -1550,7 +1680,12 @@ export class ArchiveScene {
       column: this.reduced ? 35 : detailNavigation ? MUSIC_ALBUM_SWITCH_RATE : 3.7,
       shoulder: this.reduced ? 35 : detailNavigation ? MUSIC_ALBUM_SWITCH_RATE : 5,
       lane: this.reduced ? 35 : detailNavigation ? MUSIC_ALBUM_SWITCH_RATE : 4 };
-    if (musicLibrary && !cinematic && !detailNavigation && this.musicArchiveMotion.active) {
+    if(this.browseDrag && !cinematic){
+      const cell=this.browseDrag;
+      this.rail.value=-2.17-(cell.row-15.5)*ROW_SPACING;this.rail.velocity=0;
+      this.columnCamera.value=(cell.lane-2)*COLUMN_SPACING;this.columnCamera.velocity=0;
+      this.shoulder.value=cell.row;this.shoulder.velocity=0;this.laneFocus.value=cell.lane;this.laneFocus.velocity=0;
+    } else if (musicLibrary && !cinematic && !detailNavigation && this.musicArchiveMotion.active) {
       this.musicArchiveMotion.update(archiveTracks, dt, this.reduced);
     } else {
       damp(this.shoulder, archiveTargets.shoulder, archiveRates.shoulder, dt);
@@ -1581,6 +1716,7 @@ export class ArchiveScene {
     }
     if (musicLibrary && this.musicArrayMode === "realistic") {
       this.musicRealColumns.update(dt, this.reduced || Boolean(cinematic));
+      if(this.browseDrag)this.musicRealColumns.follow(this.browseDrag);
     }
  // Keep the illuminated set near the origin. Lateral navigation is a track
  // movement of the whole array, just like the existing front/back rail.
@@ -1589,10 +1725,14 @@ export class ArchiveScene {
       lane: this.columnCamera.value / COLUMN_SPACING + 2,
       row: (-this.rail.value - 2.17) / ROW_SPACING + 15.5,
     };
+    if (!cinematic && this.introCenter &&
+      (Math.abs(center.lane - this.introCenter.lane) > 0.001 || Math.abs(center.row - this.introCenter.row) > 0.001)) {
+      this.introCells = undefined; this.introCenter = undefined;
+    }
     for (let i = 0; i < this.positions.length; i++) {
       this.cells[i] =
         !musicIntro && (cinematic || !this.looping)
-          ? poolCell(i, this.poolRows) : this.visibleMusicCell(i, center);
+          ? poolCell(i, this.poolRows) : this.introCells?.[i] ?? this.visibleMusicCell(i, center);
       this.positions[i].set(
         (this.cells[i].lane - 2) * COLUMN_SPACING,
         -4.6,
@@ -1675,7 +1815,8 @@ export class ArchiveScene {
     };
     const selectedBase = chosen.y + field(selectedRow, selectedLane);
     if (!cinematic) {
-      if (this.returnY !== null && this.rotation !== 0) {
+      if(this.browseDrag){this.lift.value*=Math.exp(-14*realDt);this.lift.velocity=0;}
+      else if (this.returnY !== null && this.rotation !== 0) {
         this.lift.value = this.returnY - selectedBase;
         this.lift.velocity = 0;
       } else {
@@ -1814,7 +1955,7 @@ export class ArchiveScene {
  // 相邻卡片在不透明画面里是互相遮挡的，剔掉视锥外的不影响水波连续性：
  // 水波靠的是 row/lane 的相位（motion.ts archiveWave/cinematicField），
  // 与"画不画视锥外"无关。所以开场可以安全地复用浏览时的同一套剔除。
-    const adaptive = Boolean(this.instanceBudget && this.quality.arrayBudget);
+    const adaptive = Boolean(this.instanceBudget);
     if (this.instanceBudget && this.instanceBudget.enabled !== adaptive) {
       this.instanceBudget.enabled = adaptive;
       this.instanceBudget.reset(); this.shadowBudget.invalidate();
@@ -1829,6 +1970,7 @@ export class ArchiveScene {
       }
     }
     this.covers?.setFrameBudget(adaptive);
+    if (playlistRows.length) void this.covers?.select(this.recordAtCell(this.selectedCell));
     for (let i = 0; i < this.positions.length; i++) {
       const p = this.positions[i];
       const { row, lane } = this.cells[i];
@@ -1848,15 +1990,11 @@ export class ArchiveScene {
       else for (const inst of this.instances) inst.setMatrixAt(i, this.dummy.matrix);
       if (musicLibrary && this.covers) {
         if (adaptive) {
-          this.coverEligible[i] = Number(!hiddenCell && this.actualCell(this.cells[i]) &&
-            (!playlistRows.length || Boolean(records[fileAtCell(this.cells[i])]?.album?.tracks.length)));
+          this.coverEligible[i] = Number(!hiddenCell && this.actualCell(this.cells[i]));
           continue;
         }
-        if (playlistRows.length && !records[fileAtCell(this.cells[i])]?.album?.tracks.length) {
-          this.dummy.scale.setScalar(0); this.dummy.updateMatrix();
-        }
         this.covers.array.setMatrixAt(i, this.dummy.matrix);
-        if (this.actualCell(this.cells[i])) this.covers.setSlot(i, records[fileAtCell(this.cells[i])]);
+        if (this.actualCell(this.cells[i])) this.covers.setSlot(i, this.recordAtCell(this.cells[i]));
       }
     }
     if (!adaptive) {
@@ -2023,7 +2161,9 @@ export class ArchiveScene {
     }
     const width = this.container.clientWidth, height = this.container.clientHeight;
     const framing = archiveFraming(width, height, span, detail,
-      this.container.closest<HTMLElement>("[data-layout]")?.dataset.layout === "compact");
+      this.container.closest<HTMLElement>("[data-layout]")?.dataset.layout === "compact",
+      cinematic ? 0 : Number(this.container.closest<HTMLElement>("[data-layout]")?.dataset.headerBottom || 0),
+      Number(this.container.closest<HTMLElement>("[data-layout]")?.dataset.detailTop || height * .5));
     const right = new THREE.Vector3()
       .crossVectors(new THREE.Vector3(0, 1, 0), viewDirection).normalize();
     const up = new THREE.Vector3().crossVectors(viewDirection, right).normalize();
@@ -2161,7 +2301,7 @@ export class ArchiveScene {
       .clone()
       .add(new THREE.Vector3(0, 2, 0))
       .applyMatrix4(this.camera.matrixWorldInverse);
-    const bokehUniforms = this.bokeh.uniforms as Record<
+    const bokehUniforms = (this.bokeh?.uniforms ?? this.lowUniforms) as Record<
       string,
       { value: number }
     >;
@@ -2170,8 +2310,7 @@ export class ArchiveScene {
       (THREE.MathUtils.lerp(0.0003, 0.0008, detail) *
         this.quality.depthOfField) /
       100;
-    this.applyInstanceBudget(dt, bokehUniforms.focus.value, this.bokeh.enabled ? bokehUniforms.aperture.value : 0, bokehUniforms.maxblur.value);
-    this.renderer.info.reset();
+    this.model.updateMatrixWorld(true);
     this.selectionLighting?.update(this.model, this.camera, dt,
       musicLibrary && records.length > 0 && this.model.visible, this.reduced, Boolean(cinematic), this.detail, {
         row: selectedRow + this.coordinateOrigin.row,
@@ -2179,6 +2318,8 @@ export class ArchiveScene {
         introTime: musicIntro ? shot : undefined,
         independentColumns: this.musicArrayMode === "realistic",
       });
+    this.applyInstanceBudget(dt, bokehUniforms.focus.value, this.bokeh?.enabled ? bokehUniforms.aperture.value : 0, bokehUniforms.maxblur.value);
+    this.renderer.info.reset();
  // AO normals and bokeh depth render this scene again without moving it.
  // Music frames share the first pass's shadows; the archive reference keeps
  // Three's original automatic updates. Animated casters still update each frame.
@@ -2188,8 +2329,8 @@ export class ArchiveScene {
     if (render) {
       this.updateBudgetShadows();
  // Camera motion changes the AO projection even without a viewport resize.
-      this.ao.ssaoMaterial.uniforms.cameraProjectionMatrix.value.copy(this.camera.projectionMatrix);
-      this.ao.ssaoMaterial.uniforms.cameraInverseProjectionMatrix.value.copy(this.camera.projectionMatrixInverse);
+      this.ao?.ssaoMaterial.uniforms.cameraProjectionMatrix.value.copy(this.camera.projectionMatrix);
+      this.ao?.ssaoMaterial.uniforms.cameraInverseProjectionMatrix.value.copy(this.camera.projectionMatrixInverse);
       this.gpuTiming?.begin();
       try {
         this.gpuTiming?.measure("coverUploads", () => this.covers?.flushUploads(this.renderer, adaptive ? this.musicRenderTransitioning ? 1 : 4 : 8,
@@ -2198,30 +2339,48 @@ export class ArchiveScene {
         this.composer.render();
         this.glassVisibility?.renderOverlay(this.renderer);
       } finally { this.gpuTiming?.end(); }
+      if(this.lowIntegrated && !cinematic && !this.graphicsBusy && !document.hidden) {
+        const now=performance.now();
+        // Keep percentile sorting and diagnostic allocations off the frame path.
+        if(!this.lowGpuSnapshot || now-this.lowGpuReadAt>=500){this.lowGpuSnapshot=this.gpuTiming?.snapshot();this.lowGpuReadAt=now;}
+        const gpu=this.lowGpuSnapshot;
+        if(this.lowBudget.sample(now,now-frameStart,gpu?.gpuP95??null,this.frameCap,this.musicRenderTransitioning || gpu?.available===true))this.resize();
+      }
     }
   }
  /** Compile and populate the real pipeline while the loading surface is up.
  * The introduction's clock starts only after this resolves. */
-  async prepareMusicRenderer() {
+  async prepareMusicRenderer({ duringFilm = false } = {}) {
     if (!musicLibrary || !this.loaded || this.disposed) return;
     const started = performance.now();
+    this.beginMusicIntro();
     const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
  // The settled shot exercises both the instanced shelf and selected shell.
     const settled = { reveal: 1, lift: 0, zoom: 0, time: 27.12, musicIntro: true };
     this.update(started / 1000, settled, false);
     const visible = this.model.visible;
+    const renderTarget = this.renderer.getRenderTarget();
     this.model.visible = true;
+    // The main scene renders into the composer's linear target, not directly
+    // into the sRGB window. Compiling for the window creates unused variants.
+    this.renderer.setRenderTarget(this.composer.readBuffer);
     try { await this.renderer.compileAsync(this.scene, this.camera); }
     finally {
       this.model.visible = visible;
+      this.renderer.setRenderTarget(renderTarget);
     }
     if (this.disposed) return;
+    // Prepare every actor that the moving lens may expose, rather than just
+    // the final shot's frustum. The physical pool remains bounded at 432.
+    this.covers?.prepareFrame(this.cells.flatMap((cell, slot) => this.actualCell(cell)
+      ? [{ slot, record: this.recordAtCell(cell) }] : []), 0, 0);
     await this.covers?.prepareVisible(1200);
  // Bound initialization work as well: at most 16 MiB of tiles per turn.
  // Normal animation uses the smaller 2 MiB / frame budget.
-    for (let i = 0; i < 12 && this.covers && this.covers.getStats().dirtyTiles; i++) {
+    const uploadTiles = duringFilm ? 8 : 64;
+    for (let i = 0; i < (duringFilm ? 96 : 12) && this.covers && this.covers.getStats().dirtyTiles; i++) {
       if (this.disposed) return;
-      this.covers.flushUploads(this.renderer, 64);
+      this.covers.flushUploads(this.renderer, uploadTiles);
       await nextFrame();
     }
  // Real draws initialize transmission, shadow, AO and depth-of-field targets.
@@ -2238,19 +2397,83 @@ export class ArchiveScene {
       parallelCompile: this.renderer.extensions.has("KHR_parallel_shader_compile"),
       glError: this.renderer.getContext().getError(),
       covers: this.covers?.getStats(),
+      introPoolLocked: Boolean(this.introCells),
     });
+  }
+  /** Replace graphics ownership, never the scene's navigation/animation objects. */
+  async rebuildGraphics(value: RenderQuality) {
+    if(this.disposed)throw new Error('Scene disposed');
+    if(this.graphicsBusy)throw new Error('Graphics rebuild already running');
+    this.graphicsBusy=true;
+    const began=performance.now()/1000;
+    const snapshot=this.pendingGraphicsCover??this.covers?.captureSelected();this.pendingGraphicsCover=undefined;
+    let success=false;
+    const oldCanvas=this.renderer.domElement;
+    const oldRenderer=this.renderer;
+    const exposure=this.renderer.toneMappingExposure;
+    try {
+      this.quality=normalizeQuality(value);this.appliedQuality='';
+      this.covers?.array.removeFromParent();this.covers?.selected.removeFromParent();this.covers?.dispose();this.covers=undefined;
+      for(const pass of this.composer.passes)pass.dispose();this.composer.dispose();
+      this.scene.environment?.dispose();this.light.shadow.map?.dispose();this.light.shadow.map=null;
+      this.gpuTiming?.dispose();this.renderer.dispose();this.renderer.forceContextLoss();oldCanvas.remove();
+      this.glassVisibility=undefined;this.coverClarity=undefined;this.lowDepth=undefined;
+      this.ao=undefined!;this.bokeh=undefined!;this.smaa=undefined!;
+      await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+      if(this.disposed)throw new Error('Scene disposed');
+      this.renderer=new THREE.WebGLRenderer({antialias:!this.lowIntegrated,alpha:false,powerPreference:'high-performance'});
+      this.themeTransition?.retarget(oldRenderer,this.renderer);
+      this.renderer.info.autoReset=false;this.renderer.shadowMap.type=THREE.PCFShadowMap;
+      this.renderer.toneMapping=THREE.ACESFilmicToneMapping;
+      this.graphicsDevice=graphicsIdentity(this.renderer);
+      this.gpuTiming=new GpuFrameTiming(this.renderer.getContext() as WebGL2RenderingContext);
+      this.renderer.domElement.setAttribute('aria-label','三维专辑阵列，可点击选择歌曲');this.container.append(this.renderer.domElement);
+      // Keep all live light/transition references. Only the environment belongs
+      // to the lost GL context; build its replacement in a temporary scene.
+      const environmentScene=new THREE.Scene();
+      createArchiveLighting(this.renderer,environmentScene,this.lightingLook);
+      this.scene.environment=environmentScene.environment;
+      this.renderer.toneMappingExposure=exposure;
+      this.createPipeline();this.profilePasses();this.activateArray();
+      coverResources.configureLowMemory(this.lowIntegrated);
+      this.covers=new CoverAtlas(this.cells.length,this.renderer.capabilities.maxTextureSize,this.renderer.capabilities.getMaxAnisotropy(),this.selectionLighting,this.lowIntegrated?128:256,this.coverClarityState);
+      this.scene.add(this.covers.array);this.model.add(this.covers.selected);
+      if(snapshot)this.covers.restoreSelected(snapshot);
+      this.setQuality(this.quality);this.bindPointer();
+      const focus=((this.bokeh?.uniforms as typeof this.lowUniforms | undefined) ?? this.lowUniforms).focus.value;
+      this.applyInstanceBudget(0,focus,0,0);
+      this.covers.prepareFrame(this.cells.flatMap((cell,slot)=>this.actualCell(cell)?[{slot,record:this.recordAtCell(cell)}]:[]),0,0);
+      await this.covers.prepareVisible(1200);
+      const target=this.renderer.getRenderTarget();this.renderer.setRenderTarget(this.composer.readBuffer);
+      try{await this.renderer.compileAsync(this.scene,this.camera);}finally{this.renderer.setRenderTarget(target);}
+      for(let i=0;i<12&&this.covers.getStats().dirtyTiles;i++){
+        if(this.disposed)throw new Error('Scene disposed');
+        this.covers.flushUploads(this.renderer,64);await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+      }
+      for(let i=0;i<2;i++){
+        if(this.disposed)throw new Error('Scene disposed');
+        this.updateBudgetShadows();this.composer.render();await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+      }
+      if(this.renderer.getContext().getError())throw new Error('图形资源准备失败');
+      success=true;
+    } finally {
+      if(snapshot){if(success || this.disposed)snapshot.canvas.width=snapshot.canvas.height=1;else this.pendingGraphicsCover=snapshot;}
+      this.timeOffset+=performance.now()/1000-began;this.lowBudget.resetSamples();this.lowGpuSnapshot=undefined;this.lowGpuReadAt=0;this.graphicsBusy=false;
+    }
   }
  /** Release GPU ownership on reload, instead of waiting for tab/process GC. */
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
     this.loaded = false;
+    if(this.pendingGraphicsCover)this.pendingGraphicsCover.canvas.width=this.pendingGraphicsCover.canvas.height=1;
+    this.pendingGraphicsCover=undefined;
     this.covers?.dispose();
     this.covers = undefined;
     const geometries = new Set<THREE.BufferGeometry>();
     const materials = new Set<THREE.Material>();
     const textures = new Set<THREE.Texture>();
-    this.scene.traverse((object) => {
+    const collect = (object: THREE.Object3D) => {
       if (object instanceof THREE.Mesh || object instanceof THREE.Points) {
         geometries.add(object.geometry);
         for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
@@ -2259,7 +2482,9 @@ export class ArchiveScene {
             if (value instanceof THREE.Texture && !value.isRenderTargetTexture) textures.add(value);
         }
       }
-    });
+    };
+    this.scene.traverse(collect);
+    for (const mesh of [...this.standardInstances, ...this.lowInstances, ...(this.contacts ? [this.contacts] : [])]) collect(mesh);
     for (const geometry of geometries) geometry.dispose();
     for (const material of materials) material.dispose();
     for (const texture of textures) texture.dispose();
@@ -2272,6 +2497,7 @@ export class ArchiveScene {
     this.outgoing = [];
     this.instanceBudget = undefined; this.arrayPicking = undefined; this.shadowArray = undefined;
     this.instances = []; this.coverSlots = []; this.coverPriority = [];
+    this.standardInstances=[];this.lowInstances=[];this.contacts=undefined;
     this.shadowState = []; this.coverEligible = new Uint8Array(0);
     this.renderer.dispose();
     this.gpuTiming?.dispose();
@@ -2301,7 +2527,7 @@ export class ArchiveScene {
   }
   get musicPresentationPhase() { return this.musicPresentation.phase; }
   get musicRenderTransitioning() {
-    return Boolean(this.themeTransition || this.dragging || this.outgoing.length || this.pulses.length ||
+    return Boolean(this.browseDrag || this.themeTransition || this.dragging || this.outgoing.length || this.pulses.length ||
       this.musicArchiveMotion.active || !this.musicPlacement.settled ||
       Math.abs(this.lift.velocity) > .025 || Math.abs(this.rail.velocity) > .025 ||
       Math.abs(this.columnCamera.velocity) > .025 || Math.abs(this.rotation - this.targetRotation) > .01 && this.targetDetail ||
@@ -2333,7 +2559,13 @@ export class ArchiveScene {
       return [Math.round((p.x + 1) * this.container.clientWidth / 2), Math.round((1 - p.y) * this.container.clientHeight / 2)];
     };
     return {
+      browseDrag:this.browseDrag?{...this.browseDrag}:null,
+      browsePosition:this.musicBrowsePosition,
+      pipeline: this.quality.pipeline,
+      renderPixels: this.lowIntegrated ? this.lowBudget.pixels : this.quality.pixelBudget,
+      passes: this.composer.passes.map(pass=>pass.constructor.name),
       covers: this.covers?.getStats(),
+      introPoolLocked: Boolean(this.introCells),
       arrayMode: this.musicArrayMode,
       graphics: { geometries: this.renderer.info.memory.geometries,
         ...this.graphicsDevice,
@@ -2341,14 +2573,17 @@ export class ArchiveScene {
         contextLost: this.renderer.getContext().isContextLost() },
       gpuTiming: this.gpuTiming?.snapshot(),
       optimization: { sharedDepth: this.bokeh instanceof SharedDepthBokehPass,
+        aoKernelSamples: this.ao?.enabled ? this.ao.kernel.length : 0,
         sharedDepthFrames: this.bokeh instanceof SharedDepthBokehPass ? this.bokeh.sharedFrames : 0,
         bokehBudget: this.bokeh instanceof SharedDepthBokehPass ? this.bokeh.getBudget() : null,
-        instanceBudget: this.instanceBudget?.snapshot(),
+        instanceBudget: this.lowIntegrated ? {...this.instanceBudget?.snapshot(), materialPolicy:'opaque-frame',nearGlass:0,farGlass:0} : this.instanceBudget?.snapshot(),
         shadowBudget: this.shadowBudget.snapshot(),
         clearCovers: this.coverClarity?.getStats(),
         glassVisibility: this.glassVisibility?.getStats(),
-        shelfGlass: { selected: "physical", array: "physical", materialPolicy: "all-visible-physical",
-          arrayNearLimit: null, far: "disabled", visibleReceivesShadow: true, shadowProxyTriangles: 12 },
+        shelfGlass: { selected: "physical", array: this.lowIntegrated ? 'opaque-frame' : 'physical',
+          trianglesPerCase: this.lowInstances[0]?.geometry.getAttribute('position').count! / 3,
+          materialPolicy: this.lowIntegrated ? 'opaque-frame' : 'all-visible-physical',
+          arrayNearLimit: null, far: "disabled", visibleReceivesShadow: !this.lowIntegrated, shadowProxyTriangles: this.lowIntegrated ? 0 : 12 },
         fullSizeDepth: this.ao instanceof BudgetSSAOPass,
         sharedInstanceBuffers: this.optimize },
       visibleAlbumCells: this.cells.filter((cell) => this.actualCell(cell)).length,

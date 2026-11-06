@@ -31,9 +31,9 @@ const clean = (value, max) => String(value ?? '').replace(/[\r\n\t]/g, ' ').trim
 /** 一首歌在歌单里的样子：身份 + 元数据快照 + 统计。 */
 /** 封面只接受 http(s) 与 data:image，长度设上限，避免被塞进任意内容。 */
 function cleanCover(value) {
-  const text = String(value ?? '').trim().slice(0, 600)
-  if (!text) return ''
-  return /^(https?:\/\/|data:image\/)/i.test(text) ? text : ''
+  const text = String(value ?? '').trim()
+  if (!text || text.length > 8192 || /[\\\r\n\t]/.test(text)) return ''
+  return /^(https?:\/\/|data:image\/|\/api\/)/i.test(text) ? text : ''
 }
 
 function normalizeSong(input) {

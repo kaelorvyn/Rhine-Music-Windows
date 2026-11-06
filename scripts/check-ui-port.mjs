@@ -1,7 +1,7 @@
-/**
- * 自检：这一版从预览版移植过来的三块 UI（音浪 / 标签栏 / 音源管理）与
- * 共享音源探测，关键契约还在不在。纯静态检查，跑得快，适合提交前过一遍。
- */
+
+
+
+
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,7 +44,7 @@ check('aria-selected 同步', songView.includes('aria-selected'))
 const songCss = read('src/music-song-view.css')
 check('标签栏样式', songCss.includes('.song-view-tabs'))
 
-// ── 共享音源
+
 const pool = read('scripts/shared-pool.mjs')
 check('请求超时 9s', /POOL_REQUEST_TIMEOUT_MS\s*=\s*9000/.test(pool))
 check('探测超时 8s', /LINE_PROBE_TIMEOUT_MS\s*=\s*8000/.test(pool))

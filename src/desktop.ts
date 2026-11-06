@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./desktop.css";
+import { isAndroidApp, isDesktopApp } from "./platform";
 
-export const isDesktop = () => "__TAURI_INTERNALS__" in window;
+export const isDesktop = isDesktopApp;
+export { isAndroidApp };
 
 /**
  * 在系统默认浏览器里打开一个链接。
@@ -135,7 +137,7 @@ export async function readAudioCacheUsage(): Promise<{ files: number; bytes: num
   } catch { return null; }
 }
 
-/** 共享音源密钥的状态。**返回值里没有 token** —— 后端只回账号名与到期时间。 */
+
 export interface PoolCredentialStatus {
   configured: boolean;
   poolEnabled: boolean;
@@ -157,13 +159,13 @@ export async function readPoolCredential(): Promise<PoolCredentialStatus | null>
   } catch { return null; }
 }
 
-/** 导入密钥文件（.rhinekey 的原始字节，base64 传输）。 */
-export async function importPoolCredential(encoded: string): Promise<{ ok: boolean; status?: PoolCredentialStatus; error?: string }> {
+
+export async function importPoolCredential(encoded: string, name?: string): Promise<{ ok: boolean; status?: PoolCredentialStatus; error?: string }> {
   try {
     const response = await fetch('/api/pool/credential/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data: encoded }),
+      body: JSON.stringify({ data: encoded, name }),
     });
     const body = await response.json() as PoolCredentialStatus & { error?: string };
     if (!response.ok) return { ok: false, error: body.error ?? "导入失败" };
@@ -171,18 +173,13 @@ export async function importPoolCredential(encoded: string): Promise<{ ok: boole
   } catch { return { ok: false, error: "无法连接本地服务" }; }
 }
 
-/** 移除已导入的密钥。 */
+/** 移除已导入的模块。 */
 export async function clearPoolCredential(): Promise<PoolCredentialStatus | null> {
   try {
     const response = await fetch('/api/pool/credential', { method: 'DELETE' });
     if (!response.ok) return null;
     return await response.json() as PoolCredentialStatus;
   } catch { return null; }
-}
-
-/** 导出当前密钥文件的下载地址（浏览器直接下载）。 */
-export function poolCredentialExportUrl() {
-  return '/api/pool/credential/export';
 }
 
 export async function openFeedbackDraft(url: string) {

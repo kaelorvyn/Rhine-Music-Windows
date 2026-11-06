@@ -155,7 +155,8 @@ export class EntryFilm {
   }
 
   private opacity(selector: string, value: number): void {
-    this.el(selector).style.opacity = String(Number(value));
+    const style = this.el(selector).style, next = String(Number(value));
+    if (style.opacity !== next) style.opacity = next;
   }
 
   update(elapsedSeconds: number): EntryFrame {
@@ -169,6 +170,7 @@ export class EntryFilm {
 
     // logo：位移、描边进度、字母阈值、+ / − 符号
     this.opacity(".boot-logo", frame.logoOpacity);
+    if (frame.logoOpacity > 0) {
     this.el(".boot-logo").style.transform = `translate(${frame.logo.offsetX}px, 1px)`;
     this.contour.style.strokeDasharray = `${frame.logo.length} ${1 - frame.logo.length}`;
     this.contour.style.strokeDashoffset = String(-frame.logo.start);
@@ -186,6 +188,8 @@ export class EntryFilm {
       "transform",
       `translate(${frame.logo.minusX} 70) scale(${frame.logo.symbolScale})`,
     );
+
+    }
 
     // 认证状态行
     this.opacity(".auth-status", frame.authOpacity);
@@ -209,6 +213,7 @@ export class EntryFilm {
 
     // welcome 卡组
     this.opacity(".welcome", frame.welcomeVisible ? frame.welcomeOpacity : 0);
+    if (frame.welcomeVisible) {
     this.el(".welcome").style.transform = `scale(${frame.welcomeScale})`;
     this.el(".welcome").style.filter =
       `blur(${frame.exitBlur}px) invert(${frame.exit * 0.22}) sepia(${frame.exit}) ` +
@@ -225,6 +230,8 @@ export class EntryFilm {
     this.el(".welcome-highlight").style.clipPath = `inset(0 ${100 * (1 - frame.highlight)}% 0 0)`;
     this.opacity(".welcome-database", frame.databaseOpacity);
     this.opacity(".welcome-logo", frame.welcomeLogo ? 1 : 0);
+
+    }
 
     // 纸底与收尾白闪
     this.opacity("#boot-background", frame.backgroundOpacity);

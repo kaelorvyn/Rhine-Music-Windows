@@ -45,7 +45,7 @@ function eventTarget() {
 }
 function fixture({ renderScene = true, firstMs = 0, reduced = false, speed = 1, ready = true } = {}) {
   const pending = new Map(), elements = new Map();
-  const calls = { scene: 0, boot: 0, viewer: 0, presentation: 0, library: 0, clearTimeout: [],
+  const calls = { scene: 0, boot: 0, viewer: 0, presentation: 0, library: 0, headerDisconnect: 0, clearTimeout: [],
     decryption: [], dispose: { scene: 0, boot: 0, overview: 0, player: 0, effects: 0, trackFocus: 0 } };
   const document = { ...eventTarget(), hidden: false }, window = eventTarget();
   const scene = { update: () => calls.scene++, musicPresentationPhase: 'archive',
@@ -65,10 +65,13 @@ function fixture({ renderScene = true, firstMs = 0, reduced = false, speed = 1, 
     'requestAnimationFrame', 'cancelAnimationFrame', 'MusicFrameTiming', 'config', 'calls', 'appVersion', `
     const performance = { now: () => config.cpuNow() };
     const preferences = { reduced: config.reduced, theme: 'day' }, themeNames = { day: '暖昼' };
+    const entry = { dispose() {} };
     let nativeHidden = false;
+    let graphicsSwitching=false,graphicsRecoveryFailed=false,browseDrag;
     const renderScheduler = { shouldRender: () => true, reset() {} };
     const isDesktop = () => false, location = { search: '' };
     const stage = { dataset: {} }, getMusicMotionSpeed = () => config.speed;
+    const tryEnterPlaylistOverview = () => {};
     const updateOverview = () => {}, overviewRevealPending = false, overview = false;
     const overviewUI = { dispose: () => calls.dispose.overview++ };
     const showBrowseSurface = () => {}, documentDecryption = { update: time => calls.decryption.push(time) };
@@ -77,6 +80,9 @@ function fixture({ renderScene = true, firstMs = 0, reduced = false, speed = 1, 
     const pollTimer = 17, toastTimer = 18, clearTimeout = id => calls.clearTimeout.push(id);
     const loadLibrary = () => { calls.library++; };
     const player = { dispose: () => calls.dispose.player++ };
+    const onlineDebug = { dispose() {} }, disposePlatformLogin = () => {}, playlistSongBars = { destroy() {} };
+    const coverResources = { reset() {} }, playlistCoverPreload = { dispose() {} }, backgroundResumeTimer = undefined;
+    const headerObserver = { disconnect() { calls.headerDisconnect++; } };
     const onlineSearch = { dispose() {} }; let playbackVisualGeneration = 0;
     const playlistLibrary = { dispose() {} }, playlistRenderTimer = 19;
     let playlistPlayEpoch = 0, playlistSelectionEpoch = 0;
@@ -183,6 +189,7 @@ cache.window.dispatch('pageshow', { persisted: true });
 lateCallback(900050);
 assert.equal(cache.pending.size, 0, 'A stale callback cannot resurrect a disposed frame loop');
 assert.deepEqual(cache.calls.dispose, { scene: 1, boot: 1, overview: 1, player: 1, effects: 1, trackFocus: 1 }, 'Repeated disposal releases each resource exactly once');
+assert.equal(cache.calls.headerDisconnect, 1, 'Header measurement stops once on permanent disposal');
 
 const loading = fixture({ ready: false });
 loading.resumePage();
@@ -265,6 +272,26 @@ await latePreparingRequest;
 assert.equal(latePreparingLibrary.calls.received, 0, 'A response also checks readiness after awaiting the local service');
 assert.equal(latePreparingLibrary.timers.size, 0);
 
+const startupDependencies = `
+    let graphicsSwitching=false,graphicsRecoveryFailed=false,libraryRefreshPending=false;
+    let workingQuality,workingPreset,workingMode,browseDrag; const mountMusicDragNavigation=()=>({tick(){},cancel(){},dispose(){}}),finishBrowseDrag=()=>{};
+    const playlistLibrary = { localSort: { key: 'default', direction: 'ascending' } };
+    const coverResources = { enabled: false, setPhase() {}, warm() {}, stats: () => ({}) };
+    const playlistCoverPreload = { setPaused() {}, setAccount() {}, stats: () => ({}) };
+    const pushCacheSettings = async () => {}, platformLogins = {}, loginHiddenProviders = new Set();
+    const loggedInProviders = () => [];
+    const initTransportVolume = () => {}, syncTrayPreference = () => {}, updateCenter = { start() {} };
+    const warmFirstScreenCovers = () => {}, warmAllCovers = () => {}, preloadNearbyCovers = () => {};
+    const detectAutomaticQuality = () => {}, savePrefs = () => {}, applyFrameRate = () => {}, resumeBackgroundAfterBoot = () => {};
+    const entry = undefined, accountStates = {}, onlineAccountChanged = () => {};
+    const beginStartupPreparation = async () => {}, startupGraphics = undefined;
+    const prepareStartupPlaylists = () => wait('playlist'), musicPlatforms = {};
+    let startupAccountsPending = true, startupWarning = '', bootDoneWatchdog;
+    const window = { setTimeout: () => 1 };
+    const runStartupStage = (_label, run) => run();
+    const showStartupFailure = message => { throw new Error(message); };
+`;
+
 function startupFixture({ waitAt, native = false, hidden = false } = {}) {
   const gate = deferred(), reached = deferred(), pending = new Map(), calls = [];
   const wait = async stage => {
@@ -276,15 +303,19 @@ function startupFixture({ waitAt, native = false, hidden = false } = {}) {
     if (!elements.has(selector)) elements.set(selector, { dataset: {}, setAttribute() {}, remove() { calls.push('remove-loading'); } });
     return elements.get(selector);
   };
-  const compiled = new Function('wait', 'calls', 'pending', '$', 'native', 'hidden', `
+  const compiled = new Function('wait', 'calls', 'pending', '$', 'native', 'hidden', 'waitAt', `
+    ${startupDependencies}
+    if (waitAt === 'auth') platformLogins.netease = { status: () => wait('auth') };
+    const accountView = false;
     const navigator = {}, document = { hidden, fonts: { load: async () => {} } };
     const preferences = { arrayMode: 'realistic', theme: 'day', reduced: false, audioBackend: native ? 'coreaudio' : 'browser' };
     const lightingLab = false, location = { search: '' }, selected = 7, sortLabel = { column: '歌手' }, renderQuality = 1;
     const stage = { dataset: {}, classList: { toggle() {}, add() {} } };
     let frameDisposed = false, frameSuspended = false, frameHandle = 0, scene, ready = false;
     const loadLibrary = force => wait(force ? 'library' : 'resume-library'), refreshAudioOutputs = () => wait('audio');
-    const fit = () => {}, updateSelection = () => {}, syncSelectionMotion = () => {}, resetFrameTiming = () => {};
+    const fit = () => {}, updateSelection = () => {}, updateStatus = () => {}, syncSelectionMotion = () => {}, resetFrameTiming = () => {};
     const performance = { now: () => 6000 }, boot = { start: () => calls.push('boot-start') };
+    boot.startScene = () => {};
     const neteaseLogin = { status: async () => {} }, effects = { setScene() {} };
     const showBrowseSurface = () => {}, browseTransition = { hide() {} };
     const albums = [{ id: 'sample' }], stepAlbum = () => {}, mountMusicWheelNavigation = () => {};
@@ -299,13 +330,15 @@ function startupFixture({ waitAt, native = false, hidden = false } = {}) {
     }
     ${productionFunction('start')}
     return { start, dispose: () => { frameDisposed = true; }, state: () => ({ ready, frameHandle }) };
-  `)(wait, calls, pending, $, native, hidden);
+  `)(wait, calls, pending, $, native, hidden, waitAt);
   return { ...compiled, gate, reached, pending, calls };
 }
-for (const waitAt of ['library', 'model', 'prepare', 'audio']) {
+for (const waitAt of ['auth', 'library', 'playlist', 'model', 'prepare', 'audio']) {
   const startup = startupFixture({ waitAt, native: true });
   const starting = startup.start();
   await startup.reached.promise;
+  assert.equal(startup.state().ready, false, `${waitAt} must finish before startup readiness`);
+  assert.ok(!startup.calls.includes('remove-loading'), `${waitAt} cannot release the loading gate`);
   const callsBefore = [...startup.calls];
   startup.dispose();
   startup.gate.resolve();
@@ -316,7 +349,7 @@ for (const waitAt of ['library', 'model', 'prepare', 'audio']) {
 }
 const browserStartup = startupFixture();
 await browserStartup.start();
-assert.deepEqual(browserStartup.calls, ['library', 'construct-scene', 'model', 'configure-scene', 'prepare', 'remove-loading', 'show-archive', 'resume-library'],
+assert.deepEqual(browserStartup.calls, ['library', 'playlist', 'construct-scene', 'configure-scene', 'model', 'configure-scene', 'prepare', 'remove-loading', 'show-archive', 'resume-library'],
   'Browser playback prepares graphics, shows the archive directly, then resumes library polling without initializing native audio');
 assert.equal(browserStartup.pending.size, 1);
 const nativeStartup = startupFixture({ native: true });
@@ -344,11 +377,14 @@ function scanningStartupFixture() {
   let timerId = 0;
   const schedule = (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; };
   const compiled = new Function('warm', 'warming', 'timers', 'pending', 'calls', 'request', '$', 'schedule', `
+    const wait = async () => {};
+    ${startupDependencies}
     const navigator = {}, document = { hidden: false, fonts: { load: async () => {} } };
     const preferences = { arrayMode: 'realistic', sortMode: 'genre', theme: 'day', reduced: false, audioBackend: 'browser' };
     const lightingLab = false, lightingDemo = false, location = { search: '' }, sortLabel = { column: '流派' }, renderQuality = 1;
     const stage = { dataset: {}, classList: { toggle() {}, add() {} } };
     const performance = { now: () => 6000 }, boot = { active: false, start() { this.active = true; } };
+    boot.startScene = () => {};
     const neteaseLogin = { status: async () => {} }, effects = { setScene() {} };
     let frameDisposed = false, frameSuspended = false, frameHandle = 0, scene, ready = false;
     let library = { albums: [], genres: [], scan: { running: false } }, albums = [], genres = [], selected = 0;

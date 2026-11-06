@@ -1,5 +1,5 @@
 // Qishui (汽水音乐) 扫码登录协议适配。
-// 端点依据：passport web SDK 的 get_qrcode / check_qrconnect（实测 2026-10-20）。
+// 端点依据：passport 的 get_qrcode / check_qrconnect 实测。
 //   GET  https://api.qishui.com/passport/web/get_qrcode/?<FIXED>
 //     -> data.token / data.qrcode (data:image/png;base64,...) / data.expire_time
 //     Set-Cookie: passport_csrf_token, passport_csrf_token_default, odin_tt, reg-store-region
@@ -227,8 +227,7 @@ export class QishuiLoginProtocol {
     if (Number(body?.status_code) === 1000016) {
       throw Object.assign(failure('登录状态已失效，请重新登录。', 401), { loginExpired: true });
     }
-    // GetMyInfo（GET /luna/pc/me）的载荷是 **my_info**，不是 user：
-    //   客户端源码 `userState.value.info?.my_info.id` 即取此字段作 user_id。
+      // GET /luna/pc/me 的载荷字段是 **my_info**（不是 user），user_id 取其中的 id。
     const info = body?.my_info ?? body?.data?.my_info ?? {};
     return {
       userId: clean(info.id ?? info.uid ?? info.user_id ?? info.sec_uid).slice(0, 32),

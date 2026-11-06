@@ -7,10 +7,17 @@ type NumberTrack = { from: number; to: number; write: (value: number) => void };
 export class ThemeTransition {
   private readonly colors = new Map<THREE.Color, ColorTrack>();
   private readonly numbers = new Map<object, Map<PropertyKey, NumberTrack>>();
-  private lastTime = performance.now() / 1000;
+  private lastTime: number;
   private elapsed = 0;
 
-  constructor(private readonly duration = 0.65) {}
+  constructor(private readonly duration = 0.65, nowSeconds = performance.now() / 1000) { this.lastTime=nowSeconds; }
+
+  /** GPU replacement keeps the in-flight palette and its original progress. */
+  retarget(from: object, to: object) {
+    const tracks=this.numbers.get(from);if(!tracks)return;
+    this.numbers.delete(from);this.numbers.set(to,tracks);
+    for(const [key,track]of tracks)track.write=value=>{Reflect.set(to,key,value);};
+  }
 
   color(target: THREE.Color, value: THREE.ColorRepresentation) {
     const existing = this.colors.get(target);

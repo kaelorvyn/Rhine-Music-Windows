@@ -67,8 +67,8 @@ export interface MusicTrack {
  * MINFO/N_MINFO 里非占位条目的最高 bitrate（kbps × 1000）。 */
       maxBitrate?: number;
     };
- /** 共享池返回的加密音频解密密钥（QQ/酷我的 mflac/mgg 需要它才能还原
- * 成可播 FLAC）。酷狗等返回明文 flac 时为 undefined。 */
+
+
     ekey?: string | null;
  /** MV identity when the provider exposes one; watch-only in the UI. */
     mv?: { id?: string; url?: string };
@@ -84,7 +84,7 @@ export interface MusicTrack {
  * 上游的真实行为：音质是**单一请求**，服务端 `actualQuality`
  * **自回落**，客户端**不做**降级阶梯 —— 我们对齐这一点。 */
   actualQuality?: string;
- /** 共享池返回的加密音频解密密钥（mflac/mgg 需要它才能还原成可播 FLAC）。 */
+
   ekey?: string | null;
  /** 池子返回的加密容器格式（mflac/mgg/flac/mp3…）。 */
   poolSource?: string;
@@ -97,7 +97,7 @@ export type PlayMode = "order" | "loop" | "repeat-one" | "shuffle" | "shuffle-al
 export interface OnlineSongInfo {
   track: MusicTrack;
   album: { title: string; artist: string; published?: string; company?: string; description?: string };
-  lyrics: { original: string; translated: string; instrumental: boolean; unavailable: boolean; error?: string };
+  lyrics: { wordLines?: import("../scripts/word-lyrics.mjs").WordLine[]; original: string; translated: string; instrumental: boolean; unavailable: boolean; error?: string };
   metadataError?: string;
 }
 

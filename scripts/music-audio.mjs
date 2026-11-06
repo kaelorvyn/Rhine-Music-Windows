@@ -119,7 +119,7 @@ export class AudioDecoder {
   /** 应用设置里的缓存偏好。limitMb 与 location 都可选；返回实际生效的值。 */
   configure({ limitMb, location } = {}) {
     if (Number.isFinite(limitMb) && limitMb >= 64) {
-      this.cacheLimitBytes = Math.round(limitMb) * 1024 * 1024
+      this.cacheLimitBytes = Math.min(16384, Math.max(64, Math.round(limitMb))) * 1024 * 1024
     }
     // 只有传了非空字符串才换目录；空 = 保持默认（dataDir/audio-cache-v041）。
     if (typeof location === 'string' && location.trim()) {
@@ -265,23 +265,23 @@ export class AudioDecoder {
     if (typeof sourceUrl !== 'string' || !/^https?:\/\//.test(sourceUrl)) throw failure('在线音频地址无效', 400)
     const filter = ffmpegEffectsFilter(effects)
     const fx = effectsFingerprint(effects)
-    // 【2026-10-18 修「放原唱出来是 DJ 版」】
-    //
-    // 原来的键是 `url:${identity ?? sourceUrl}`。identity 由调用方传
-    // `${provider}/${id}`，看起来能区分歌曲 —— 但它**只覆盖到「哪一首」，
-    // 不覆盖「这一首的哪一档音质」。共享池对同一个 songId 会返回不同档位
-    // （无损 flac / 母带 mflac / 高品 mp3），而这几档**时长不同**：
-    //
-    //     《可能》原唱     lossless 218s / 41MB
-    //     《可能》母带档   214.9s / 236MB  (192kHz，前 20 秒几乎无声)
-    //
-    // 于是同一个 identity 先后取到两个档位时，第二次会**命中第一次缓存**，
-    // 播放器拿到的是上一档的音频 —— 用户听到「点原唱放出来是另一个版本」。
-    //
-    // 修法：把**实际下发的 URL** 也算进键里。URL 里带着酷我/酷狗的签名和
-    // 文件路径（`/resource/1307392909/trackmedia/F000001RsvMC0VovJA.flac`），
-    // 足以区分同一首歌的不同档位；而签名参数每次会变，所以先剥掉查询串，
-    // 只留路径 —— 路径对同一档位是稳定的，换档就变。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     const identityKey = identity ?? sourceUrl
     const locator = urlPathOf(sourceUrl)
     const key = createHash('sha256').update(`url:${identityKey}:${locator}:pcm-v4${fx ? `:fx-${fx}` : ''}`).digest('hex')

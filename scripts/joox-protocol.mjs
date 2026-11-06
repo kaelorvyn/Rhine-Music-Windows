@@ -1,17 +1,17 @@
-// JOOX unofficial protocol adapter (search-only for now). Evidence first:
-// endpoint recovered from the service v3.6.1 binary (avatar.api.joox.com/
-// commonCgi/search/get?keyword&search_id&type, okhttp UA + iAppStoreChannel
-// header) and probed live 2026-10-12 (probe-joox*.mjs in assets\reference):
-//   search  http://avatar.api.joox.com/commonCgi/search/get?keyword=<kw>
-//           &search_id=&type=0 -> {common:{iRet}, sum,
-//           song_aggregation_list[].item_list[].song_info{songid,songmid,
-//           songname/singername/albumname=Base64(UTF-8), playtime, kbps_map,
-//           subscript=JSON badge list, mv_flag, vid, album_url, url:null}}
-// Playback: song_info.url is null without a JOOX account and the only play
-// resolver inside service is a third-party parsing service (api.liuyunidc.cn)
-// which we deliberately do not integrate. So prepare() refuses honestly and
-// the VIP source fallback plays the song from another provider instead.
-// Unverified/unintegrated: web_lyric lyrics, MV streams, playlists, login.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const failure = (message, status = 400) => Object.assign(new Error(message), { status });
 const clean = value => (value === undefined || value === null ? '' : String(value)).trim();
@@ -85,25 +85,17 @@ export class JooxCatalog {
     const total = Math.max(0, Number(body.sum) || tracks.length);
     return { provider: 'joox', query: keyword, offset, limit: 20, total, hasMore: (page + 1) * 20 < total, tracks };
   }
+
+
+
+
+
   async prepare(value) {
-    // 逐字节对齐 service v3.6.2 src\platform\joox.rs:
-    // URL: http://api.liuyunidc.cn/baimusic/jooxalljxapi.php
-    // 密钥: jooxsecret123456
-    // UA: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0
     const songid = clean(value).replace(/^joox-/, '');
     if (!songid) throw failure('无效的 JOOX 歌曲标识。', 400);
-    const params = new URLSearchParams({ songmid: songid, quality: '320', secret: 'jooxsecret123456' });
-    const response = await this.doFetch(`http://api.liuyunidc.cn/baimusic/jooxalljxapi.php?${params}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
-        Accept: '*/*',
-      },
-    });
-    const body = await response.json().catch(() => null);
-    const url = body?.url ?? body?.data?.url ?? body?.audio_url;
-    if (!url) throw failure('JOOX 解析服务未返回播放地址（可尝试换源）。', 403);
-    return { audioUrl: url, format: 'MP3' };
+    throw failure('JOOX 播放交给共享音源解析。', 403);
   }
+
   async songInfo() {
     throw failure('JOOX 歌曲详情与歌词尚未接入，仅提供搜索。', 501);
   }

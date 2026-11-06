@@ -1,7 +1,7 @@
 import type { MusicTrack, OnlineSearchResults } from "./music-types";
 import { escapeHtml as esc } from "./html";
 import "./online-music-search.css";
-import { NeteaseLogin } from './netease-login';
+import { NeteaseLogin, type PlatformLogin } from './netease-login';
 import { musicPlatforms, type MusicProvider } from './music-platform';
 import { fetchOnline } from './online-debug';
 import { qualityBadges, qualityTierLabels } from './quality-tier.ts';
@@ -10,7 +10,7 @@ import { MvPlayer } from './mv-player.ts';
 
 /** 搜索平台页签 = 上游的 4 个搜索平台（网易云/QQ/酷我/酷狗），**没有「全部」**。
  * 顺序与文案全部取自 online-search-core（那边对齐了 exe 的 iC 数组）。 */
-type SearchTab = Exclude<MusicProvider, 'bodian' | 'joox'>;
+type SearchTab = MusicProvider;
 const tabNames: Record<SearchTab, string> = searchSourceNames;
 
 /** 音质徽章的类名（与既有样式表一致）：
@@ -52,9 +52,8 @@ export class OnlineMusicSearch {
   private overrides = new Map<string, MusicTrack>();
   private query = "";
   private offset = 0;
- /** 默认平台 = 酷我。上游的 searchSource 初值就是 `useState("Kuwo")`
- * （`[gn,as]=m.useState("Kuwo")`），页签顺序才是 网易云/QQ/酷我/酷狗。 */
-  private tab: SearchTab = 'kuwo';
+  /** 默认平台 = 网易云音乐（按用户要求，原为酷我）。 */
+  private tab: SearchTab = 'netease';
   private sort: 'hot' | 'time' = 'hot';
   private container?: HTMLElement;
   private mv = new MvPlayer();
@@ -64,8 +63,8 @@ export class OnlineMusicSearch {
  /** 每次行重画后的通知（music-app 用来回填 ♥ 的收藏态）。 */
   onRender?: () => void;
   private playback: { id?: string; playing: boolean; loading: boolean } = { playing: false, loading: false };
-  constructor(private play: (track: MusicTrack, queue: MusicTrack[]) => void, private login = new NeteaseLogin()) {}
-  setLogin(login: NeteaseLogin) {
+  constructor(private play: (track: MusicTrack, queue: MusicTrack[]) => void, private login: PlatformLogin = new NeteaseLogin()) {}
+  setLogin(login: PlatformLogin) {
     if (this.login === login) return;
     this.dispose(); this.login = login; this.reset();
   }
@@ -99,15 +98,14 @@ export class OnlineMusicSearch {
   }
   mount(container: HTMLElement) {
     this.dispose(); this.container = container;
- // 平台页签 = 上游的 4 个搜索平台，**没有「全部」**。。
     const tabs = providerOrder.map(tab =>
       `<button type="button" role="tab" data-source-tab="${tab}" aria-selected="${this.tab === tab}">${tabNames[tab as SearchTab]}</button>`).join('');
- // 对齐上游 search-platform-row：平台切换行 + 人气/最新 排序切换只在搜出结果后出现。
+ // 排序仍在发起搜索后显示。
     const order = `<div class="online-song-order" role="tablist" aria-label="歌曲排序"${this.query ? '' : ' hidden'}>
         <button type="button" role="tab" data-song-order="hot" aria-selected="${this.sort === 'hot'}">人气</button>
         <button type="button" role="tab" data-song-order="time" aria-selected="${this.sort === 'time'}">最新</button>
       </div>`;
-    container.innerHTML = `<form class="online-search-form"><input id="online-search" class="album-search" type="search" maxlength="100" value="${esc(this.query)}" placeholder="搜索歌曲、歌手或专辑…" aria-label="搜索歌曲" required><button class="primary-button" type="submit">搜索 ↗</button></form><div class="online-platform-row"><div class="online-source-tabs" role="tablist" aria-label="音乐平台"${this.query ? '' : ' hidden'}>${tabs}</div>${order}</div><p class="online-search-status" role="status" aria-live="polite"></p><div class="online-search-results"></div><div class="online-search-pages"></div>`;
+    container.innerHTML = `<form class="online-search-form"><input id="online-search" class="album-search" type="search" maxlength="100" value="${esc(this.query)}" placeholder="搜索歌曲、歌手或专辑…" aria-label="搜索歌曲" required><button class="primary-button" type="submit">搜索 ↗</button></form><div class="online-platform-row"><div class="online-source-tabs" role="tablist" aria-label="音乐平台">${tabs}</div>${order}</div><p class="online-search-status" role="status" aria-live="polite"></p><div class="online-search-results"></div><div class="online-search-pages"></div>`;
  // 搜索页不再放网易云扫码登录块（用户要求移除）：登录走设置页的平台登录，
  // 搜索框上方保持干净，和上游的搜索页一致。
     container.querySelector("form")!.addEventListener("submit", event => {
@@ -178,6 +176,7 @@ export class OnlineMusicSearch {
   private render() {
     const container = this.container;
     if (!container?.isConnected) return;
+    container.querySelector<HTMLElement>('.online-platform-row')!.hidden = !this.query;
     const results = container.querySelector<HTMLElement>(".online-search-results")!;
     const pages = container.querySelector<HTMLElement>(".online-search-pages")!;
     const status = container.querySelector<HTMLElement>(".online-search-status")!;
@@ -186,9 +185,6 @@ export class OnlineMusicSearch {
     container.querySelectorAll<HTMLButtonElement>('[data-song-order]').forEach(button =>
       button.setAttribute('aria-selected', String(button.dataset.songOrder === this.sort)));
     container.querySelector<HTMLElement>('.online-song-order')?.classList.toggle('is-time-active', this.sort === 'time');
- // 对齐上游 search-platform-row：只有搜索过、有查询词时才显示平台切换行。
-    const tabs = container.querySelector<HTMLElement>('.online-source-tabs');
-    if (tabs) tabs.hidden = !this.query;
     const order = container.querySelector<HTMLElement>('.online-song-order');
     if (order) order.hidden = !this.query;
     if (!this.rows.length && !this.query) { results.innerHTML = '<div class="no-results"></div>'; pages.innerHTML = ""; return; }
@@ -262,6 +258,8 @@ export class OnlineMusicSearch {
     this.controller?.abort(); const controller = this.controller = new AbortController();
     const generation = ++this.generation; this.query = query; this.offset = offset;
     const container = this.container; if (!container) return;
+    // 默认平台失败时，也必须能切到免登录的平台。
+    this.render();
     const status = container.querySelector<HTMLElement>(".online-search-status")!;
  // 上游一次只搜一个平台，没有「全部」聚合。
     status.textContent = `正在搜索${musicPlatforms[this.tab]}…`; container.setAttribute("aria-busy", "true");

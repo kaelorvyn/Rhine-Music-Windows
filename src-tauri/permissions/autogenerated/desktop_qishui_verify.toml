@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-qishui-verify"
+description = "Enables the desktop_qishui_verify command without any pre-configured scope."
+commands.allow = ["desktop_qishui_verify"]
+
+[[permission]]
+identifier = "deny-desktop-qishui-verify"
+description = "Denies the desktop_qishui_verify command without any pre-configured scope."
+commands.deny = ["desktop_qishui_verify"]

@@ -1,7 +1,7 @@
 /**
  * 键盘操作绑定：同一枚键按「单击 / 双击 / 长按」三种方式，各管一件事。
  *
- * 为什么要分组：`←` 一个键既要「上一首」（单击）、又要「回退 15 秒」（双击）、
+ * 为什么要分组：`←` 一个键既要「上一个歌单」（单击）、又要「回退 15 秒」（双击）、
  * 还要「2 倍速」（长按）—— 三者可以共用，因为它们的触发方式不同。但
  * 「上一个歌单」和「下一个歌单」都是单击，它们撞键就分不清了。所以只在
  * 「同一种操作方式」内部查重，跨组共用一律允许。
@@ -32,10 +32,10 @@ export const KEY_ACTION_LABELS: Record<KeyAction, string> = {
 };
 
 export const DEFAULT_KEY_BINDINGS: KeyBindings = {
-  playlistPrevious: "ArrowUp",
-  playlistNext: "ArrowDown",
-  songPrevious: "ArrowLeft",
-  songNext: "ArrowRight",
+  playlistPrevious: "ArrowLeft",
+  playlistNext: "ArrowRight",
+  songPrevious: "ArrowUp",
+  songNext: "ArrowDown",
   seekBackward: "ArrowLeft",
   seekForward: "ArrowRight",
   boostPrimary: "ArrowLeft",

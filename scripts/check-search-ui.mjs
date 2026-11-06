@@ -6,7 +6,7 @@
 //
 // 两条规则：
 // 1. 用户不能自己换源 —— per-row 换源菜单，音源由后端决定。
-// 2. 平台切换行只在搜索出结果之后出现（search-platform-row）。
+// 2. 打开搜索即可选择平台；免登录搜索不依赖默认平台先成功。
 import { chromium } from 'playwright';
 import { createMusicServer } from './music-server.mjs';
 import fs from 'node:fs/promises';
@@ -112,17 +112,15 @@ try {
  // The search panel keeps the 网络搜索/本地音乐 switch and lists every source as a tab.
   await app.locator('[data-action="search"]').click();
   assert.equal(await app.locator('[data-search-source="network"]').getAttribute('aria-pressed'), 'true', 'network search stays the default');
- // search-platform-row：平台切换行只在搜索出结果之后出现，
- // 搜索框底下不放任何平台选择。
   assert.equal(await app.locator('.online-source-tabs').isHidden(), true,
-    '：搜索之前不显示平台切换行');
+    '搜索之前隐藏平台选择');
   assert.deepEqual(await app.locator('[data-source-tab]').allTextContents(),
-    ['网易云音乐', 'QQ音乐', '酷我音乐', '酷狗音乐'],
-    '平台页签 = 4 个搜索平台，文案用 exe 的 display 原文（顺序对齐 iC 数组）');
+    ['网易云音乐', 'QQ音乐', '酷我音乐', '酷狗音乐', 'JOOX', '汽水音乐'],
+    '平台页签 = 6 个搜索平台，文案用 exe 的 display 原文（顺序对齐上游）');
   assert.equal(await app.locator('[data-source-tab="all"]').count(), 0,
     '：没有「全部」聚合页签');
-  assert.equal(await app.locator('[data-source-tab="kuwo"]').getAttribute('aria-selected'), 'true',
-    '默认平台是酷我（searchSource 初值 useState("Kuwo")）');
+  assert.equal(await app.locator('[data-source-tab="netease"]').getAttribute('aria-selected'), 'true',
+    '默认平台是网易云音乐');
 
  // 单平台搜索：一次只请求一个平台，结果保持**平台原序**。
  // `search_songs(keyword,source,page,pageSize)` 就是这个形态，
@@ -132,11 +130,15 @@ try {
   await app.locator('.online-search-results .unified-song').first().waitFor({ timeout: 60000 });
   assert.equal(await app.locator('.online-source-tabs').isHidden(), false,
     '：搜索之后才显示平台切换行');
-  assert.deepEqual([...new Set(searchCalls.slice(searchesBefore).map(call => call.provider))], ['kuwo'],
-    '只打一个平台：没有「全部」聚合的 5 路并发');
- // 酷我目录只有 1 首（青花瓷）—— 不再是「5 平台去重成 6 条」。
-  assert.equal(await app.locator('.online-search-results .unified-song').count(), 1,
-    '酷我页签只显示酷我自己的结果');
+  assert.deepEqual([...new Set(searchCalls.slice(searchesBefore).map(call => call.provider))], ['netease'],
+    '只打一个平台：没有「全部」聚合的并发');
+  // 网易云目录 4 首（103/104 等）—— 默认页签直接呈现这一家。
+  assert.equal(await app.locator('.online-search-results .unified-song').count(), 4,
+    '网易云页签只显示网易云自己的结果');
+
+  // 默认页签已改为网易云；下面的断言按酷我的合成目录走，先切到酷我页签。
+  await app.locator('[data-source-tab="kuwo"]').click();
+  await app.locator('.online-search-results .unified-song').first().waitFor({ timeout: 60000 });
  // 行结构：序号 | 封面 | 标题+徽章 | 歌手 | 专辑 | 时长 | 操作。
   const kuwoRow = app.locator('.online-search-results .unified-song').first();
   assert.equal(await kuwoRow.locator('.unified-song-index').textContent(), '01',

@@ -70,7 +70,7 @@ export function resizeQuality(
     renderer.capabilities.maxTextureSize,
   );
   const presentation = nativePresentation ? renderDimensions(
-    { ...quality, scale: 100, pixelRatio: 3, arrayBudget: 0, pixelBudget: 8_294_400 }, width, height,
+    { ...quality, scale: 100, pixelRatio: quality.pipeline === 'lowIntegrated' ? 1 : 3, arrayBudget: 0, pixelBudget: quality.pipeline === 'lowIntegrated' ? 2_073_600 : 8_294_400 }, width, height,
     host.getBoundingClientRect().width / width, devicePixelRatio,
     renderer.capabilities.maxTextureSize,
   ) : dimensions;

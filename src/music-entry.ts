@@ -15,7 +15,7 @@ const MAX_STEP = 0.05;
  * 进入应用动画 · 外层 HUD。
  * 这是从预览版压缩 JS「lc HUD 186860..191500」移植的 class lc：
  * 整页 <section class="rhine-loading"> 的结构、状态行、跳过 / 重试按钮、
- * 帧循环与可见性处理都保持原样；对外 API 是 setStatus / completeLoading / skip / dispose / active。
+ * 准备页先持有交互；缓存状态决定胶片是等待准备，还是与准备同时播放。
  */
 export class MusicEntry {
   private readonly content: HTMLElement;
@@ -35,9 +35,11 @@ export class MusicEntry {
   private previousInert = false;
   private opener: HTMLElement | null = null;
   private waiters: (() => void)[] = [];
+  private readonly reduced: boolean;
 
-  constructor(content: HTMLElement) {
+  constructor(content: HTMLElement, options: { reduced?: boolean } = {}) {
     this.content = content;
+    this.reduced = Boolean(options.reduced);
     this.root = document.createElement("section");
     this.root.className = "rhine-loading";
     this.root.dataset.state = "playing";
@@ -60,6 +62,7 @@ export class MusicEntry {
         </section>
       </div>
       <div class="opening-hold"><strong>RHINE MUSIC</strong><span>MUSIC ARCHIVE</span></div>
+      <p class="opening-notice">首次编译与准备图形资源，可能需要较长时间，请稍候。</p>
       <p class="opening-status" role="status">正在准备音乐库…</p>
       <button type="button" class="opening-skip" aria-label="跳过开场"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12M13 6l6 6-6 6"/></svg></button>
       <button type="button" class="opening-retry" hidden>重新加载</button>`;
@@ -85,7 +88,16 @@ export class MusicEntry {
     this.observer.observe(this.root);
     document.addEventListener("visibilitychange", this.resetClock);
     this.begin();
-    if (new URLSearchParams(location.search).get("scene") === "archive") this.skip();
+  }
+
+  /** A cache record only chooses when the film starts; it never opens the archive. */
+  startPreparation(cached: boolean): void {
+    if (this.disposed || this.finished || this.root.dataset.state !== "preparing") return;
+    this.root.dataset.firstPreparation = String(!cached);
+    if (cached && !this.reduced) {
+      this.startFilm();
+      if (new URLSearchParams(location.search).get("scene") === "archive") this.skip();
+    }
   }
 
   get active(): boolean {
@@ -94,6 +106,7 @@ export class MusicEntry {
 
   /** 底部状态行文案（"正在准备音乐库…" 之类）。 */
   setStatus(text: string): void {
+    if (this.root.dataset.state === "error") return;
     this.status.textContent = text;
   }
 
@@ -106,19 +119,32 @@ export class MusicEntry {
     const settled = new Promise<void>((resolve) => {
       this.waiters.push(resolve);
     });
+    if (this.root.dataset.state === "error") return settled;
     this.ready = true;
-    if (this.elapsed >= ENTRY_DURATION) this.finish();
+    this.status.textContent = "";
+    if (this.reduced) this.finish();
+    else if (this.root.dataset.state === "preparing") {
+      this.startFilm();
+      if (new URLSearchParams(location.search).get("scene") === "archive") this.skip();
+    } else if (this.elapsed >= ENTRY_DURATION) this.finish();
     return settled;
   }
 
   /** 跳过开场（按钮 / Enter / Esc / ?scene=archive 都走这里）。 */
   skip(): void {
-    this.finish();
+    if (this.root.dataset.state !== "playing") return;
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
+    this.elapsed = ENTRY_DURATION;
+    if (this.ready) this.finish();
+    else this.root.dataset.state = "waiting";
   }
 
   /** 载入失败：切到 error 态，露出「重新加载」按钮。 */
   fail(message: string): void {
     if (this.disposed || this.finished) return;
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
     this.root.dataset.state = "error";
     this.status.textContent = message;
     this.retryButton.hidden = false;
@@ -136,7 +162,7 @@ export class MusicEntry {
     if (!this.suspended || this.disposed || this.finished) return;
     this.suspended = false;
     this.lastTime = undefined;
-    if (!this.frame) this.frame = requestAnimationFrame(this.tick);
+    if (!this.frame && this.root.dataset.state === "playing") this.frame = requestAnimationFrame(this.tick);
   }
 
   dispose(): void {
@@ -158,16 +184,23 @@ export class MusicEntry {
     this.opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.content.inert = true;
     this.root.hidden = false;
-    this.root.dataset.state = "playing";
+    this.root.dataset.state = "preparing";
+    this.root.dataset.firstPreparation = "true";
     this.retryButton.hidden = true;
     this.elapsed = 0;
     this.lastTime = undefined;
     this.finished = false;
     this.ready = false;
     this.fit();
-    this.film.update(0);
     this.root.focus({ preventScroll: true });
-    this.frame = requestAnimationFrame(this.tick);
+  }
+
+  private startFilm(): void {
+    this.root.dataset.state = "playing";
+    this.elapsed = 0;
+    this.lastTime = undefined;
+    this.film.update(0);
+    if (!this.suspended && !this.frame) this.frame = requestAnimationFrame(this.tick);
   }
 
   /** 按 1920×1080 的舞台等比缩放，并给 CSS 传 --opening-width 之类的变量。 */
@@ -189,7 +222,7 @@ export class MusicEntry {
 
   private readonly tick = (time: number): void => {
     this.frame = 0;
-    if (this.disposed || this.finished || this.suspended || this.root.dataset.state === "error") {
+    if (this.disposed || this.finished || this.suspended || this.root.dataset.state !== "playing") {
       return;
     }
     if (!document.hidden && this.lastTime !== undefined) {

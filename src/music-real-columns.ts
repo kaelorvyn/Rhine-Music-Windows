@@ -123,6 +123,13 @@ export class MusicRealColumns {
     this.selected = { lane: cell.lane, row };
   }
 
+  follow(cell: ArchiveCell) {
+    const lane=Math.round(cell.lane);if(!this.validLane(lane))return;
+    const column=this.columns[lane],row=Math.max(12,Math.min(11+column.count,cell.row));
+    column.row.retarget(row);column.row.value=row;column.row.velocity=0;
+    this.columns.forEach((item,index)=>item.activity.retarget(Number(index===lane)));
+    this.selected={lane,row:Math.round(row)};
+  }
   update(dt: number, reduced: boolean) {
     for (const column of this.columns) {
       column.row.update(dt, reduced);

@@ -21,8 +21,8 @@ export const defaultDownloadDirectory = () => {
   try { return path.join(os.homedir(), 'Music'); } catch { return ''; }
 };
 export const namingPatterns = ['{artist} - {title}', '{title} - {artist}', '{title}'];
-// 下载音质档位 —— 7 级枚举（Standard→High→Lossless→HiRes→HiFi→Surround→Master）。
-// 这个值会原样透传给共享池的 /api/proxy/music 作为 quality 参数。
+
+
 export const qualityLevels = ['standard', 'high', 'lossless', 'hires', 'hifi', 'surround', 'master'];
 const cleanName = value => String(value ?? '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 /**

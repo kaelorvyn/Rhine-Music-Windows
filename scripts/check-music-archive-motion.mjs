@@ -238,7 +238,8 @@ function navigationFixture(mode = 'filled', reduced = false, speed = 1) {
   };
   sceneHost.musicArchiveMotion.observe(springs(), goals(), rates);
   const api = new Function('records', 'archiveColumns', 'columnFiles', 'fileLocation', 'fileAtCell', 'nearestOccurrence', 'wrap', 'scene', 'AlbumPresentation', 'arrayMode', transpile(`
-    let selected = 0, libraryRebuilding = false, libraryIntent;
+    let selected = 0, libraryRebuilding = false, libraryIntent, browseDrag;
+    const graphicsSwitching=false,graphicsRecoveryFailed=false,startupAccountsPending=false,preloadNearbyCovers=()=>{};
     const ready = true, boot = { active: false };
     const preferences = { rememberColumnPosition: true, arrayMode };
     const columnMemory = new Map(archiveColumns.map((name, lane) => [name, records[columnFiles(lane)[0]].id]));

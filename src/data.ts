@@ -26,12 +26,14 @@ export let slotStride = 32;
 export let playlistRows: string[] = [];
 let playlistCells = new Map<string, number>();
 let playlistLengths: number[] = [];
+const playlistTemplates = new Map<number, MusicAlbum>();
+export function playlistTemplate(index: number) { return playlistTemplates.get(index); }
 let filesByColumn = archiveColumns.map((name) => records.flatMap((record, index) => record.category === name ? [index] : []));
 
 /** Replace the view model atomically; audio files and their metadata stay intact. */
 export function setMusicAlbums(albums: MusicAlbum[], genres: MusicGenre[] = [], sortMode: MusicSortMode = "genre") {
   musicLibrary = true;
-  playlistRows = []; playlistLengths = []; playlistCells.clear();
+  playlistRows = []; playlistLengths = []; playlistCells.clear(); playlistTemplates.clear();
  // 换墙时必须清掉队列墙状态，否则 fileAtSlot 会拿旧队列去映射当前墙（封面/选中会错）。
   playbackCards = [];
   const ordered = orderMusicAlbums(albums, sortMode);
@@ -114,10 +116,19 @@ export function setPlaylistAlbums(albums: MusicAlbum[], names: string[]) {
   filesByColumn = archiveColumns.map(() => []);
   records.forEach((record, index) => {
     const cell = record.album!.playlistCell!;
-    playlistLengths[cell.playlistIndex] = Math.max(1, cell.total);
+    playlistLengths[cell.playlistIndex] = Math.max(0, cell.total);
+    if (!playlistTemplates.has(cell.playlistIndex)) playlistTemplates.set(cell.playlistIndex, record.album!);
     const lane = cell.playlistIndex + 2, row = cell.songIndex + 12;
     playlistCells.set(`${lane}:${row}`, index); filesByColumn[lane].push(index);
   });
+}
+/** Logical playlist geometry is independent of downloaded song pages. */
+export function playlistPosition(lane: number, row: number) {
+  if (!playlistRows.length || !Number.isInteger(lane) || !Number.isInteger(row)) return undefined;
+  const playlistIndex = ((lane - 2) % playlistRows.length + playlistRows.length) % playlistRows.length;
+  const total = playlistLengths[playlistIndex] || 0;
+  if (!total) return undefined;
+  return { playlistIndex, songIndex: ((row - 12) % total + total) % total, total };
 }
 export function playlistFile(lane: number, row: number) {
   if (!playlistRows.length || !Number.isInteger(lane) || !Number.isInteger(row)) return -1;

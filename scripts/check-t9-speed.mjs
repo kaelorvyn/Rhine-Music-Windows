@@ -27,8 +27,8 @@ const POOL_HIT_ID = '1860327'
 const POOL_MISS_ID = '1'
 
 const t0 = performance.now()
-// 验收要量真实链路：默认用真实数据目录（里面有共享池密钥），别用空临时目录。
-// 想量“无密钥”的降级表现时：MUSIC_DATA_DIR=$(mktemp -d) node scripts/check-t9-speed.mjs
+
+
 const dataDir = process.env.MUSIC_DATA_DIR ?? path.join(os.homedir(), 'AppData', 'Local', 'local.rhine.music.windows', 'music-data');
 await fs.mkdir(dataDir, { recursive: true });
 const { server } = await createMusicServer({ dataDir, autoScan: false })

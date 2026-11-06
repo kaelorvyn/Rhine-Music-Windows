@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { QQLoginSession, qqLoginUrl } from './qq-login-session.mjs';
 import { validBodianCredential } from './bodian-protocol.mjs';
 import { validKugouCredential } from './kugou-protocol.mjs';
+import { validQishuiCredential } from './qishui-protocol.mjs';
 
 const failure = (message, status = 502) => Object.assign(new Error(message), { status });
 const clean = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 120) : '';
@@ -18,6 +19,10 @@ export function validPlatformCredential(provider, value) {
   if (!value || typeof value !== 'object') return false;
   if (provider === 'bodian') return validBodianCredential(value);
   if (provider === 'kugou') return validKugouCredential(value);
+  if (provider === 'qishui') return validQishuiCredential(value);
+  if (provider === 'kuwo') return !Array.isArray(value)
+    && typeof value.uid === 'string' && /^[1-9]\d{0,19}$/.test(value.uid)
+    && typeof value.sid === 'string' && /^[A-Za-z0-9_.%=-]{1,4096}$/.test(value.sid);
   return provider === 'qq'
     && /^[1-9]\d{0,19}$/.test(value.musicid) && typeof value.musickey === 'string' && /^[A-Za-z0-9_=-]{8,4096}$/.test(value.musickey) && (value.loginType === undefined || [1, 2].includes(value.loginType))
       && (value.strMusicid === undefined || /^[1-9]\d{0,19}$/.test(value.strMusicid))
@@ -57,14 +62,16 @@ function qqResponse(result, block, operation) {
 
 /** Fixed HTTPS endpoints only; no evaluation of upstream callback JavaScript. */
 export class PlatformLoginProtocols {
-  constructor(provider, fetcher = fetch) { if (provider !== 'qq') throw new Error('Unsupported login protocol'); this.provider = provider; this.fetcher = fetcher; this.active = 0; }
-  async request(url, { signal, method = 'GET', body, headers = {}, image = false, maxBytes = 524288, withHeaders = false, manual = false } = {}) {
+  constructor(provider, fetcher = fetch) { if (!['qq', 'kuwo'].includes(provider)) throw new Error('Unsupported login protocol'); this.provider = provider; this.fetcher = fetcher; this.active = 0; }
+  async request(url, { signal, method = 'GET', body, headers = {}, image = false, maxBytes = 524288, withHeaders = false, manual = false, timeoutMs = 12000 } = {}) {
     const parsed = new URL(url);
-    if (parsed.protocol !== 'https:' || !hosts.has(parsed.hostname) || parsed.port || parsed.username || parsed.password) throw failure('不支持的登录服务地址。');
+    const allowed = this.provider === 'kuwo' ? new Set(['open.weixin.qq.com', 'lp.open.weixin.qq.com', 'i.kuwo.cn', 'www.kuwo.cn', 'vip1.kuwo.cn', 'nplserver.kuwo.cn']) : hosts;
+    if (parsed.protocol !== 'https:' || !allowed.has(parsed.hostname) || parsed.port || parsed.username || parsed.password) throw failure('不支持的登录服务地址。');
     if (this.active >= (this.limit || 2)) throw failure('平台服务正忙，请稍后重试。', 429);
     this.active++;
     try {
-      const response = await this.fetcher(parsed, { method, body, headers: { 'User-Agent': userAgent, ...headers }, redirect: manual ? 'manual' : 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) });
+      const timeout = AbortSignal.timeout(Math.min(35000, Math.max(1000, timeoutMs)));
+      const response = await this.fetcher(parsed, { method, body, headers: { 'User-Agent': userAgent, ...headers }, redirect: manual ? 'manual' : 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       if (!(response.ok || manual && [301,302,303,307,308].includes(response.status))) throw failure(
         response.status === 401 ? '平台未授权本次请求，请检查登录状态。' : response.status === 403 ? '平台拒绝了本次请求。' : response.status === 429 ? '平台请求过于频繁，请稍后重试。' : '平台服务暂时不可用。',
         response.status >= 400 && response.status < 500 ? response.status : 502,

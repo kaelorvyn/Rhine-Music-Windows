@@ -60,6 +60,7 @@ function fixture({ dirtyTiles = 432, compileGate, coverGate, music = true, loade
       return { settled: dirty === 0 };
     },
     getStats: () => ({ dirtyTiles: dirty }),
+    prepareFrame() {},
     flushUploads(renderer, maximum) {
       assert.equal(renderer, instance.renderer);
       const count = Math.min(maximum, dirty);
@@ -71,11 +72,17 @@ function fixture({ dirtyTiles = 432, compileGate, coverGate, music = true, loade
   };
   const instance = {
     disposed: false, loaded, model, scene, camera, covers: coverState,
+    standardInstances:[],lowInstances:[],contacts:undefined,
+    beginMusicIntro() {}, cells: [], actualCell: () => true, recordAtCell: () => undefined,
     container: { dataset: {} }, labelTexture: label, outgoing: [{ group: model }],
     light: { shadow: { dispose: () => calls.push("shadow.dispose") } },
     renderer: {
+      target: null,
+      getRenderTarget() { return this.target; },
+      setRenderTarget(value) { this.target = value; },
       async compileAsync(actualScene, actualCamera) {
         assert.equal(actualScene, scene); assert.equal(actualCamera, camera);
+        assert.equal(this.target, instance.composer.readBuffer, "Compilation uses the real linear scene target");
         assert.equal(model.visible, true, "The selected model participates in compilation even when it was hidden");
         calls.push("compile");
         if (compileGate) await compileGate.promise;
@@ -87,6 +94,7 @@ function fixture({ dirtyTiles = 432, compileGate, coverGate, music = true, loade
       domElement: { remove: () => calls.push("canvas.remove") },
     },
     composer: {
+      readBuffer: {},
       passes: Array.from({ length: 5 }, (_, index) => ({ dispose() { calls.push(`pass${index}.dispose`); } })),
       render: () => calls.push("draw"),
       dispose: () => calls.push("composer.dispose"),
@@ -133,6 +141,7 @@ assert.ok(cold.calls.indexOf("compile") < cold.calls.indexOf("draw"), "Compilati
 assert.deepEqual(cold.calls[0], ["pose", false], "The first pose setup performs no render");
 assert.deepEqual(cold.calls.filter(call => Array.isArray(call) && call[0] === "prepareVisible"), [["prepareVisible", 1200]]);
 assert.equal(cold.instance.model.visible, false, "Compilation restores the model's original visibility");
+assert.equal(cold.instance.renderer.getRenderTarget(), null, "Compilation restores the previous render target");
 assert.deepEqual(cold.calls.at(-1), ["mode", "hidden"], "Prewarm returns the scene to its hidden opening pose");
 const diagnostics = JSON.parse(cold.instance.container.dataset.startupPreparation);
 assert.equal(diagnostics.glError, 0);
@@ -150,6 +159,11 @@ const warm = fixture({ dirtyTiles: 0 });
 await warm.finish(warm.instance.prepareMusicRenderer());
 assert.equal(warm.calls.filter(call => Array.isArray(call) && call[0] === "upload").length, 0);
 assert.equal(warm.calls.filter(call => call === "draw").length, 2);
+const overlappingFilm = fixture({ dirtyTiles: 64 });
+await overlappingFilm.finish(overlappingFilm.instance.prepareMusicRenderer({ duringFilm: true }));
+const filmUploads = overlappingFilm.calls.filter(call => Array.isArray(call) && call[0] === "upload");
+assert.equal(filmUploads.length, 8, "Warm film work is spread across smaller upload turns");
+assert.ok(filmUploads.every(call => call[1] === 8 && call[2] <= 8));
 
 for (const options of [{ music: false }, { loaded: false }]) {
   const skipped = fixture(options);

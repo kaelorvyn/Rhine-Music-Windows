@@ -2972,8 +2972,9 @@ dependencies = [
 
 [[package]]
 name = "rhine-music-windows"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "open",
  "rfd",
  "serde",

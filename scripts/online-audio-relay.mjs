@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Agent } from 'undici';
+import { isIP } from 'node:net';
 import { neteaseMediaUrl } from './netease-online.mjs';
 import { platformMediaUrl } from './platform-media.mjs';
 
@@ -24,6 +25,14 @@ const extraMediaUrl = (provider, value) => {
 };
 const valid = (provider, url) =>
   provider === 'netease' ? neteaseMediaUrl(url) : (platformMediaUrl(provider, url) ?? extraMediaUrl(provider, url));
+const moduleMediaUrl = source => {
+  try {
+    const url = new URL(source);
+    if (url.protocol !== 'https:' || url.port || url.username || url.password || url.hash || isIP(url.hostname.replace(/^\[|\]$/g, '')) ||
+      !url.hostname.includes('.') || /(?:^|\.)(?:localhost|local|internal)$/.test(url.hostname)) return undefined;
+    return url.href;
+  } catch { return undefined; }
+};
 /** Opaque, bounded playback tickets. No arbitrary client URL, account cookies,
  * disk cache, whole-file buffering or external CORS permission is introduced. */
 export class OnlineAudioRelay {
@@ -31,12 +40,12 @@ export class OnlineAudioRelay {
     this.fetcher = fetcher; this.now = now; this.tickets = new Map(); this.active = new Set();
     this.neteaseDispatcher = new Agent({ connect: { family: 4, autoSelectFamily: false } });
   }
-  register(provider, source) {
-    const url = valid(provider, source);
+  register(provider, source, { trustedModule = false } = {}) {
+    const url = trustedModule ? moduleMediaUrl(source) : valid(provider, source);
     if (!url) throw failure('平台音源地址无效。');
     const token = randomBytes(24).toString('hex');
     for (const [key, entry] of this.tickets) if (entry.expires < this.now()) this.tickets.delete(key);
-    this.tickets.set(token, { provider, url, expires: this.now() + 4 * 3600000 });
+    this.tickets.set(token, { provider, url, moduleOrigin: trustedModule ? new URL(url).origin : undefined, expires: this.now() + 4 * 3600000 });
     while (this.tickets.size > 32) this.tickets.delete(this.tickets.keys().next().value);
     return `/api/online/audio/${token}`;
   }
@@ -60,10 +69,11 @@ export class OnlineAudioRelay {
         upstream = await this.fetcher(url, { method: request.method, redirect: 'manual', signal: controller.signal,
           ...(ticket.provider === 'netease' ? { dispatcher: this.neteaseDispatcher } : {}),
           headers: { ...(range ? { Range: range } : {}), 'Accept-Encoding': 'identity',
-            Referer: ticket.provider === 'netease' ? 'https://music.163.com/' : ticket.provider === 'qq' ? 'https://y.qq.com/' : 'https://bodian.kuwo.cn/' } });
+            Referer: ticket.provider === 'netease' ? 'https://music.163.com/' : ticket.provider === 'qq' ? 'https://y.qq.com/' : ticket.provider === 'qishui' ? 'https://qishui.com/' : 'https://bodian.kuwo.cn/' } });
         if (![301, 302, 303, 307, 308].includes(upstream.status)) break;
         const next = upstream.headers.get('location');
-        const resolved = next && valid(ticket.provider, new URL(next, url).href);
+        const target = next && new URL(next, url);
+        const resolved = target && (ticket.moduleOrigin === target.origin ? moduleMediaUrl(target.href) : valid(ticket.provider, target.href));
         await upstream.body?.cancel();
         if (!resolved || redirects === 3) throw failure('音频重定向地址不可用。');
         url = resolved;

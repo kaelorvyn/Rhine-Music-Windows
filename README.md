@@ -2,7 +2,7 @@
 
 把本地音乐放进三维玻璃专辑架里浏览和播放的音乐播放器，Windows 桌面版。
 
-这是 [RonaldDeng/Rhine-Music-Demo](https://github.com/RonaldDeng/Rhine-Music-Demo) V0.4.1 的 **Windows 社区衍生版**，视觉与渲染基础来自 [LBEILC/RhineLabUI](https://github.com/LBEILC/RhineLabUI)。Windows 形态的移植与长期维护者：[DuoJiuBetter](https://github.com/DuoJiuBetter)；本仓库（**0.1.1** 起）由 [kaelorvyn](https://github.com/kaelorvyn) 维护并发布。完整贡献者名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
+这是 [RonaldDeng/Rhine-Music-Demo](https://github.com/RonaldDeng/Rhine-Music-Demo) V0.4.1 的 **Windows 社区衍生版**，视觉与渲染基础来自 [LBEILC/RhineLabUI](https://github.com/LBEILC/RhineLabUI)。Windows 形态的移植与长期维护者：[DuoJiuBetter](https://github.com/DuoJiuBetter)；本仓库（**0.2.0 Premium**）由 [kaelorvyn](https://github.com/kaelorvyn) 维护并发布。完整贡献者名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)。
 
 本仓库与上游作者、各音乐平台及原作品牌方**没有官方合作关系**。
 
@@ -10,7 +10,7 @@
 
 ## 这个版本是什么
 
-**0.1.1**，Windows x64，Tauri + WebView2 桌面程序。
+**0.2.0 Premium**，Windows x64，Tauri + WebView2 桌面程序。
 
 它能在真实曲库上跑起来、能放歌。下面每一条都写了验证到什么程度，没验证的我直接说没验证。
 

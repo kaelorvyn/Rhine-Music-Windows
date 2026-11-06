@@ -3,12 +3,14 @@ import { NeteaseSessionStore } from './netease-session.mjs';
 import { PlatformLoginProtocols, validPlatformCredential } from './platform-login-protocols.mjs';
 import { BodianProtocol } from './bodian-protocol.mjs';
 import { KugouLoginProtocol } from './kugou-protocol.mjs';
+import { QishuiLoginProtocol } from './qishui-protocol.mjs';
+import { KuwoLoginProtocol } from './kuwo-login-protocol.mjs';
 
 const failure = (message, status = 502) => Object.assign(new Error(message), { status });
 /** Each platform owns its encrypted session; the catalog observes account epochs. */
 export class PlatformAuth {
-  constructor({ provider, dataDir, transport = provider === 'bodian' ? new BodianProtocol() : provider === 'kugou' ? new KugouLoginProtocol() : new PlatformLoginProtocols(provider), store = new NeteaseSessionStore(dataDir, provider), now = Date.now }) {
-    if (!['qq', 'bodian', 'kugou'].includes(provider)) throw new Error('Unsupported login provider');
+  constructor({ provider, dataDir, transport = provider === 'bodian' ? new BodianProtocol() : provider === 'kugou' ? new KugouLoginProtocol() : provider === 'qishui' ? new QishuiLoginProtocol() : provider === 'kuwo' ? new KuwoLoginProtocol() : new PlatformLoginProtocols(provider), store = new NeteaseSessionStore(dataDir, provider), now = Date.now }) {
+    if (!['qq', 'bodian', 'kugou', 'qishui', 'kuwo'].includes(provider)) throw new Error('Unsupported login provider');
     this.provider = provider; this.transport = transport; this.store = store; this.now = now;
     this.epoch = 0; this.writes = Promise.resolve();
     this.ready = store.load().then(value => {
@@ -24,7 +26,7 @@ export class PlatformAuth {
     const task = (async () => {
       let profile;
       try { profile = await this.transport.profile(credential); }
-      catch (error) { if (this.provider === 'bodian' && error.status === 401) { await this.invalidateCredential(credential, epoch); return this.snapshot(); } throw error; }
+      catch (error) { if (['bodian', 'kuwo', 'qishui'].includes(this.provider) && error.status === 401) { await this.invalidateCredential(credential, epoch); return this.snapshot(); } throw error; }
       if (epoch === this.epoch && this.credential === credential) this.profile = profile;
       return this.snapshot();
     })();

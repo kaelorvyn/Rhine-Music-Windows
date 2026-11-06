@@ -3,6 +3,7 @@
 // 时长差 >4s 淘汰、弱标题扣分；酷我歌词协议交叉核对自 sout123/KuwoMusicLRC_API：
 // XOR(yeelion) 参数编码、zlib、gb18030、LRCX 逐字/翻译转换。均写为自有实现，
 // 见 NOTICE.md 署名。零新依赖：node:zlib + TextDecoder('gb18030')。
+import { validWords, withWordLyrics } from './word-lyrics.mjs';
 import { inflateSync, deflateSync } from 'node:zlib';
 
 const failure = (message, status = 502) => Object.assign(new Error(message), { status });
@@ -129,12 +130,13 @@ export function convertKuwoLrc(rawLrc) {
   const lines = String(rawLrc).split(/\r\n|\r|\n/);
   const tag = String(rawLrc).match(/\[kuwo:(\d+)\]/);
   const parsed = tag ? parseInt(tag[1], 8) : 0;
-  const offset = Math.trunc(parsed / 10) || 1, offset2 = (parsed % 10) || 1;
+  const validFactors = Math.trunc(parsed / 10) > 0 && parsed % 10 > 0;
+  const offset = validFactors ? Math.trunc(parsed / 10) : 1, offset2 = validFactors ? parsed % 10 : 1;
   const stamp = ms => {
     const t = Math.max(0, Math.round(ms));
     return `[${String(Math.floor(t / 60000)).padStart(2, '0')}:${String(Math.floor((t % 60000) / 1000)).padStart(2, '0')}.${String(t % 1000).padStart(3, '0')}]`;
   };
-  const original = [], translated = [];
+  const original = [], translated = [], wordLines = [];
   let awaitingTranslation = false;
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^\[(\d{2}:\d{2}\.\d{3})\](.*)$/);
@@ -152,13 +154,18 @@ export function convertKuwoLrc(rawLrc) {
     const allZero = words.every(w => w[1] === '0' && w[2] === '0');
     if (!allZero || !awaitingTranslation) {
       original.push(`${stamp(start)}${text}`);
+      const segments = words.map(w => {
+        const begin = start + Math.abs((Number(w[1]) + Number(w[2])) / (offset * 2));
+        return { text: w[3], start: begin / 1000, end: (begin + Math.abs((Number(w[1]) - Number(w[2])) / (offset2 * 2))) / 1000 };
+      });
+      if (validWords(text, segments, start / 1000)) wordLines.push({ time: start / 1000, text, words: segments });
       awaitingTranslation = true;
     } else {
       translated.push(`${stamp(start)}${text}`);
       awaitingTranslation = false;
     }
   }
-  return { original: original.join('\n'), translated: translated.join('\n') };
+  return { original: original.join('\n'), translated: translated.join('\n'), ...(wordLines.length ? { wordLines } : {}) };
 }
 
 // ---------- 各平台歌词口 ----------
@@ -200,7 +207,8 @@ async function providerLyrics(provider, id, query, options) {
   const catalog = options.catalogs?.[provider];
   if (catalog?.songInfo) {
     const info = await catalog.songInfo(id);
-    return info?.lyrics ?? null;
+    if (info?.lyrics?.original || info?.lyrics?.instrumental) return withWordLyrics(info.lyrics);
+    if (!DIRECT[provider]) return info?.lyrics ?? null;
   }
   const direct = DIRECT[provider];
   if (direct) return direct(id, options, query);
@@ -216,7 +224,7 @@ export async function resolveLyrics(query, options = {}) {
   const { fetchImpl = fetch, catalogs = {}, lookupOrder = ['kuwo', 'kugou', 'netease', 'qq'], minScore = 60 } = options;
   const settings = { fetchImpl, catalogs };
   const own = query.provider && query.id ? await providerLyrics(query.provider, query.id, query, settings).catch(error => ({ unavailable: true, original: '', translated: '', instrumental: false, error: error.message })) : null;
-  if (own && (own.instrumental || (own.original && !own.unavailable))) return { ...own, source: query.provider, score: 100 };
+  if (own && (own.instrumental || (own.original && !own.unavailable))) return { ...withWordLyrics(own), source: query.provider, score: 100 };
   for (const provider of lookupOrder) {
     if (provider === query.provider) continue;
     const catalog = catalogs[provider];
@@ -227,7 +235,7 @@ export async function resolveLyrics(query, options = {}) {
       const best = pickBestMatch(query, candidates, minScore);
       if (!best) continue;
       const lyrics = await providerLyrics(provider, best.candidate.track.onlineSource?.id ?? best.candidate.track.id, query, settings);
-      if (lyrics && (lyrics.instrumental || (lyrics.original && !lyrics.unavailable))) return { ...lyrics, source: provider, score: Math.round(best.score) };
+      if (lyrics && (lyrics.instrumental || (lyrics.original && !lyrics.unavailable))) return { ...withWordLyrics(lyrics), source: provider, score: Math.round(best.score) };
     } catch { /* 单源失败继续下一源，全败才如实返回 */ }
   }
   return { original: '', translated: '', instrumental: false, unavailable: true, source: null, error: own?.error };

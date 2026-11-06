@@ -36,7 +36,7 @@ assert.equal(bindingConflict({ ...DEFAULT_KEY_BINDINGS }), undefined, "默认键
 assert.equal(
   bindingConflict({
     ...DEFAULT_KEY_BINDINGS,
-    songPrevious: "ArrowLeft",
+    playlistPrevious: "ArrowLeft",
     seekBackward: "ArrowLeft",
     boostPrimary: "ArrowLeft",
   }),
@@ -69,7 +69,7 @@ assert.deepEqual(
   "存档里有非法键 → 整份回默认",
 );
 assert.deepEqual(
-  sanitizeKeyBindings({ songPrevious: "ArrowUp" }),
+  sanitizeKeyBindings({ songPrevious: "ArrowLeft" }),
   DEFAULT_KEY_BINDINGS,
   "存档撞键 → 整份回默认",
 );
@@ -147,7 +147,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   gestures.keyup(event("ArrowLeft"));
   assert.deepEqual(calls, [], "300ms 内还不执行，先等第二下");
   await wait(360);
-  assert.deepEqual(calls, [["song", -1]], "单击 = 上一首");
+  assert.deepEqual(calls, [["playlist", -1]], "单击 = 上一首");
   gestures.dispose();
 }
 
@@ -204,13 +204,13 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const { gestures, calls } = harness({ active: () => false });
   gestures.keydown(event("ArrowLeft"));
   gestures.keyup(event("ArrowLeft"));
-  assert.deepEqual(calls, [["song", -1]], "无歌时单击不用等 300ms，立刻切");
+  assert.deepEqual(calls, [["playlist", -1]], "无歌时单击不用等 300ms，立刻切");
   gestures.keydown(event("ArrowLeft"));
   gestures.keyup(event("ArrowLeft"));
   await wait(360);
   assert.deepEqual(
     calls,
-    [["song", -1], ["song", -1]],
+    [["playlist", -1], ["playlist", -1]],
     "无歌时连按两下就是切两次，不跳转、不延迟",
   );
   gestures.dispose();
@@ -264,13 +264,13 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     seekBy: (s) => calls.push(["seek", s]),
     boost: (on) => calls.push(["boost", on]),
   });
-  // ← 已经不再管切歌；它还兼着双击/长按，所以仍会被消费，但不该产生切歌动作。
-  gestures.keydown(event("ArrowLeft"));
-  gestures.keyup(event("ArrowLeft"));
+  // ↑ 已经不再管切歌；它还兼着双击/长按，所以仍会被消费，但不该产生切歌动作。
+  gestures.keydown(event("ArrowUp"));
+  gestures.keyup(event("ArrowUp"));
   await wait(360);
   assert.ok(
     !calls.some(([kind]) => kind === "song"),
-    "改键后 ← 不再切歌",
+    "改键后 ↑ 不再切歌",
   );
   gestures.keydown(event("PageUp"));
   gestures.keyup(event("PageUp"));

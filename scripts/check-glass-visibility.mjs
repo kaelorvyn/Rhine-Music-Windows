@@ -139,6 +139,7 @@ test("optional analysis unsupported by driver retains optimized physical renderi
 
 test("asynchronous area samples are bounded, detach depth and reject stale mode results", async () => {
   const f = fixture();
+  f.pass.setMode("debug");
   f.renderer.extensions.has = () => true;
   f.renderer.initRenderTarget = () => {};
   f.renderer.copyTextureToTexture = (source, destination) => {
@@ -159,5 +160,29 @@ test("asynchronous area samples are bounded, detach depth and reject stale mode 
   f.pass.setMode("off"); finish(); await Promise.resolve(); await Promise.resolve();
   assert.equal(f.pass.getStats().areaEstimate, null);
   assert.equal(f.renderer.autoClearDepth, true);
+  f.pass.dispose();
+});
+
+
+test("ordinary rendering never runs diagnostic area readback", () => {
+  const f = fixture(); let analysis = 0;
+  f.pass.analyze = () => { analysis++; };
+  f.pass.frames = 63; f.pass.render(f.renderer, f.read, f.read, .016, false);
+  assert.equal(analysis, 0);
+  assert.equal(f.pass.mainDepth, null, "shared depth capture is opt-in when no existing AO/DOF depth is available");
+  f.pass.setMode('debug'); f.pass.render(f.renderer, f.read, f.read, .016, false);
+  assert.equal(analysis, 1); f.pass.dispose();
+});
+
+
+test('fallback cover depth copies the main attachment without redrawing geometry', () => {
+  const f = fixture(); let copies = 0, sourceDepth;
+  f.pass.captureDepth = true;
+  f.renderer.initRenderTarget = () => {};
+  f.renderer.copyTextureToTexture = (source, target) => { copies++; sourceDepth = source; assert.notEqual(source, target); };
+  f.pass.render(f.renderer, f.read, f.read, .016, false);
+  assert.equal(copies, 1); assert.equal(sourceDepth, f.read.depthTexture);
+  assert.ok(f.pass.mainDepth); assert.notEqual(f.pass.mainDepth, f.read.depthTexture);
+  assert.deepEqual(f.events.filter(item => item.stage).map(item => item.stage), ['depth', 'color']);
   f.pass.dispose();
 });

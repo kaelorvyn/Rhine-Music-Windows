@@ -1,3 +1,4 @@
+import { CoverCache } from './cover-cache.mjs'
 import http from 'node:http'
 import crypto from 'node:crypto'
 import path from 'node:path'
@@ -9,13 +10,15 @@ import { AudioDecoder, NativeAudioOutput } from './music-audio.mjs'
 import { parseEffectsQuery } from './pcm-effects.mjs'
 import { NeteaseOnline } from './netease-online.mjs'
 import { PlatformAuth } from './platform-auth.mjs'
+import { QishuiSmsAuth } from './qishui-sms.mjs'
 import { PlatformCatalog } from './platform-catalog.mjs'
-import { BodianCatalog } from './bodian-catalog.mjs'
+import { QishuiCatalog } from './qishui-catalog.mjs'
 import { KugouCatalog } from './kugou-protocol.mjs'
 import { KuwoCatalog } from './kuwo-protocol.mjs'
 import { JooxCatalog } from './joox-protocol.mjs'
 import { BackupSources, DEFAULT_SOURCES } from './backup-sources.mjs'
 import { DownloadManager } from './downloads.mjs'
+import { withWordLyrics } from './word-lyrics.mjs';
 import { resolveLyrics } from './lyrics.mjs'
 import { LxSourceHost } from './lx-source-host.mjs'
 import { PlatformCoverStore } from './platform-media.mjs'
@@ -23,7 +26,7 @@ import { LocalPlaylists, SORT_KEYS } from './local-playlists.mjs'
 import { SourceLog } from './source-log.mjs'
 import { diagnoseOnlineFailure, onlineDiagnostic, onlineRouteContext } from './online-diagnostics.mjs'
 import { withHardTimeout } from './hard-timeout.mjs'
-import { resolveSongBest as poolResolve, loadFromImportedKey, configureServerLines, resetPoolRuntime, invalidatePoolUrlCache, credentialsReady as poolCredentialsReady, serverLineState as poolLineState, probeServerLinesShared as poolProbeLines, probeUpstreams as poolProbeUpstreams, signingHealth as poolSigningHealth, SERVER_LINES as POOL_SERVER_LINES } from './shared-pool.mjs'
+import { resolveSongBest as poolResolve, loadFromImportedKey, resetPoolRuntime, invalidatePoolUrlCache, credentialsReady as poolCredentialsReady, serverLineState as poolLineState, probeServerLinesShared as poolProbeLines, probeUpstreams as poolProbeUpstreams, signingHealth as poolSigningHealth, SERVER_LINES as POOL_SERVER_LINES } from './shared-pool.mjs'
 import * as poolCredential from './pool-credential.mjs'
 import { decryptOrFallback, cacheKeyFor, QmcError, PLAINTEXT_FALLBACK_QUALITY, isEncrypted, QMC_ERRORS } from './qmc-decrypt.mjs'
 import { OnlineAudioRelay } from './online-audio-relay.mjs'
@@ -165,27 +168,27 @@ function playableQuality (quality) {
   return PLAINTEXT_FALLBACK_QUALITY
 }
 
-/** 【2026-10-18 修「酷狗的歌一首也放不出来」】
- *
- *  用户实测：搜「可能」「霍元甲」「天涯」等，酷狗的结果全部失败，
- *  日志里 32 次酷狗请求 **0 成功**；同期网易云 91%、酷我 64%。
- *
- *  翻日志看到酷狗的 songId 长这样：
- *
- *      baf4fc76ca09250c2713197ff3e3e029.45429610
- *      └────────── hash ──────────────┘ └albumId┘
- *
- *  这是本地用的复合 id（`hash.albumId`），酷狗自己的签名接口认这个；
- *  但共享池（的服务器）转发给酷狗官方时**只认裸 hash**，
- *  带上 `.albumId` 后缀就查不到音源，回一个空 url。
- *
- *  所以在问共享池之前把后缀剥掉。其他平台原样传：
- *   · kuwo   `MUSIC_228908` → 共享池那边由 service-pool 自己剥前缀
- *   · netease/qq 是纯数字，无需处理
- *
- *  ⚠️ 只对共享池这一跳生效。本地解析（kugou-protocol 的 songInfo）
- *  仍用完整 id，它需要 albumId 去拼播放地址。
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 function poolSongId (provider, songId) {
   // `hash.`（albumId 为空时拼出的尾点）先削掉，剩下的交给正则。
   const text = String(songId ?? '').trim().replace(/\.$/, '')
@@ -282,26 +285,26 @@ async function degradeEncrypted (resolved, refetch) {
   return resolved
 }
 
-// 共享池：启动时尝试从 DB 加载凭据（失败则跳过，不影响其他源）
+
 let poolReady = false
 
-// 共享池接受的 7 级音质枚举（低→高），与 exe 内的枚举一致。
+
 const POOL_QUALITIES = ['standard', 'high', 'lossless', 'hires', 'hifi', 'surround', 'master']
 
-// 池子的 7 档 → 各下游音源自己的档位词。
-//
-// 【对齐：单次请求，不发明降级阶梯】
-//  exe 的音质是**单一枚举字符串**（`standard|high|lossless|hires|hifi|
-// surround|master`），只有**一次**请求；档位回落由**服务端**做（池子/平台返回
-// `actualQuality` 告诉客户端实际给了哪档）。客户端**没有**那一串降级阶梯 ——
-// `shared-pool.mjs` 里那个 7 档 for 循环是历史遗留的自造逻辑，这里不用。
-//
-// 各下游的档位词汇（都在本仓库内有据）：
-//   · 池子      `POST /api/proxy/music`，quality 就是这 7 个枚举名（shared-pool.mjs）
-//   · 备用音源  standard|320kmp3|lossless|hires|master|dolby|dts|flac|128kmp3
-//               （backup-sources.mjs 的 QUALITY_MAP，来自二进制原文）
-//   · LX       128k|192k|320k|flac|flac24bit|hires|atmos|atmos_plus|master
-//               （lx-source-loader.mjs 的 QUALITY_TIERS）
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const LX_QUALITY_OF_TIER = {
   standard: '128k', high: '320k', lossless: 'flac',
   hires: 'flac24bit', hifi: 'flac24bit', surround: 'atmos', master: 'master',
@@ -322,33 +325,33 @@ const TIER_OF_LX_QUALITY = {
   flac: 'lossless', flac24bit: 'hires', hires: 'hires',
   atmos: 'surround', atmos_plus: 'surround', master: 'master',
 }
-// ── 共享池凭据：只认「用户导入的密钥文件」 ────────────────────────────
-//
-// 【2026-10-18 重构】以前这里读的是构建期内嵌的凭据，等于把一份 token
-// 明发给所有用户。现在客户端**不带任何凭据**：
-//   · 用户导入 `pool-credential.json` → 共享池启用
-//   · 没导入 → 共享池跳过，只走备用音源（功能降级，但完整可听）
-// 源码因此可以公开，不需要混淆 —— 细节见 pool-credential.mjs 顶部说明。
-//
-// 实际的加载放在 createMusicServer 里（那里才知道 dataDir）。
-// 【2026-10-16 修：池子双线路必须开机探测，否则第一次播放必然失败】
-//
-// 真实行为（`server_line.rs`）：**开机先探线路、之后按结果选路**。
-// 我们此前只 `serviceLoad()`（读凭据），**从未探测** —— 于是池子一直用
-// `SERVER_LINES` 里的默认第一条 首选线路（实测**已失效**），
-// 冷启动第一次取源必然「未命中 63ms」，用户白等一整条串行链
-// （实测 7.6–8.6s）才失败。
-//
-// 关键：探测**不 await 在 createMusicServer 里**（它要联网，会重新把启动
-// 拖慢到 16 秒，见下方 `lxPluginsLoaded` 的同类修复）。
-//
-// 【为什么探测结果**不再**挡在取源链前面（2026-10-16 二次修正）】
-// 最初把探测记成 `serviceProbed` 并让池子那一跳 `await` 它，是因为当时
-// `rawRequest` 只会打 `activeBaseUrl()` 一条线路 —— 探测没跑完时它还是死线路。
-// 现在 `rawRequest` 已自带式**换线容错**（打不通自动换另一条），
-// 首个请求不依赖探测也能找到活线路。所以去掉这一跳：
-// 冷启动首请求不必再付探测的网络时间（实测 1524–1569ms → 291–908ms）。
-// 探测照旧在启动时并行发起；下面这行只负责**发起 + 打日志**，不被 await。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 if (poolReady) {
   poolProbeLines().then(
     () => {},
@@ -388,13 +391,13 @@ function json(response, status, data) {
   response.end(JSON.stringify(data))
 }
 
-async function bodyJson(request) {
+async function bodyJson(request, limit = 128 * 1024) {
   if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) throw Object.assign(new Error('请使用 application/json 请求体'), { status: 415 })
   let size = 0
   const chunks = []
   for await (const chunk of request) {
     size += chunk.length
-    if (size > 128 * 1024) throw Object.assign(new Error('请求体过大'), { status: 413 })
+    if (size > limit) throw Object.assign(new Error('请求体过大'), { status: 413 })
     chunks.push(chunk)
   }
   const value = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
@@ -482,20 +485,17 @@ async function writeBackupConfig(dataDir, value) {
 /** 音源自检结果缓存：一天内有效，避免每次开机都重跑 1~3 分钟的自检。 */
 const LX_HEALTH_FILE = 'lx-health.json'
 const LX_HEALTH_TTL = 24 * 60 * 60 * 1000
-/** 插件集合的指纹（数量 + id 校验和）。
+/** 插件集合的指纹（文件身份 + 内容 + 启用状态）。
  *
  * 缓存只按时间判断新鲜度是不够的：往音源目录里加/删/换插件之后，旧自检结果
  * 里根本没有新插件的条目，`_rankSources` 会给「未自检」打 0 分（居中），于是
  * 新装的源要等 24 小时过期才会被真正评级 —— 用户会以为"加了没用"。带上指纹
  * 后，插件集合一变就立即重测。 */
 const lxPluginFingerprint = (sources) => {
- // 源对象是 `{ name, filePath, ok }`，**没有 id 字段** —— 早先按 `s.id` 取值
- // 会拿到 undefined，随后 `id.length` 直接抛 TypeError 把自检整条链路打断。
- // 用文件名做身份：换目录不算变，换文件才算变。
-  const ids = [...new Set((sources ?? []).map((s) => path.basename(String(s?.filePath ?? s?.name ?? ''))))].sort()
-  let hash = 0
-  for (const id of ids) for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0
-  return `${ids.length}:${hash}`
+  const files = [...new Set((sources ?? []).map((s) => JSON.stringify([
+    s.pluginId, s.file, s.fingerprint, s.enabled,
+  ])))].sort()
+  return crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')
 }
 
 /**
@@ -508,29 +508,29 @@ const lxPluginFingerprint = (sources) => {
  */
 const LX_URL_CACHE_FILE = 'lx-url-cache.json'
 
-/**
- * 【2026-10-16 对齐：删掉总预算与竞速】
- *
- * 这里原来有一个 `FALLBACK_BUDGET_MS = 10000`（换源总预算）和一个
- * `POOL_PRIORITY_MS = 4000`（池子独占窗口），外加 `poolFirst()` 并发竞速。
- * 三者都是**我们自己发明的，没有**：
- *
- *   - 的失败链是 `播放地址解析失败:` → `获取播放地址超时` → `; 备用音源: <名>`
- *     （服务端返回的原样字符串，2026-10-16 实测确认）。
- *     这种"链式失败后拼接错误消息"的文案形态证明它是**串行**：问完一站报一站。
- *     exe 里搜不到「竞速」二字，也没有任何"总预算"概念的痕迹。
- *   - 实测代价：池子未命中的五首歌耗时 9033/10056/10203/10440/10453ms ——
- *     **全部被这个 10s 预算钉住**。删掉它、改成"每问一次都有短硬超时"之后，
- *     失败路径由"等到预算用完"变成"逐个快速失败"。
- *
- * 现在没有任何跨阶段的超时常量：唯一的时限是**每一次请求自己的**硬超时
- * （备用源 2500ms 见 backup-sources.mjs，池子 3000ms 见 shared-pool.mjs）。
- *
- * 下面这个 LX 常量不是"总预算"：它只约束**串行链末端那一次** LX 调用
- * 自己的内部预算（LX 默认 9000ms），因为 LX 排在最后、它超时就直接决定
- * 用户等多久。与已删的 FALLBACK_BUDGET_MS 的区别：那个是"所有阶段共享
- * 一个总池"，这个是"这一站自己的超时"，各站互不占用。
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const BACKUP_LEGACY_TIMEOUT_MS = 1200 // 三个第三方车站的内层封顶（实测全死，只是兜底）
 
 /**
@@ -563,40 +563,40 @@ const POOL_STEP_TIMEOUT_MS = 3500   // 池子单次请求自带 3000ms，留 500
 const BACKUP_STEP_TIMEOUT_MS = 8500 // 三站串行 × 2500ms + 余量
 const LX_STEP_TIMEOUT_MS = 2500     // LX 不遵守 budgetMs，只能靠外层硬切
 
-/** 【2026-10-17 实测：这两跳在真实曲库上零命中，不该再让用户为它们等待】
- *
- *  取源日志（80 条真实播放样本，`/api/source-log`）：
- *
- *    · 共享池     80 次尝试 / **55 次命中** / 平均 976ms   ← 唯一主力
- *    · 备用音源   25 次尝试 / **0 次命中** / 平均 953ms    ← 全废，却排在链中
- *    · 自定义音源 25 次出现 / **0 次命中** / 真实请求皆吃满 2500ms
- *
- *  再看最慢几首的构成（总耗时 5.5~10.5s，全部失败）：
- *
- *    共享池 3020ms 未返回 → 备用音源 5008ms 未返回 → 自定义音源 2511ms 超时
- *
- *  也就是说**失败路径上，有 7.5s 花在从来没命中过的两跳上**。
- *
- *  为什么会这样（都有独立证据，不是猜）：
- *    · 备用源三站：`yy.zddyr.top` 现在回 `code:500「歌曲不存在」`，响应里
- *      `auth.trusted:false / auth_type:"none"` —— 它要授权，而那套凭据
- *      不适用于第三方直连。`api.ygking.top` DNS 已无记录，`music.bxa241d4.shop`
- *      连接挂死。本仓库 music-server.mjs 更早的注释（2026-10-15）就记过
- *      「三个全部失效」，之后才引入 LX 音源来替代它们。
- *    · 自定义音源：18 个插件里没有一个能在预算内出地址，实测直接调
- *      `/api/lx/resolve` 要 9.5~11s 才失败（v2.1 闻音「暂不支持此音源」、
- *      ikun「fetch failed」…）。原版**根本没有这一跳**（见下方决策树注释
- *      ③「我们的扩展层，没有但保留」）。
- *
- *  处理原则 —— 不删除能力，只不阻塞主链路：
- *    1. 这两跳改成**链尾兜底**：共享池成功就直接返回，不再问它们。
- *    2. 兜底时给它们**很短的超时**：既然历史命中率 0%，就不值得再等 2.5s。
- *    3. 真正的收益在**失败路径**：原来 7.5s 的两跳现在压到 1.2s 内。
- *
- *  这与「对齐」并不冲突：的决策树是 ①平台 prepare → ②共享池；
- *  备用三站在它那里是**已失效的历史分支**，LX 则是我们后加的扩展。让主链路
- *  对齐（池子优先、命中即止），把无效分支降级到链尾，才是的真实行为。
- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const BACKUP_TAIL_TIMEOUT_MS = 3000   // 备用音源一站总预算（本地源 + 第三方三站并跑）
 /** 启动预热时等 LX 自检就绪的上限；到点还没就绪就跳过预热（宁慢不误判）。 */
 const LX_WARMUP_WAIT_MS = 60_000
@@ -617,33 +617,14 @@ export async function createMusicServer({
   const store = providedStore ?? await new MusicLibraryStore({ dataDir, defaultRoots }).init()
   const decoder = new AudioDecoder({ dataDir: store.dataDir ?? dataDir })
 
-  // ── 共享池凭据：只认用户导入的密钥文件 ──────────────────────────
-  //
-  // 没导入 = 正常降级，不是错误：共享池那一跳会被跳过，取源链自动落到
-  // 备用源与 LX。用户随时可以在设置里导入/移除，见 /api/pool/credential。
-  poolReady = false
-  try {
-    const imported = loadFromImportedKey(store.dataDir ?? dataDir)
-    if (imported && Array.isArray(imported.servers) && imported.servers.length) {
-      // SERVER_LINES 只由 configureServerLines() 填充：密钥可用时必须同步一次线路表，
-      // 否则取源会落到「未启用」分支。
-      configureServerLines(imported.servers)
-      poolReady = true
-      console.log('[shared-pool] 已启用导入的密钥，共享池可用', imported.servers.join(' / '))
-    } else if (imported) {
-      poolReady = false
-      console.log('[shared-pool] 密钥缺少服务地址 — 共享池停用，当前只使用备用音源')
-    } else {
-      console.log('[shared-pool] 未导入密钥 — 共享池停用，当前只使用备用音源')
-    }
-  } catch (e) {
-    console.log('[shared-pool] 导入的密钥不可用:', e.message)
-  }
+  // The public application loads only a private business module, never raw credentials.
+  poolReady = Boolean(await loadFromImportedKey(store.dataDir ?? dataDir))
   const output = new NativeAudioOutput({ dataDir: store.dataDir ?? dataDir, decoder, trackFile: (id) => store.trackFile(id) })
   const online = providedOnline ?? new NeteaseOnline({ dataDir })
-  const platformAuth = providedPlatformAuth ?? { qq: new PlatformAuth({ provider: 'qq', dataDir }), bodian: new PlatformAuth({ provider: 'bodian', dataDir }), kugou: new PlatformAuth({ provider: 'kugou', dataDir }) }
-  const catalogs = providedCatalogs ?? { qq: new PlatformCatalog({ provider: 'qq', auth: platformAuth.qq }), ...(platformAuth.bodian ? { bodian: new BodianCatalog({ auth: platformAuth.bodian }) } : {}), ...(platformAuth.kugou ? { kugou: new KugouCatalog({ auth: platformAuth.kugou }) } : {}), kuwo: new KuwoCatalog(), joox: new JooxCatalog() }
+  const platformAuth = providedPlatformAuth ?? { qq: new PlatformAuth({ provider: 'qq', dataDir }), kugou: new PlatformAuth({ provider: 'kugou', dataDir }), qishui: new QishuiSmsAuth({ dataDir }), kuwo: new PlatformAuth({ provider: 'kuwo', dataDir }) }
+  const catalogs = providedCatalogs ?? { qq: new PlatformCatalog({ provider: 'qq', auth: platformAuth.qq }), ...(platformAuth.kugou ? { kugou: new KugouCatalog({ auth: platformAuth.kugou }) } : {}), ...(platformAuth.qishui ? { qishui: new QishuiCatalog({ auth: platformAuth.qishui }) } : {}), kuwo: new KuwoCatalog({ auth: platformAuth.kuwo }), joox: new JooxCatalog() }
   const platformCovers = new PlatformCoverStore()
+  const coverCache = new CoverCache({ dataDir: store.dataDir ?? dataDir })
   const downloads = providedDownloads ?? new DownloadManager({ dataDir: store.dataDir ?? dataDir })
   // 本地歌单（自建歌单能力）：只存本机，不参与云同步。
   const localPlaylists = providedLocalPlaylists ?? await new LocalPlaylists({ dataDir: store.dataDir ?? dataDir }).init()
@@ -663,7 +644,8 @@ export async function createMusicServer({
   const lxCheckHost = new LxSourceHost()
   const ensureCheckHost = async () => {
     await lxCheckHost.loadDirectories(sortedSourceDirs)
-    if (disabledPlugins.length) await lxCheckHost.setDisabled(disabledPlugins).catch(() => {})
+    await lxCheckHost.setDisabled(disabledPlugins)
+    await lxCheckHost.importHealth(await lxHost.exportHealth())
   }
   const lxConfig = await readLxConfig(store.dataDir ?? dataDir)
   // 音源自检是否已就绪：front-end 的加载页据此决定「能不能进应用」。
@@ -677,7 +659,7 @@ export async function createMusicServer({
   // 顺序即优先级：内置在最前，用户目录在最后（同名文件以用户那份为准）。
   const sortedSourceDirs = [bundledSources, lxConfig.dir, userSourcesDir].filter(Boolean)
   const sourceDirs = sortedSourceDirs
-  const disabledPlugins = Array.isArray(lxConfig.disabled) ? lxConfig.disabled : []
+  let disabledPlugins = Array.isArray(lxConfig.disabled) ? lxConfig.disabled : []
   // 【2026-10-16 启动提速：插件加载不再挡在服务监听之前】
   //
   // 实测 `lxHost.loadDirectory()`（worker 里加载 18 个插件）独占约 **15.9s**
@@ -718,13 +700,33 @@ export async function createMusicServer({
   // 所以这里把自检挂到 listening 之后**后台**跑，只把「进度」与「是否就绪」
   // 通过 /api/health + /api/lx/progress 报给前端；前端加载页据此等待。
   // 结果落盘（lx-health.json）：下次开机读缓存，瞬间就绪、加载页一闪而过。
-  const startLxSelfCheck = () => {
-    void (async () => {
+  // ponytail: 自检全局串行；开机和手动入口共用同一把锁。
+  let lxCheckJob = null
+  let lxCheckStarted = false
+  let lxCheckOrigin = 'startup'
+  let lxCheckProgress = { running: false, phase: 'idle', done: 0, total: 0, alive: 0,
+    sourceTotal: 0, sourceDone: 0, sourceRemaining: 0, activeSources: [] }
+  const checkProgress = async () => {
+    const progress = lxCheckJob && lxCheckStarted ? await lxCheckHost.progress() : lxCheckProgress
+    return { ...progress, origin: lxCheckOrigin }
+  }
+  const runLxSelfCheck = (pluginIds, { startup = false } = {}) => {
+    if (lxCheckJob) throw Object.assign(new Error('音源自检正在进行'), { status: 409 })
+    lxCheckOrigin = startup ? 'startup' : 'manual'
+    lxCheckProgress = { running: true, phase: 'prepare', pluginIds: pluginIds ?? [], done: 0, total: 0, alive: 0,
+      sourceTotal: pluginIds?.length ?? 0, sourceDone: 0, sourceRemaining: pluginIds?.length ?? 0,
+      activeSources: [], startedAt: Date.now(), finishedAt: null }
+    lxCheckJob = (async () => {
       // 先等插件目录加载完（它已不再挡服务启动，见上方 lxPluginsLoaded 的注释）。
       // 必须等 —— 否则 `lxHost.enabled` 还是 false，会被误判成"LX 不可用"
       // 而直接放行，跳过用户明确要求的首次自检。
       await lxPluginsLoaded
-      if (!lxHost.enabled) { lxReady = true; return }
+      if (!lxHost.enabled) return
+      const selected = (await lxHost.listPlugins()).filter((plugin) =>
+        (!pluginIds || pluginIds.includes(plugin.id)) && (pluginIds?.length === 1 || plugin.enabled))
+      lxCheckProgress.pluginIds = selected.map((plugin) => plugin.id)
+      lxCheckProgress.sourceTotal = selected.length
+      lxCheckProgress.sourceRemaining = selected.length
       const healthFile = path.join(store.dataDir ?? dataDir, LX_HEALTH_FILE)
       let cached = null
       try { cached = JSON.parse(await fs.readFile(healthFile, 'utf-8')) } catch { /* 首次运行 */ }
@@ -732,32 +734,52 @@ export async function createMusicServer({
       // 否则新插件拿不到自检评级，会一直居中排在健康源后面（见 lxPluginFingerprint 注释）。
       const pluginPrint = lxPluginFingerprint(lxHost.sources)
       const samePlugins = cached && cached.plugins === pluginPrint
-      const fresh = samePlugins && Date.now() - Number(cached.at ?? 0) < LX_HEALTH_TTL
+      const fresh = startup && samePlugins && cached.complete === true && Date.now() - Number(cached.at ?? 0) < LX_HEALTH_TTL
       if (fresh) {
+        lxCheckProgress.sourceDone = selected.length
+        lxCheckProgress.sourceRemaining = 0
         await lxHost.importHealth(cached)
         console.log(`[LX] 用缓存的自检结果排序（${Object.values(cached.sources ?? {}).filter(s => s.ok).length} 个可用），跳过自检`)
       } else {
         if (cached && !samePlugins) console.log('[LX] 音源插件集合有变化，重新自检')
         try {
           await ensureCheckHost()
-          const report = await lxCheckHost.selfCheck({ concurrency: 10, budgetMs: 300000, resolveId: lxResolveProbeId })
+          lxCheckStarted = true
+          const report = await lxCheckHost.selfCheck({ pluginIds, concurrency: 10, budgetMs: 300000, resolveId: lxResolveProbeId })
           console.log(`[LX] 首次自检完成：可用 ${report.alive}/${report.checked}，用时 ${Math.round(report.ms / 1000)}s`)
           try {
             const snapshot = await lxCheckHost.exportHealth()
             // 把自检评级同步给播放宿主：排序/健康标记都在它身上生效。
             await lxHost.importHealth(snapshot)
-            snapshot.plugins = pluginPrint
-            await fs.writeFile(healthFile, JSON.stringify(snapshot, null, 2), 'utf-8')
+            const merged = await lxHost.exportHealth()
+            merged.plugins = pluginPrint
+            await fs.writeFile(healthFile, JSON.stringify(merged, null, 2), 'utf-8')
           }
           catch (err) { console.warn('[LX] 自检结果写入缓存失败：', err.message) }
         } catch (err) {
           // 自检失败不能挡住应用：标记完成，播放退化为按加载顺序试。
-          console.warn('[LX] 自检失败（不影响播放）：', err.message)
+          throw err
         }
       }
-      // 只有到这里前端才被放行进入主界面。
-      lxReady = true
-    })()
+    })().catch((err) => {
+      lxCheckProgress.error = err.message
+      throw err
+    }).finally(async () => {
+      if (lxCheckStarted) {
+        const error = lxCheckProgress.error
+        lxCheckProgress = { ...await lxCheckHost.progress(), ...(error ? { error } : {}) }
+      }
+      lxCheckProgress.running = false
+      lxCheckProgress.phase = lxCheckProgress.error ? 'error' : 'done'
+      lxCheckProgress.finishedAt = Date.now()
+      lxCheckStarted = false
+      lxCheckJob = null
+      if (startup) lxReady = true
+    })
+    return lxCheckJob
+  }
+  const startLxSelfCheck = () => {
+    void runLxSelfCheck(undefined, { startup: true }).catch((err) => console.warn('[LX] 自检失败（不影响播放）：', err.message))
   }
 
   // 备用音源（backup_source.rs 等价物）：平台协议 + LX 都拿不到时，
@@ -805,7 +827,7 @@ export async function createMusicServer({
    * fee 留着会让播放器以为还是付费曲，再去换源；换到的那边同样带 fee，
    * 于是两个音源之间无限乒乓（用户实测：一直放不出来）。
    */
-const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', bodian: '波点音乐', kugou: '酷狗音乐', kuwo: '酷我音乐', joox: 'JOOX' }
+const PLATFORM_NAMES = { netease: '网易云音乐', qq: 'QQ 音乐', kugou: '酷狗音乐', kuwo: '酷我音乐', joox: 'JOOX', qishui: '汽水音乐' }
 
   /**
    * 自检用的「探针曲真实 id」解析器：LX 平台键（wy/kg/kw/tx）→ 该平台的真 id。
@@ -918,19 +940,19 @@ async function lxResolveProbeId(lxKey, keyword) {
     await Promise.allSettled([backupWarmUp, lxWarmUp])
   }
 
-  /**
-   * 并发跑几路来源，**谁先给出非空结果就用谁**；全落空才 resolve null。
-   *
-   * 「备用音源」这一站内部是两组来源并发（第三方接口 + 本地音源插件），
-   * 两路各有自己的预算（1.2s / LX_FALLBACK_BUDGET_MS），所以这里必须
-   * 先到先用 —— 用 Promise.all 等齐，整站预算会被最慢那一路吃干，
-   * 快的命中也被拖成超时。
-   *
-   * 【回归】这个函数一度只被调用、从未定义：共享池没命中时「备用音源」
-   * 立刻抛 `ReferenceError: firstHit is not defined`，整站失败。表现就是
-   * 会员歌只剩网易云 30 秒片段 —— 见 source-log.jsonl 的
-   * `备用音源 … firstHit is not defined`。
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
   function firstHit(tasks) {
     return new Promise(resolve => {
       let pending = tasks.length
@@ -1045,31 +1067,31 @@ async function lxResolveProbeId(lxKey, keyword) {
     stepHealth.set(name, h)
   }
 
-  /** 【2026-10-17 取源失败结果短期缓存 —— 修「同一首歌反复重走失败链」】
-   *
-   *  取源日志实测（25 首唯一歌曲 / 94 次请求）：
-   *
-   *      《酒醉的蝴蝶》     10 次请求，跨度 115s，累计白等 26.5s
-   *      《酒醉的蝴蝶 Remix》 7 次请求，跨度  63s，累计白等 24.1s
-   *      《天涯》            7 次请求，跨度  35s，累计白等 22.7s
-   *
-   *      **重复请求浪费 102.8s / 总耗时 134.7s = 76%**
-   *
-   *  这些歌为什么反复失败：它们是**付费歌**——平台 prepare 返回
-   *  `fee:1, trial:{start:0,end:60}`（只给 60 秒试听），于是按决策树
-   *  要去兜底链找全曲；而共享池对它们回「音质/资源不可用」，备用源/LX 也
-   *  给不出地址。每次重试都要把「池子 ~2.4s + 备用 1.2s + LX 0.8s」重走一遍。
-   *
-   *  前端 `ONLINE_RETRY_DELAYS=[600,1400,2800]` 只重试 3 次，10 次是**用户
-   *  反复点播放 / 切走又切回**造成的 —— 每次点击都是一次全新的 2.4s 等待。
-   *
-   *  所以在**服务端**按「provider+songId+quality」记住失败结论，短期内重复
-   *  请求直接返回同一个失败，不再重走整条链。TTL 取 90s：足够覆盖用户
-   *  「这首歌放不出来」的反复尝试窗口，又不至于让刚上架的歌一直被判死。
-   *
-   *  只缓存**确定性失败**（全链都没给出地址），命中成功的路径完全不受影响
-   *  —— 成功本来就会走缓存地址（scheduleUrlCacheFlush），不需要这里再插一手。
-   */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   const RESOLVE_FAILURE_TTL_MS = 90_000
   const resolveFailures = new Map() // `${provider}:${songId}:${quality}` -> { at, attempts, error }
   function resolveFailureOf(key) {
@@ -1193,38 +1215,38 @@ async function lxResolveProbeId(lxKey, keyword) {
     // 「歌名+歌手」在内部重新搜索的，只给平台 id 它匹配不到歌。
     const { winner, attempts } = await resolveSerial([
       {
-        // 共享池：用池子里别人的票调官方源（酷我/酷狗/QQ 全通，网易无直链）
+
         name: '共享池',
-        // 池子单次请求自带 3000ms 硬超时（shared-pool.mjs），这里再套一层
-        // 兜住"组件内部预算失灵"的情况；留一点余量避免两层同时掐断。
-        timeoutMs: POOL_STEP_TIMEOUT_MS,
-        // 【2026-10-16 不再等探测：探测结论只是"抄近路"，不是"能不能用"】
-        //
-        // 这里原来写成 `serviceProbed.then(() => …)` —— **取源必须等线路探测跑完**。
-        // 起因是当时 `rawRequest` 只会打 `activeBaseUrl()` 一条线路，探测没跑完时
-        // 它还是配置首选（本机首选线路）→ 首次请求必然
-        // 「未命中」，白等一整条链（实测 7.6–8.6s）。
-        //
-        // 但现在 `rawRequest` 自己已经对齐了的「优先线路 → 备用线路」**换线容错**：
-        // 打不通就自动换另一条。所以**首个请求即使探测一点没跑，也能自己找到活线路**，
-        // 不需要再等探测。
-        //
-        // 去掉这一跳的直接收益：冷启动首请求不必再付探测的网络时间
-        // （实测 1524–1569ms → 300–520ms）。探测仍在启动时并行发起，
-        // 跑完后 `activeBaseUrl` 被选优，后续请求走最短路径。
-        //
-        // 【2026-10-18 加重试：共享池偶发失败导致「串歌」】
-        //
-        // 用户实测 09:31:15 点《可能》原唱，共享池跑了 3033ms 后
-        // 「未返回播放地址」——**刚好卡在 3000ms 超时边缘**。同一首歌
-        // 09:32:10 再点只用 447ms 就成功（服务端连续 5 次实测 5/5 成功）。
-        //
-        // 单次失败本身不可怕，可怕的是失败后的行为：整条链失败 → 前端报错
-        // → 用户再点，很容易点到列表里相邻的「(DJ翊轩版)」——听起来就是
-        // 「串歌了」。所以这里对同一个 songId 重试一次，把偶发抖动吃掉。
-        //
-        // 只重试一次、只在**第一次确实没拿到地址**时重试（缓存命中直接返回，
-        // 不会重复打网络）。最坏多花 3.5s，但能把「偶发失败」变成「偶发慢」。
+
+
+        timeoutMs: provider === 'qishui' ? 12500 : POOL_STEP_TIMEOUT_MS,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         run: () => {
           if (!poolReady) return Promise.resolve(null)
           const ask = () => poolResolve({
@@ -1278,9 +1300,12 @@ async function lxResolveProbeId(lxKey, keyword) {
       // 低于无损底线就如实降回 mp3（详见 honestFormat 注释）。
       const realDuration = Number(result?.duration) || Number(meta?.duration) || 0
       const honest = await honestFormat(found.audioUrl, found.format || result?.format, realDuration)
+      const audioUrl = found.relayRequired
+        ? `http://127.0.0.1:${server.address().port}${audioRelay.register(provider, found.audioUrl, { trustedModule: true })}`
+        : found.audioUrl
       return {
         ...result,
-        audioUrl: found.audioUrl,
+        audioUrl,
         trial: undefined,
         fee: 0,
         format: honest.format,
@@ -1355,20 +1380,35 @@ async function lxResolveProbeId(lxKey, keyword) {
     }
       }
       if (route === '/api/health' && get) return json(response, 200, { service: 'rhine-local-music', projectDir: PROJECT_DIR, pid: process.pid, lxReady })
-      const platformLogin = /^\/api\/online\/(qq|bodian|kugou)\/auth\/(status|start|poll|cancel|logout)$/.exec(route)
+      const platformLogin = /^\/api\/online\/(qq|kugou|qishui|kuwo)\/auth\/(status|start|poll|cancel|logout|send-code|sms-login)$/.exec(route)
       if (platformLogin) {
         const auth = platformAuth[platformLogin[1]], action = platformLogin[2]
         if (!auth) return json(response, 503, { error: '当前平台未配置。' })
         if (action === 'status' && request.method === 'GET') return json(response, 200, await auth.status())
         if (action !== 'status' && request.method === 'POST') {
           const body = await bodyJson(request)
-          return json(response, 200, await auth[action](action === 'start' ? body.method : body.id))
+          if (action === 'send-code' || action === 'sms-login') {
+            if (platformLogin[1] !== 'qishui') return json(response, 405, { error: '该平台使用扫码登录' })
+            return json(response, 200, await auth[action === 'send-code' ? 'sendCode' : 'smsLogin'](body))
+          }
+          return json(response, 200, await auth[action](action === 'start' ? body.method : body.id, platformLogin[1] === 'qishui' && action === 'start' ? body.id : undefined))
         }
         return json(response, 405, { error: '请求方法不支持' })
       }
       // ─── LX 音源插件：状态 / 搜索 / 取曲 / 配置 ──────────────────────────
       if (route === '/api/lx/status' && get) {
-        const plugins = await lxHost.listPlugins()
+        let plugins = await lxHost.listPlugins()
+        const progress = await checkProgress()
+        if (lxCheckJob) {
+          const scope = new Set(progress.pluginIds ?? [])
+          const live = new Map((lxCheckStarted ? await lxCheckHost.listPlugins() : []).map((plugin) => [plugin.id, plugin]))
+          plugins = plugins.map((plugin) => {
+            if (!scope.has(plugin.id)) return plugin
+            const checked = live.get(plugin.id)
+            return { ...plugin, health: progress.phase === 'prepare' ? null : checked?.health ?? null,
+              testing: checked?.testing ?? false, selfCheckRunning: true }
+          })
+        }
         return json(response, 200, {
           enabled: lxHost.enabled,
           pluginCount: lxHost.pluginCount,
@@ -1379,13 +1419,14 @@ async function lxResolveProbeId(lxKey, keyword) {
           },
           sources: lxHost.sources,
           report: lxHost.report,
+          progress,
         })
       }
       if (route === '/api/lx/sources' && get) return json(response, 200, { sources: lxHost.sources })
       // 音源自检明细：哪些源是活的、各自能给的最高音质（设置界面/诊断用）。
       if (route === '/api/lx/health' && get) return json(response, 200, await lxHost.health())
       // 自检进度：前端加载页据此画进度条（首次启动会等它跑完才放行）。
-      if (route === '/api/lx/progress' && get) return json(response, 200, await lxHost.progress())
+      if (route === '/api/lx/progress' && get) return json(response, 200, await checkProgress())
       if (route === '/api/lx/search' && get) {
         const q = url.searchParams.get('q') ?? ''
         const source = url.searchParams.get('source') ?? 'all'
@@ -1414,6 +1455,7 @@ async function lxResolveProbeId(lxKey, keyword) {
       // 这里写进用户音源目录再加载；内置源可以被停用，但不能移除。
       if (route === '/api/lx/sources/add' && request.method === 'POST') {
         const body = await bodyJson(request)
+        if (lxCheckJob) return json(response, 409, { error: '音源自检正在进行' })
         const files = Array.isArray(body.files) ? body.files : []
         if (!files.length) return json(response, 400, { error: '没有收到音源文件' })
         await fs.mkdir(userSourcesDir, { recursive: true })
@@ -1434,18 +1476,27 @@ async function lxResolveProbeId(lxKey, keyword) {
       }
       if (route === '/api/lx/sources/remove' && request.method === 'POST') {
         const body = await bodyJson(request)
+        if (lxCheckJob) return json(response, 409, { error: '音源自检正在进行' })
         const id = String(body.id ?? '')
         const target = (await lxHost.listPlugins()).find((plugin) => plugin.id === id)
         if (!target) return json(response, 404, { error: '没有这个音源' })
         if (target.builtin) return json(response, 403, { error: '内置音源不能移除，只能停用' })
         await fs.rm(path.join(userSourcesDir, target.file), { force: true })
-        try { await lxHost.loadDirectories(sourceDirs) } catch { /* 单个坏文件不影响其它源 */ }
-        await lxHost.setDisabled(disabledPlugins.filter((item) => item !== id))
+        try { await lxHost.loadDirectories(sourceDirs) }
+        catch { return json(response, 500, { error: '所选音源文件已移除，但音源清单刷新失败，请重启应用；自带音源文件未删除' }) }
+        disabledPlugins = disabledPlugins.filter((item) => item !== id)
+        lxConfig.disabled = disabledPlugins
+        await writeLxConfig(store.dataDir ?? dataDir, lxConfig)
+        await lxHost.setDisabled(disabledPlugins)
+        const snapshot = await lxHost.exportHealth()
+        snapshot.plugins = lxPluginFingerprint(lxHost.sources)
+        await fs.writeFile(path.join(store.dataDir ?? dataDir, LX_HEALTH_FILE), JSON.stringify(snapshot, null, 2), 'utf-8')
         const plugins = await lxHost.listPlugins()
         return json(response, 200, { plugins, counts: { total: plugins.length, loaded: plugins.filter((plugin) => plugin.enabled).length } })
       }
       if (route === '/api/lx/sources/toggle' && request.method === 'POST') {
         const body = await bodyJson(request)
+        if (lxCheckJob) return json(response, 409, { error: '音源自检正在进行' })
         const id = String(body.id ?? '')
         const enabled = body.enabled !== false
         const plugins = await lxHost.listPlugins()
@@ -1454,27 +1505,25 @@ async function lxResolveProbeId(lxKey, keyword) {
         if (enabled) next.delete(id); else next.add(id)
         lxConfig.disabled = [...next]
         await writeLxConfig(store.dataDir ?? dataDir, lxConfig)
+        disabledPlugins = lxConfig.disabled
         await lxHost.setDisabled(lxConfig.disabled)
         const after = await lxHost.listPlugins()
         return json(response, 200, { plugins: after, counts: { total: after.length, loaded: after.filter((plugin) => plugin.enabled).length } })
       }
       if (route === '/api/lx/selfcheck' && request.method === 'POST') {
+        const body = await bodyJson(request)
+        const hasId = Object.hasOwn(body, 'id')
+        if (hasId && (typeof body.id !== 'string' || !body.id.trim())) return json(response, 400, { error: '无效的音源 id' })
+        if (lxCheckJob) return json(response, 409, { error: '音源自检正在进行' })
+        await lxPluginsLoaded
+        if (hasId && !(await lxHost.listPlugins()).some((plugin) => plugin.id === body.id)) return json(response, 404, { error: '没有这个音源' })
         if (!lxHost.enabled) return json(response, 409, { error: '还没有加载任何音源' })
         // 和开机自检同一条链路：先按平台搜索解析出真实 id 再测。
         // 少了 resolveId 时，只认平台 id 的音源（HHYW/Hei/TuneFlow 一大批）
         // 会统一报「缺少歌曲ID」，界面再把任意失败显示成「超时」——用户实测
         // 「明明有些能用，一直显示超时」就是这条。
-    try {
-      await ensureCheckHost()
-      await lxCheckHost.selfCheck({ concurrency: 10, budgetMs: 300000, resolveId: lxResolveProbeId })
-      // 【2026-10-23】手动重测原来只跑 checkHost：既不 import 给播放宿主、也不落盘，
-      // 界面点「测试连通性」后列表纹丝不动（等于按钮白按）。补齐与开机自检一致的三步。
-      const snapshot = await lxCheckHost.exportHealth()
-      await lxHost.importHealth(snapshot)
-      snapshot.plugins = lxPluginFingerprint(lxHost.sources)
-      await fs.writeFile(path.join(store.dataDir ?? dataDir, LX_HEALTH_FILE), JSON.stringify(snapshot, null, 2), 'utf-8')
-    }
-        catch (err) { return json(response, 500, { error: `自检失败：${err.message}` }) }
+        try { await runLxSelfCheck(hasId ? [body.id] : undefined) }
+        catch (err) { return json(response, err.status ?? 500, { error: `自检失败：${err.message}` }) }
         const plugins = await lxHost.listPlugins()
         return json(response, 200, { plugins, counts: { total: plugins.length, loaded: plugins.filter((plugin) => plugin.enabled).length } })
       }
@@ -1492,14 +1541,14 @@ async function lxResolveProbeId(lxKey, keyword) {
       // 池子双线路状态（对齐 src\server_line.rs 的字段与语义）
       if (route === '/api/pool/lines' && get) {
         return json(response, 200, {
-          configured: POOL_SERVER_LINES.map(l => ({ id: l.id, label: l.label, baseUrl: l.baseUrl, host: l.host })),
+          configured: POOL_SERVER_LINES.map(l => ({ id: l.id, label: l.label })),
           ...poolLineState(),
         })
       }
       // 连通性检测：scope=all（默认）| lines | upstreams。
       // 线路用签名探测，平台上游各发一次最小取源；两边互不影响。
       if (route === '/api/pool/lines/probe' && request.method === 'POST') {
-      if (!poolReady) return json(response, 200, { results: [], upstreams: [], note: '未导入密钥，没有可检测的线路' })
+      if (!poolReady) return json(response, 200, { results: [], upstreams: [], note: '未导入模块，没有可检测的线路' })
         const scope = url.searchParams.get('scope') || 'all'
         const wantLines = scope === 'all' || scope === 'lines'
         const wantUpstreams = scope === 'all' || scope === 'upstreams'
@@ -1510,82 +1559,24 @@ async function lxResolveProbeId(lxKey, keyword) {
         return json(response, 200, { ...lineState, upstreams: upstream?.upstreams ?? [] })
       }
 
-      // ── 共享池密钥：用户自己导入，客户端不内置任何凭据 ──────────────
-      //
-      // 【为什么不内置】客户端要调池子就必须持有 token，而持有就能被实测
-      // 拿到。把凭据塞进安装包 + 混淆，挡不住愿意花几分钟的人。改成
-      // 「用户导入自己的密钥」后，客户端不含任何秘密，源码可以公开。
-      //
-      //   GET    /api/pool/credential            状态（不含 token）
-      //   POST   /api/pool/credential/import     { payload } 导入密钥文件
-      //   GET    /api/pool/credential/export     导出当前密钥文件
-      //   DELETE /api/pool/credential            移除
+      // Private module import; legacy credential export/import is intentionally unavailable.
       const credDir = store.dataDir ?? dataDir
-
-      /** 导入/移除后重新装填一次，并回报最新状态。 */
-      const applyPoolCredential = () => {
-        poolReady = false
-        try {
-          const imported = loadFromImportedKey(credDir)
-          if (imported && Array.isArray(imported.servers) && imported.servers.length) {
-            // 与启动时同理：光有 token 不够，线路表也得按这份密钥重建，
-            // 否则 resolveSongBest 永远返回 pool_disabled（导入完不重启就不生效）。
-            configureServerLines(imported.servers)
-            poolReady = true
-          } else {
-            // 没有密钥 = 这个功能整块下线：令牌、线路表、上次探测结果全部作废。
-            // （2026-10-23：原来只删磁盘文件，内存里的 token 与线路表还在，
-            //   于是「移除密钥」之后照样能点亮延迟、照样能取源。）
-            resetPoolRuntime()
-            poolReady = false
-          }
-        } catch (error) {
-          console.log('[shared-pool] 密钥应用失败:', error.message)
-        }
-        return { ...poolCredential.status(credDir), poolEnabled: poolReady, signNote: poolCredential.signNote(poolSigningHealth()) }
-      }
-
-      if (route === '/api/pool/credential' && get) {
-        return json(response, 200, { ...poolCredential.status(credDir), poolEnabled: poolReady, signNote: poolCredential.signNote(poolSigningHealth()) })
-      }
-
+      const publicPoolStatus = () => ({ ...poolCredential.status(), poolEnabled: poolReady && poolCredentialsReady(), signNote: poolCredential.signNote(poolSigningHealth()) })
+      if (route === '/api/pool/credential' && get) return json(response, 200, publicPoolStatus())
       if (route === '/api/pool/credential/import' && request.method === 'POST') {
-        const body = await bodyJson(request)
+        const body = await bodyJson(request, 45 * 1024 * 1024)
+        if (typeof body.data !== 'string' || !body.data || body.data.length > 45 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(body.data)) return json(response, 400, { error: '没有收到有效的 DLL 模块' })
         try {
-          // data 是密钥文件的原始字节（base64）。加密信封与老明文都由
-          // keyfile-envelope 自己识别，这里不再假设文件是 JSON。
-          if (typeof body.data === 'string' && body.data) {
-            poolCredential.importKeyFile(credDir, Buffer.from(body.data, 'base64'))
-          } else if (typeof body.payload === 'string') {
-            // 兼容旧前端：直接传文件原文
-            poolCredential.importKeyFile(credDir, Buffer.from(body.payload, 'utf8'))
-          } else if (body.payload && typeof body.payload === 'object') {
-            poolCredential.write(credDir, body.payload)
-          } else {
-            return json(response, 400, { error: '没有收到密钥文件' })
-          }
-        } catch (error) {
-          return json(response, 400, { error: error.message })
-        }
-        return json(response, 200, applyPoolCredential())
+          await poolCredential.importDll(credDir, Buffer.from(body.data, 'base64'))
+          poolReady = poolCredentialsReady()
+          return json(response, 200, publicPoolStatus())
+        } catch { return json(response, 400, { error: '模块导入失败，请确认文件是兼容且有效的 Windows x64 DLL；原模块已保留' }) }
       }
-
-      if (route === '/api/pool/credential/export' && get) {        try {
-          const buffer = poolCredential.exportKeyFile(credDir)
-          response.writeHead(200, {
-            'content-type': 'application/octet-stream',
-            'content-length': buffer.length,
-            'content-disposition': 'attachment; filename="Rhine-Music.rhinekey"',
-          })
-          return response.end(buffer)
-        } catch (error) {
-          return json(response, 404, { error: error.message })
-        }
-      }
-
       if (route === '/api/pool/credential' && request.method === 'DELETE') {
-        poolCredential.clear(credDir)
-        return json(response, 200, applyPoolCredential())
+        await poolCredential.clear(credDir)
+        poolReady = false
+        resetPoolRuntime()
+        return json(response, 200, publicPoolStatus())
       }
       if (route === '/api/backup/resolve' && request.method === 'POST') {
         const body = await bodyJson(request)
@@ -1603,7 +1594,7 @@ async function lxResolveProbeId(lxKey, keyword) {
         return json(response, 200, { enabled: backupSources.enabled, sources: backupSources.status })
       }
 
-      const platformRoute = /^\/api\/online\/(qq|bodian|kugou|kuwo|joox)\/(search|playlists|cover|playlists\/([A-Za-z0-9_-]{1,64})\/tracks|songs\/([A-Za-z0-9_.-]{1,96})\/info|prepare\/([A-Za-z0-9_.-]{1,96}))$/.exec(route)
+      const platformRoute = /^\/api\/online\/(qq|kugou|kuwo|joox|qishui)\/(search|playlists|cover|playlists\/([A-Za-z0-9_-]{1,64})\/tracks|songs\/([A-Za-z0-9_.-]{1,96})\/info|prepare\/([A-Za-z0-9_.-]{1,96}))$/.exec(route)
       if (platformRoute) {
         const provider = platformRoute[1], action = platformRoute[2], catalog = catalogs[provider]
         if (!catalog) return json(response, 503, { error: '当前平台未配置。' })
@@ -1666,7 +1657,7 @@ async function lxResolveProbeId(lxKey, keyword) {
         if (action === 'search') return json(response, 200, await catalog.search(url.searchParams.get('q'), Number(url.searchParams.get('offset') || 0)))
         if (action === 'playlists') return json(response, 200, await catalog.playlists(Number(url.searchParams.get('offset') || 0)))
         if (platformRoute[3]) return json(response, 200, await catalog.playlistTracks(platformRoute[3], Number(url.searchParams.get('offset') || 0)))
-        if (platformRoute[4]) return json(response, 200, await catalog.songInfo(platformRoute[4]))
+        if (platformRoute[4]) { const info = await catalog.songInfo(platformRoute[4]); return json(response, 200, { ...info, lyrics: withWordLyrics(info.lyrics) }) }
         if (action === 'cover') {
           const source = url.searchParams.get('url') || ''
           if (source.length > 4096) return json(response, 400, { error: '封面地址过长' })
@@ -1682,7 +1673,7 @@ async function lxResolveProbeId(lxKey, keyword) {
       const playlistTracks = /^\/api\/online\/netease\/playlists\/([1-9]\d{0,15})\/tracks$/.exec(route)
       if (playlistTracks && request.method === 'GET') return json(response, 200, await online.playlistTracks(playlistTracks[1], Number(url.searchParams.get('offset') || 0)))
       const songInfo = /^\/api\/online\/netease\/songs\/([1-9]\d{0,15})\/info$/.exec(route)
-      if (songInfo && request.method === 'GET') return json(response, 200, await online.songInfo(songInfo[1]))
+      if (songInfo && request.method === 'GET') { const info = await online.songInfo(songInfo[1]); return json(response, 200, { ...info, lyrics: withWordLyrics(info.lyrics) }) }
       const mvRoute = /^\/api\/online\/netease\/mv\/([1-9]\d{0,15})$/.exec(route)
       if (mvRoute && request.method === 'GET') {
         if (typeof online.mv !== 'function') return json(response, 404, { error: '当前音源暂不支持在线观看 MV。' })
@@ -1754,6 +1745,37 @@ async function lxResolveProbeId(lxKey, keyword) {
       //   GET  /api/audio/cache            → { bytes, files, limitBytes, cacheDir }
       //   POST /api/audio/cache/configure  → { limitMb?, location? } 应用到 decoder
       //   POST /api/audio/cache/clear      → 真删文件，返回释放量与剩余量
+      const coverCatalog = /^\/api\/covers\/catalog\/([a-f0-9]{64})$/.exec(route)
+      if (coverCatalog && get) return json(response, 200, await coverCache.catalog(coverCatalog[1]))
+      if (coverCatalog && request.method === 'PUT') {
+        return json(response, 200, await coverCache.catalog(coverCatalog[1], await bodyJson(request, 8 * 1024 * 1024)))
+      }
+      if (route === '/api/covers/cache' && get) {
+        await coverCache.init(); return json(response, 200, coverCache.usage())
+      }
+      if (route === '/api/covers/cache/configure' && request.method === 'POST') {
+        return json(response, 200, await coverCache.configure(await bodyJson(request)))
+      }
+      if (route === '/api/covers/cache/clear' && request.method === 'POST') {
+        return json(response, 200, await coverCache.clear())
+      }
+      const coverFile = /^\/api\/covers\/cache\/([a-f0-9]{64})$/.exec(route)
+      if (coverFile && get) {
+        const bytes = await coverCache.get(coverFile[1])
+        if (!bytes) return json(response, 404, { error: '封面未缓存' })
+        response.writeHead(200, { 'Content-Type': 'image/webp', 'Content-Length': bytes.length, 'Cache-Control': 'no-store' })
+        return response.end(bytes)
+      }
+      if (coverFile && request.method === 'PUT') {
+        const chunks = []; let length = 0
+        for await (const chunk of request) {
+          length += chunk.length
+          if (length > 2 * 1024 * 1024) return json(response, 413, { error: '封面缓存过大' })
+          chunks.push(chunk)
+        }
+        await coverCache.put(coverFile[1], Buffer.concat(chunks))
+        return json(response, 200, { ok: true })
+      }
       if (route === '/api/audio/cache' && get) {
         await decoder.init()
         return json(response, 200, await decoder.usage())
@@ -1829,7 +1851,7 @@ async function lxResolveProbeId(lxKey, keyword) {
       const processed = /^\/api\/audio\/processed\/([a-zA-Z0-9-]+)$/.exec(route)
       // qishui（汽水音乐）在 catalogs 里已注册，音效应路由必须覆盖它，
       // 否则开音效时汽水的歌直接 503。
-      const processedOnline = /^\/api\/audio\/processed-online\/(netease|qq|bodian|kugou|kuwo|joox)\/([A-Za-z0-9_.-]{1,96})$/.exec(route)
+      const processedOnline = /^\/api\/audio\/processed-online\/(netease|qq|kugou|kuwo|joox|qishui)\/([A-Za-z0-9_.-]{1,96})$/.exec(route)
       if ((processed || processedOnline) && get) {
         const controller = new AbortController()
         const cancel = () => { if (!response.writableEnded) controller.abort() }
@@ -1882,7 +1904,7 @@ async function lxResolveProbeId(lxKey, keyword) {
       // 前端按播放位置取列驱动音浪。真数据来自音频本身，与 WebView2 的
       // Web Audio / captureStream 通路完全无关，任何播放路径都能对上。
       const spectrumLocal = /^\/api\/audio\/spectrum\/([a-zA-Z0-9-]+)$/.exec(route);
-      const spectrumOnline = /^\/api\/audio\/spectrum-online\/(netease|qq|bodian|kugou|kuwo|joox|qishui)\/([A-Za-z0-9_.-]{1,96})$/.exec(route);
+      const spectrumOnline = /^\/api\/audio\/spectrum-online\/(netease|qq|kugou|kuwo|joox|qishui)\/([A-Za-z0-9_.-]{1,96})$/.exec(route);
       if ((spectrumLocal || spectrumOnline) && get) {
         const identity = spectrumLocal
           ? 'local-' + spectrumLocal[1]
@@ -1893,8 +1915,8 @@ async function lxResolveProbeId(lxKey, keyword) {
             let input;
             const srcParam = url.searchParams.get('src');
             if (srcParam && /^https?:\/\//i.test(srcParam)) {
-              // 前端把播放器手里解析成功的直链递过来：不重新走取源链
-              //（共享池/备用源失败缓存期间重新解析必然失败，波形就永远没数据）。
+
+
               input = srcParam;
             } else if (spectrumLocal) {
               input = store.trackFile(spectrumLocal[1]);
@@ -2166,19 +2188,39 @@ const asset = path.resolve(distDir, `.${route === '/' ? '/index.html' : route}`)
     } catch (error) {
       const context = onlineRouteContext(request.url)
       if (context) diagnoseOnlineFailure(error, context.provider, context.operation)
-      if (!response.headersSent) json(response, error.status ?? (['ENOENT', 'ENOTDIR'].includes(error.code) ? 404 : 400), { error: error.message, ...(context ? { diagnostic: onlineDiagnostic(error) } : {}) })
+      const retryAfter = error.status === 429 && Number.isFinite(error.retryAfter) ? Math.min(3600, Math.max(1, Math.ceil(error.retryAfter))) : undefined
+      if (!response.headersSent) {
+        if (retryAfter) response.setHeader('Retry-After', String(retryAfter))
+        json(response, error.status ?? (['ENOENT', 'ENOTDIR'].includes(error.code) ? 404 : 400), { error: error.message, ...(retryAfter ? { retryAfter } : {}), ...(context ? { diagnostic: onlineDiagnostic(error) } : {}) })
+      }
       else response.destroy()
     }
   })
-  server.once('close', () => { audioRelay.dispose(); decoder.dispose(); output.dispose() })
+  server.once('close', () => { resetPoolRuntime(); audioRelay.dispose(); decoder.dispose(); output.dispose() })
   server.requestTimeout = 30_000
   if (autoScan) server.once('listening', () => { void store.scan().catch(() => {}) })
   // 自检挂在 listening 之后：服务一监听就立刻上报就绪（桌面端 main.rs 只等
   // 25s），窗口马上打开并显示转圈加载页；自检在后台跑，前端加载页看进度条等它。
   // 这样「先能打开应用」和「首次等音源加载完」两件事同时成立。
   server.once('listening', startLxSelfCheck)
+  server.once('close', () => { lxHost.terminate(); lxCheckHost.terminate() })
   server.once('listening', () => { void startFallbackWarmUp() })
-  return { server, store, decoder, output, lxHost, backupSources, sourceLog, lxReadyNow: () => lxReady }
+  const qishuiVerification = (action, args) => {
+    const auth = platformAuth.qishui
+    if (!auth) throw new Error('汽水登录未配置')
+    if (action === 'verification-context') return auth.verificationContext(args.id)
+    if (action === 'verification-result') return auth.completeVerification(args.id, args.cookies, args.nonce, args.token)
+    if (action === 'verification-http') return auth.verificationHttp(args.id, args.nonce, args.request)
+    if (action === 'passport-context') return auth.passportContext(args.id)
+    if (action === 'passport-result') return auth.completePassport(args.id, args.nonce, args.result, args.cookies)
+    if (action === 'passport-ready') return auth.passportReady(args.id, args.nonce, args.operationId)
+    if (action === 'passport-retry') return auth.passportRetry(args.id, args.nonce, args.operationId, args.params)
+    if (action === 'session-context') return auth.sessionContext(args.id)
+    if (action === 'session-result') return auth.completeSession(args.id, args.cookies, args.nonce, args.token)
+    if (action === 'verification-cancel') return auth.cancel(args.id)
+    throw new Error('不支持的验证操作')
+  }
+  return { server, store, decoder, output, lxHost, backupSources, sourceLog, lxReadyNow: () => lxReady, qishuiVerification }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

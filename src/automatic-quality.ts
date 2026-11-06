@@ -15,6 +15,8 @@ export function automaticQuality(device: Device) {
       preset = 'discrete'; tier = 'entry-discrete';
     } else if (/geforce|\brtx\b|radeon.*(?:\brx\b|pro)|intel.*\barc\s+[ab]\d{3}/.test(name)) {
       preset = 'discretePlus'; tier = 'discrete';
+    } else if (/intel.*(?:\bhd\b|\buhd\b)|\buhd\b/.test(name) && !/iris|\bxe\b/.test(name)) {
+      preset = 'lowIntegrated'; tier = 'low-integrated';
     } else if (/intel|uhd|iris|radeon.*(?:graphics|vega)|apple/.test(name)) {
       tier = 'integrated';
     }
@@ -22,7 +24,7 @@ export function automaticQuality(device: Device) {
   const constrained = (device.cores !== undefined && device.cores > 0 && device.cores < 4) ||
     (device.memoryGB !== undefined && device.memoryGB > 0 && device.memoryGB < 4);
   if (constrained && preset === 'discretePlus') preset = 'discrete';
-  if (constrained && tier !== 'entry-discrete' && tier !== 'discrete') preset = 'performance';
+  if (constrained && tier !== 'entry-discrete' && tier !== 'discrete' && tier !== 'low-integrated') preset = 'performance';
   const quality = normalizeQuality(qualityPresets[preset]);
  // An unusually large output on a small/unknown GPU must not inflate the 3D
  // budget. Physical glass, SMAA and the independent clear-cover pass remain.

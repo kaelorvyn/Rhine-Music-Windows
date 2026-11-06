@@ -50,7 +50,7 @@ await fs.mkdir(path.join(target, 'scripts'), { recursive: true });
 //
 // 访问控制不靠藏代码，靠的是用户自己导入的密钥文件：
 // 客户端不含任何秘密，源码可以完全公开。
-// 真正不该公开的那部分注释（逆向方法、上游实现细节、个人信息）
+// 不该公开的那部分注释（实现细节、个人信息）
 // 由 _obfuscate-release.mjs 的定向清洗负责 —— 删那几条，不是删全部。
 //
 // runtime 里都是 .mjs，Node 直接能跑，不需要转译。
@@ -93,13 +93,12 @@ for (const name of RUNTIME_EXTRA_FILES) {
 //
 // 文件缺失时不终止打包（开源仓库不含这两个二进制，贡献者本机通常也没有），
 // 但会明确告警，避免打出一个"看起来正常、实际不能播整首"的包。
-const RUNTIME_EXTRA_DIRS = [];
+const RUNTIME_EXTRA_DIRS = ['vendor/qishui-purejs'];
 
 for (const name of RUNTIME_EXTRA_DIRS) {
   const from = path.join(root, 'scripts', name);
   if (!(await fs.stat(from).catch(() => null))) {
-    console.warn('警告：运行时目录缺失 scripts/' + name);
-    continue;
+    throw new Error('运行时目录缺失 scripts/' + name);
   }
   await fs.cp(from, path.join(target, 'scripts', name), { recursive: true });
   console.log('原生目录：scripts/' + name);
@@ -138,6 +137,10 @@ for (const name of NATIVE_KEEP) {
   const from = path.join(root, 'native', name);
   if (await fs.stat(from).catch(() => null)) await fs.copyFile(from, path.join(target, 'native', name));
 }
+// Publish only the generic DLL caller, never a credential-bearing module.
+const poolHost = path.join(root, 'native', 'rhine-pool-host', 'target', 'release', 'rhine-pool-host.exe');
+if (!(await fs.stat(poolHost).catch(() => null))) throw new Error('Build native/rhine-pool-host before desktop packaging');
+await fs.copyFile(poolHost, path.join(target, 'native', 'rhine-pool-host.exe'));
 await fs.cp(path.join(root, 'third-party'), path.join(target, 'third-party'), { recursive: true });
 // README.original.md 是上游项目原始说明，已从仓库移除；改用本项目的 PLATFORM-NOTICE.md。
 for (const name of ['package.json', 'package-lock.json', 'LICENSE', 'NOTICE.md', 'PLATFORM-NOTICE.md', 'CONTRIBUTORS.md', 'PRIVACY.md'])

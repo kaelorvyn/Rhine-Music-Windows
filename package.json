@@ -1,13 +1,16 @@
 {
   "name": "rhine-music-demo",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
-    "desktop:prepare": "npm run build && node scripts/prepare-desktop.mjs",
+    "desktop:prepare": "npm run build && node scripts/build-pool-host.mjs && node scripts/prepare-desktop.mjs",
     "desktop:build": "tauri build --no-bundle -- --locked && node scripts/package-desktop.mjs",
     "desktop:dev": "npm run desktop:prepare && tauri dev --no-dev-server",
+    "check:pool-module": "node --test scripts/check-pool-module.mjs",
+    "check:lx-detection": "node --test scripts/check-lx-detection.mjs",
+    "check:lx-settings": "node scripts/check-lx-settings-ui.mjs",
     "check:windows": "node --experimental-strip-types --test scripts/check-windows.mjs",
     "check:gpu-budget": "node --experimental-strip-types --test scripts/check-gpu-budget.mjs",
     "check:online": "node --experimental-strip-types --test scripts/check-netease-online.mjs scripts/check-netease-auth.mjs scripts/check-playback-albums.mjs scripts/check-netease-playlists.mjs && node scripts/check-online-ui.mjs",
@@ -36,6 +39,7 @@
     "check:download": "node --test scripts/check-downloads.mjs && node scripts/check-download-panel.mjs",
     "check:online:live": "node scripts/check-online-desktop.mjs",
     "check:platforms": "node --test scripts/check-platforms.mjs scripts/check-qq-login-session.mjs scripts/check-bodian.mjs scripts/check-qishui.mjs",
+    "check:platforms:live": "node scripts/check-qishui-live.mjs",
     "benchmark:windows": "node scripts/benchmark-windows.mjs",
     "predev": "node scripts/export-records.mjs",
     "dev": "vite --host 127.0.0.1",
@@ -61,7 +65,8 @@
     "check:startup": "node scripts/check-music-startup.mjs && node scripts/check-music-renderer-startup.mjs && node scripts/check-quality.mjs",
     "check:v041": "npm run check:music && npm run check:audio && npm run check:overview && npm run check:cover && npm run check:startup && npm run check:lighting && npm run check:interaction && npm run check:viewport && npm run check:content && npm run check:credits && node scripts/check-music-launcher.mjs",
     "check:playlists": "node --test scripts/check-local-playlists.mjs && node scripts/check-local-playlists-http.mjs && node scripts/check-local-playlist-ui.mjs",
-    "check:settings": "node scripts/check-settings-ui.mjs"
+    "check:settings": "node scripts/check-settings-ui.mjs",
+    "check:cover-cache": "node --test scripts/check-cover-cache.mjs && node scripts/check-cover-resources-ui.mjs"
   },
   "dependencies": {
     "@kitlangton/rolling-number": "0.4.1",

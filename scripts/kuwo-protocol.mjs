@@ -9,9 +9,12 @@
 //           &response=url&type=convert_url3 -> {"code":200,"url":...} (live-verified)
 //   info    http://musicpay.kuwo.cn/music.pay?src=kwplayer_ar_11.3.1.1_40.apk
 //           &op=query&action=play&ids=<numeric> -> songs[] record (live-verified)
-// Unverified parts stay out and are labeled in docs: playlist endpoints
-// (nplserver.kuwo.cn/pl.svc), the newer convert_url_with_sign flow, lyrics
-// (newlyric.kuwo.cn) and account login. Search and playback need no account.
+// Account playlists use the authenticated pl.svc channel. Website WeChat
+// authorization lives in kuwo-login-protocol.mjs; search remains anonymous.
+
+import { KuwoLoginProtocol } from './kuwo-login-protocol.mjs';
+import { validPlatformCredential } from './platform-login-protocols.mjs';
+import { randomUUID } from 'node:crypto';
 
 const failure = (message, status = 400) => Object.assign(new Error(message), { status });
 
@@ -255,7 +258,8 @@ function decodeEntities(text) {
 }
 
 export class KuwoCatalog {
-  constructor({ fetch: doFetch = globalThis.fetch, searchBase = 'http://search.kuwo.cn', playBase = 'http://antiserver.kuwo.cn', payBase = 'http://musicpay.kuwo.cn' } = {}) {
+  constructor({ auth, fetch: doFetch = globalThis.fetch, searchBase = 'http://search.kuwo.cn', playBase = 'http://antiserver.kuwo.cn', payBase = 'http://musicpay.kuwo.cn' } = {}) {
+    this.auth = auth; this.accountProtocol = new KuwoLoginProtocol(doFetch); this.deviceId = randomUUID();
     this.doFetch = doFetch; this.searchBase = searchBase; this.playBase = playBase; this.payBase = payBase;
     this.headers = { 'User-Agent': 'okhttp/3.12.0', Referer: 'http://www.kuwo.cn/' };
   }
@@ -337,11 +341,46 @@ export class KuwoCatalog {
       lyrics: { original: '', translated: '', instrumental: false, unavailable: true },
     };
   }
-  async playlists() {
-    throw failure('酷我歌单尚未接入（平台侧对应端点尚未验证）。', 501);
+  async accountRequest(params) {
+    await this.auth?.ready;
+    const credential = this.auth?.credential, epoch = this.auth?.epoch;
+    if (!validPlatformCredential('kuwo', credential)) throw failure('请先登录酷我音乐。', 401);
+    const query = new URLSearchParams({ uid: credential.uid, sid: credential.sid, encode: 'utf-8', plat: 'ar',
+      devid: this.deviceId, user: this.deviceId, prod: 'kwplayer_ar_12.1.8.2', source: 'kwplayer_ar_12.1.8.2_hw.apk',
+      corp: 'kuwo', locationid: '', approval: 'false', city: '', province: '', imei: this.deviceId,
+      ttime: String(Date.now()), devicetype: 'Windows', allpay: '0', notrace: '0', ...params });
+    const raw = await this.accountProtocol.request(`https://nplserver.kuwo.cn/pl.svc?${query}`, { maxBytes: 4194304, headers: this.headers });
+    if (credential !== this.auth.credential || epoch !== this.auth.epoch) throw failure('酷我账号已变化，请刷新歌单。', 409);
+    let body; try { body = JSON.parse(raw); } catch { throw failure('酷我歌单响应格式发生变化。', 502); }
+    if (body?.result !== 'ok') throw failure('酷我暂时无法读取账号歌单，请刷新登录状态或稍后重试。', 502);
+    return { body, credential };
   }
-  async playlistTracks() {
-    throw failure('酷我歌单尚未接入（平台侧对应端点尚未验证）。', 501);
+  async playlists(offset = 0) {
+    const start = Math.max(0, Math.floor(Number(offset) || 0));
+    const { body, credential } = await this.accountRequest({ op: 'pl3_getuserlists', recommend: '1' });
+    if (!Array.isArray(body.plist)) throw failure('酷我账号歌单响应格式发生变化。', 502);
+    const playlists = body.plist.flatMap(item => {
+      const id = String(item.id ?? item.pid ?? '');
+      if (!/^\d{1,20}$/.test(id)) return [];
+      return [{ id, name: decodeEntities(clean(item.title || item.name)) || '酷我歌单',
+        trackCount: Math.max(0, Number(item.musicnum ?? item.total ?? item.count) || 0),
+        coverUrl: clean(item.pic || item.img), owned: item.uid === undefined ? String(item.kind) === '1' : String(item.uid) === credential.uid }];
+    });
+    return { provider: 'kuwo', offset: start, limit: 100, total: playlists.length, playlists: playlists.slice(start, start + 100), hasMore: start + 100 < playlists.length };
+  }
+  async playlistTracks(id, offset = 0) {
+    if (!/^\d{1,20}$/.test(String(id))) throw failure('无效的酷我歌单标识。', 400);
+    const start = Math.max(0, Math.floor(Number(offset) || 0));
+    const { body } = await this.accountRequest({ op: 'getlistinfo', pid: String(id), pn: String(Math.floor(start / 100)), rn: '100', keyset: 'pl2012', identity: 'kuwo', newver: '1' });
+    if (!Array.isArray(body.musiclist)) throw failure('酷我歌单歌曲响应格式发生变化。', 502);
+    const tracks = body.musiclist.flatMap(item => {
+      const track = kuwoTrack({ ...item, MUSICRID: String(item.MUSICRID ?? item.id ?? '').replace(/^(?!MUSIC_)/, 'MUSIC_'),
+        NAME: item.NAME ?? item.name, ARTIST: item.ARTIST ?? item.artist, ALBUM: item.ALBUM ?? item.album,
+        ALBUMID: item.ALBUMID ?? item.albumid, DURATION: item.DURATION ?? item.duration });
+      return track ? [track] : [];
+    });
+    const total = Math.max(0, Number(body.total) || tracks.length);
+    return { provider: 'kuwo', playlistId: String(id), offset: start, limit: 100, total, tracks, hasMore: start + 100 < total };
   }
 }
 

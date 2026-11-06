@@ -24,9 +24,6 @@
 .music-app.empty-library .music-view-toggle {
   display: none;
 }
-.music-app[data-layout="portrait"] .music-topnav:has(#my-playlists-button:not([hidden])) {
-  grid-template-columns: 28px 28px 28px minmax(0, 1fr) minmax(80px, 122px);
-}
 .playlist-list { margin-top: 18px; }
 /* 本地歌单（对照参考行为的本地歌单面板） */
 .local-playlists { margin-bottom: 22px; }
@@ -72,9 +69,6 @@
 .dedicated-login .netease-qr {
   margin: 24px auto;
   text-align: center;
-}
-.music-app[data-layout="portrait"] .music-topnav {
-  grid-template-columns: 28px 28px minmax(0, 1fr) minmax(80px, 122px);
 }
 .music-app[data-layout="portrait"] #netease-login-button {
   width: auto;

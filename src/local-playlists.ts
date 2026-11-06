@@ -8,7 +8,7 @@
 // 需要按 provider + onlineSourceId 重新走平台的 prepare 取址。这样做是为了
 // 让歌单在登录态变化、平台换 hash 之后依然能放出来。
 import type { MusicTrack } from './music-types';
-import { qualityTierOf, qualityTierWeight, type QualityTier } from './quality-tier';
+import { qualityTierOf, qualityTierWeight, type QualityTier } from './quality-tier.ts';
 
 /** 歌单来源：平台 id 或本地伪来源。 */
 export type PlaylistSource = import('./music-platform').MusicProvider | 'local';
@@ -65,13 +65,13 @@ export function localSongToTrack(song: LocalSong): MusicTrack {
     duration: song.duration ?? 0,
     format: '在线',
     browserPlayable: true,
-    ...(song.cover ? { coverUrl: song.cover } : {}),
     audioUrl: '',
     relativePath: '',
     onlineSource: {
       provider,
       id: song.onlineSourceId || song.id,
       albumTitle: song.album || '',
+      ...(song.cover ? { coverUrl: song.cover } : {}),
       pageUrl: '',
  // 付费/试听状态不参与展示（用户要求不标注），但仍要传下去：
  // 播放器据此决定是否去找全曲。
@@ -102,7 +102,7 @@ export function trackToLocalSong(track: MusicTrack): LocalSong {
   };
 }
 
-/** 曲目封面的取值顺序：轨道自带 → 在线源快照。 */
+/** 与播放器、歌曲架共用 onlineSource.coverUrl，保证收藏往返不丢封面。 */
 function coverOf(track: MusicTrack): string {
   return track.onlineSource?.coverUrl || '';
 }

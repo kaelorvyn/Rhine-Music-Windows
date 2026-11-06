@@ -288,6 +288,14 @@ export class MusicPlayer {
  // Intentionally no visibilitychange handler: music must continue in the background.
   }
 
+  /** Read the audio clock for lyric paint without emitting player/UI state each frame. */
+  get playbackPosition(): number {
+    if (this.pendingSeek !== null) return this.pendingSeek;
+    if (this.gapless && this.gapless.trackId === this.value.currentTrack?.id) return this.gapless.position;
+    if (this.song && this.value.backend === 'browser' && Number.isFinite(this.song.currentTime)) return this.song.currentTime;
+    return this.value.currentTime;
+  }
+
   get state(): MusicPlayerState {
     return { ...this.value, transport: this.transport, queue: [...this.value.queue] };
   }
@@ -505,8 +513,8 @@ export class MusicPlayer {
           result?.error || `${musicPlatforms[track.onlineSource.provider]}没有返回可播放的音源。`,
           !response.ok && retryableOnlineStatus(response.status),
         );
- // 共享池回的实际档位（actualQuality）与解密密钥（ekey）回填到曲目上：
- // 音质徽章用它显示真实档位，加密格式（mflac/mgg）靠 ekey 还原。
+
+
         if ((result.actualQuality || result.ekey || result.format) && this.value.currentTrack?.id === track.id) {
           const current = this.value.currentTrack;
           this.value.currentTrack = {

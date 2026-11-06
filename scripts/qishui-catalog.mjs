@@ -1,5 +1,8 @@
+import { parseWordLyrics } from './word-lyrics.mjs';
+import * as luna from './qishui-h5.mjs';
+import { platformCover } from './platform-media.mjs';
 // Qishui (汽水音乐) protocol adapter.
-// 端点依据：2026-10-20 实测 + PC 客户端 3.7.0 的 IDL 对照。
+// 端点依据：公开 H5 通道实测。
 //
 //   账号歌单  GET  /luna/pc/me/playlist?cursor=&count=            （需 sessionid）
 //             -> { playlists, next_cursor, has_more, total_num }   ← cursor 分页，不是 offset
@@ -32,7 +35,7 @@ const UA_APP = 'Luna/19.1.0 Android';
 const UA_WEB = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36';
 const CT = 'application/json; charset=utf-8';
 
-// PC 端公共参数（对齐客户端 getTTCommonParams / shell_config.json 的 appId）。
+// 公共请求参数（固定值）。
 const AID = '386088';
 const IID = '4210500195088827';
 const VERSION_CODE = '30070100';
@@ -59,10 +62,10 @@ function coverOf(urlCover) {
   const base = Array.isArray(urlCover.urls) ? clean(urlCover.urls[0]) : '';
   const uri = clean(urlCover.uri);
   if (!uri) return undefined;
-  if (/^https?:\/\//.test(uri)) return uri;
+  if (/^https?:\/\//.test(uri)) return platformCover('qishui', uri);
   if (!/^https?:\/\//.test(base)) return undefined;
   const tpl = clean(urlCover.template_prefix);
-  return tpl ? `${base}${uri}~${tpl}-15.webp` : `${base}${uri}`;
+  return platformCover('qishui', tpl ? `${base}${uri}~${tpl}-15.webp` : `${base}${uri}`);
 }
 
 /** 歌手：Luna 用 artists[]，旧接口用扁平字段。 */
@@ -83,6 +86,10 @@ function feeFrom(item) {
 }
 
 function qualityFrom(item) {
+  // 新 H5 接口用 bit_rates[]：[{br,size,quality:'medium'|'higher'|'highest'}]。
+  const rates = Array.isArray(item?.bit_rates) ? item.bit_rates.map(rate => clean(rate?.quality).toLowerCase()) : [];
+  if (rates.some(rate => rate === 'lossless' || rate === 'hires' || rate === 'master')) return '无损';
+  if (rates.includes('highest')) return '高品';
   const q = clean(item?.quality ?? item?.video_meta?.quality ?? item?.bit_rate).toLowerCase();
   if (q.includes('lossless') || q.includes('flac') || q.includes('hires') || q.includes('master')) return '无损';
   if (q.includes('higher') || q.includes('320') || q.includes('excellent')) return '高品';
@@ -193,6 +200,8 @@ export class QishuiCatalog {
     this.now = now;
     this.accountCache = null;
     this.trackCache = new Map();
+    /** 搜索分页是 cursor 链：query → (页号 → 该页起点 cursor)。 */
+    this.cursorChain = new Map();
   }
 
   credential() { return this.auth?.credential; }
@@ -355,21 +364,9 @@ export class QishuiCatalog {
     const id = clean(value).replace(/^qishui-/, '');
     if (!id) throw failure('无效的汽水歌曲标识。', 400);
 
-    // 并行：签名通道（可能给整首）与免签名通道（给元数据/时长基准）。
-    const [payload, played] = await Promise.all([
-      this.seoTrack(id).catch(() => null),
-      this.mediaPlayer(id).catch(() => null),
-    ]);
+    const payload = await this.seoTrack(id).catch(() => null);
     const track = payload?.seo_track?.track ?? {};
     const fullSeconds = Number(track.duration) / 1000;
-
-    if (played?.audioUrl) {
-      const gotSeconds = Number(played.duration);
-      // 服务端对无权益账号会下发片段；片段不许当整首交出去，继续走下面的兜底。
-      const whole = !(fullSeconds > 0) || !Number.isFinite(gotSeconds) || gotSeconds <= 0 || gotSeconds + 1 >= fullSeconds;
-      if (whole) return { audioUrl: played.audioUrl, format: played.format, fee: feeFrom(track) };
-    }
-
     const model = parseVideoModel(payload);
     const first = Array.isArray(model.video_list) ? model.video_list[0] : null;
     const audioUrl = clean(first?.main_url ?? first?.backup_url);
@@ -379,12 +376,12 @@ export class QishuiCatalog {
     const previewVid = clean(track?.preview?.vid);
     const tooShort = Number.isFinite(gotSeconds) && gotSeconds > 0 && fullSeconds > 0 && gotSeconds + 1 < fullSeconds;
     const boundToPreview = !!previewVid && clean(model.video_id) === previewVid;
-    if (!audioUrl || tooShort || boundToPreview) {
-      // 用户可见文案不得出现「付费/会员/试听」字样（项目硬规则）。
-      // music-server 会吞掉这个错误并转 LX 换源兜底。
-      throw failure('汽水音乐暂时没有返回这首歌的播放地址，已自动尝试其他音源。', 403);
-    }
-    return { audioUrl, format: 'M4A', fee: feeFrom(track) };
+    const free = payload && feeFrom(track) === 0 && fullSeconds > 0;
+    if (free && audioUrl && gotSeconds > 0 && !tooShort && !boundToPreview) return { audioUrl, format: 'M4A', fee: 0 };
+    const played = free ? await this.mediaPlayer(id).catch(() => null) : null;
+    if (played?.audioUrl && Number(played.duration) > 0 && Number(played.duration) + 1 >= fullSeconds)
+      return { audioUrl: played.audioUrl, format: played.format, fee: 0 };
+    throw failure('汽水音乐暂时没有返回这首歌的播放地址，已自动尝试其他音源。', 403);
   }
 
   async songInfo(value) {
@@ -398,29 +395,45 @@ export class QishuiCatalog {
     return {
       track,
       album: { title: track.onlineSource.albumTitle || '未知专辑', artist: track.artist },
-      lyrics: { original: lyrics, translated: '', instrumental: false, unavailable: !lyrics },
+      lyrics: { wordLines: parseWordLyrics(typeof payload?.lyric === 'string' ? payload.lyric : payload?.lyric?.content ?? payload?.lyric?.lyric ?? payload?.lyric?.text ?? payload?.lyric?.lrc ?? ''), original: lyrics, translated: '', instrumental: false, unavailable: !lyrics },
     };
   }
 
-  /** 搜索需要 a_bogus 签名，恒空；保留实现只为路由完整性，前端不展示该页签。 */
+  /**
+   * 搜索。走 H5 通道 `POST /luna/search/{type}`，**零签名、免登录**：
+   * 实测未登录匿名搜索 1.3s 出真实结果（旧实现打的是 `/luna/search/track`
+   * +`keyword`，那个口子要 a_bogus 签名，恒返回空壳）。
+   *
+   * 返回体是 `result_groups[]`，每组 `data[]` 里 `meta.item_type` 区分
+   * track / artist / playlist / album；这里只取 track。
+   * 分页是 cursor 链，不是 offset —— 每页把 next_cursor 存进 cursorChain。
+   */
   async search(query, offset = 0) {
     const keyword = clean(query);
     if (!keyword || keyword.length > 100) throw failure('请输入 1 至 100 个字符的搜索词。', 400);
     const page = Math.floor(Math.max(0, offset) / 20);
-    const params = new URLSearchParams({
-      device_id: '46556f98-1720-4248-83da-62b74b60b46a',
-      keyword, count: '20', offset: String(page * 20),
-      search_id: '', cursor: String(page * 20),
-      type: 'search_one_track',
-    });
-    const response = await this.doFetch(`${this.base}/luna/search/track?${params}`, {
-      headers: { 'User-Agent': UA_PC, 'Content-Type': CT },
-    });
-    const body = await response.json().catch(() => null);
-    if (!body) throw failure('汽水音乐没有返回有效数据。', 502);
-    const list = body?.data?.resultList ?? body?.resultList ?? body?.data?.tracks ?? body?.tracks ?? [];
-    const tracks = (Array.isArray(list) ? list : []).map(item => qishuiTrack(item)).filter(Boolean);
-    const total = Math.max(0, Number(body?.data?.total ?? body?.total ?? tracks.length));
-    return { provider: 'qishui', query: keyword, offset, limit: 20, total, hasMore: (page + 1) * 20 < total, tracks };
+    const chain = this.cursorChain.get(keyword) ?? new Map();
+    if (!this.cursorChain.has(keyword)) this.cursorChain.set(keyword, chain);
+    const cursor = chain.get(page) ?? '';
+    let body;
+    try {
+      body = await luna.search(keyword, { type: 'track', cursor });
+    } catch {
+      throw failure('汽水音乐搜索暂时不可用，请稍后重试。', 502);
+    }
+    const groups = Array.isArray(body?.result_groups) ? body.result_groups : [];
+    const items = groups.flatMap(group => (Array.isArray(group?.data) ? group.data : []))
+      .filter(item => item?.meta?.item_type === 'track')
+      .map(item => item.entity?.track ?? item.entity)
+      .filter(Boolean);
+    const tracks = items.map(item => qishuiTrack(item)).filter(Boolean).slice(0, 20);
+    const next = clean(groups.find(group => typeof group?.next_cursor === 'string')?.next_cursor);
+    const hasMore = groups.some(group => group?.has_more === true);
+    if (next) chain.set(page + 1, next);
+    return {
+      provider: 'qishui', query: keyword, offset, limit: 20,
+      total: hasMore ? offset + tracks.length + 1 : offset + tracks.length,
+      hasMore, tracks,
+    };
   }
 }

@@ -2,7 +2,7 @@
 export const PORTRAIT_ASPECT = 1.05;
 
 export function isPortraitViewport(width: number, height: number) {
-  return Math.max(1, width) / Math.max(1, height) < PORTRAIT_ASPECT;
+  return height >= 480 && Math.max(1, width) / Math.max(1, height) < PORTRAIT_ASPECT;
 }
 
 /** Reference coordinates remain exact during the film and at 1920 × 1080. */
@@ -21,15 +21,18 @@ export function viewportLayout(width: number, height: number, coarse: boolean, c
 }
 
 /** Preserve the long-lens perspective. Reframe only the camera, never the card. */
-export function archiveFraming(width: number, height: number, span: number, detail: number, compact: boolean) {
+export function archiveFraming(width: number, height: number, span: number, detail: number, compact: boolean, headerBottom = 0, contentTop = height * .5) {
   width = Math.max(1, width);
   height = Math.max(1, height);
   const aspect = width / height;
   const portrait = isPortraitViewport(width, height);
   const baseSpan = span + (5.9 - span) * detail;
   const portraitDetailSpan = Math.max(6.3 / aspect, 3.7 * height / Math.max(100, 0.54 * height - 156));
+  const coverTop = headerBottom + 48;
+  const coverSpace = Math.max(40, contentTop - coverTop - 24);
+  const measuredDetailSpan = portrait && headerBottom > 0 ? Math.max(6.3 / aspect, 3.7 * height / coverSpace) : portraitDetailSpan;
   const viewSpan = portrait
-    ? Math.max(baseSpan, 8.4 / aspect + (portraitDetailSpan - 8.4 / aspect) * detail)
+    ? Math.max(baseSpan, 8.4 / aspect + (measuredDetailSpan - 8.4 / aspect) * detail)
     : Math.max(baseSpan, baseSpan * (16 / 9) / aspect);
   return {
     span: viewSpan,
@@ -37,7 +40,8 @@ export function archiveFraming(width: number, height: number, span: number, deta
  // Portrait selection is deliberately above its title and navigation.
     previewY: portrait ? 0.36 : 0.5,
     detailX: portrait ? 0.5 : compact ? 0.27 : 550 / 1920,
-    detailY: portrait ? 0.27 + 34 / height : compact ? 0.49 : 560 / 1080,
+    detailY: portrait ? headerBottom > 0 ? (coverTop + coverSpace / 2) / height : 0.27 + 34 / height
+      : compact && headerBottom > 0 ? (headerBottom + (height - headerBottom) / 2) / height : compact ? 0.49 : 560 / 1080,
   };
 }
 

@@ -32,6 +32,24 @@ test('range streaming preserves bytes/status and never forwards browser cookies'
   assert.equal(options.headers.Cookie,undefined);assert.equal(options.headers.Range,'bytes=2-4');
   assert.equal(options.redirect,'manual');assert.ok(options.dispatcher);assert.equal(f.relay.active.size,0);
 });
+
+test('trusted module media gets an opaque local ticket with strict origin-bound redirects', async t => {
+  let visited;
+  const f = await fixture(t, async (url, options) => {
+    visited = { url, options };
+    return new Response(new Uint8Array([1, 2]), { status: 206, headers: { 'content-type': 'audio/mp4', 'content-range': 'bytes 0-1/1024', 'content-length': '2' } });
+  });
+  const address = 'https://module-media.example.test/opaque/audio-ticket';
+  assert.throws(() => f.relay.register('qishui', address));
+  const ticket = f.relay.register('qishui', address, { trustedModule: true });
+  assert.ok(!ticket.includes('module-media'));
+  const response = await fetch(f.url + ticket, { headers: { Range: 'bytes=0-1', Cookie: 'private=never-forward' } });
+  assert.equal(response.status, 206); assert.equal((await response.arrayBuffer()).byteLength, 2);
+  assert.equal(visited.options.headers.Cookie, undefined); assert.equal(visited.options.headers.Range, 'bytes=0-1');
+  for (const unsafe of ['http://module-media.example.test/audio', 'https://127.0.0.1/audio', 'https://[::1]/audio', 'https://host.local/audio', 'https://user:pass@module-media.example.test/audio']) assert.throws(() => f.relay.register('qishui', unsafe, { trustedModule: true }));
+  f.relay.fetcher = async () => new Response('', { status: 302, headers: { location: 'https://foreign.example.test/audio' } });
+  assert.equal((await fetch(f.url + ticket)).status, 502);
+});
 test('redirects are validated on every hop and HTML responses are rejected',async t=>{
   const calls=[];const f=await fixture(t,async(url)=>{calls.push(url);return new Response(null,{status:302,headers:{location:'http://127.0.0.1/private'}});});
   const path=f.relay.register('netease','https://m7.music.126.net/a');

@@ -7,7 +7,9 @@ const device = { renderer: '', unmasked: true, cores: 12, memoryGB: 8, nativePix
 test('actual MX550, UHD and masked/software devices choose conservative independent budgets', () => {
   for (const [renderer, preset] of [
     ['ANGLE (NVIDIA, NVIDIA GeForce MX550 (0x000025A6) Direct3D11)', 'discrete'],
-    ['ANGLE (Intel, Intel(R) UHD Graphics (0x000046A3) Direct3D11)', 'balanced'],
+    ['ANGLE (Intel, Intel(R) UHD Graphics (0x000046A3) Direct3D11)', 'lowIntegrated'],
+    ['ANGLE (Intel, Intel(R) HD Graphics 520 Direct3D11)', 'lowIntegrated'],
+    ['ANGLE (Intel, Intel(R) Iris Xe Graphics Direct3D11)', 'balanced'],
     ['ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Laptop GPU Direct3D11)', 'discretePlus'],
     ['ANGLE (AMD, AMD Radeon RX 7800 XT Direct3D11)', 'discretePlus'],
     ['ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11)', 'balanced'],
@@ -21,7 +23,7 @@ test('actual MX550, UHD and masked/software devices choose conservative independ
     assert.ok(dimensions.width * dimensions.height <= result.quality.pixelBudget);
   }
   assert.equal(automaticQuality({ ...device, renderer: 'NVIDIA RTX 5090', unmasked: false }).preset, 'balanced');
-  assert.equal(automaticQuality({ ...device, renderer: 'Intel UHD', memoryGB: 2 }).preset, 'performance');
+  assert.equal(automaticQuality({ ...device, renderer: 'Intel UHD', memoryGB: 2 }).preset, 'lowIntegrated');
   assert.equal(automaticQuality({ ...device, renderer: 'NVIDIA GeForce RTX 3060', cores: 2 }).preset, 'discrete');
 });
 

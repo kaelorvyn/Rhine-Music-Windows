@@ -26,6 +26,7 @@ const { server } = await createMusicServer({
   },
   catalogs: { qq: emptyCatalog('qq'), bodian: emptyCatalog('bodian'), kugou: emptyCatalog('kugou'), kuwo: emptyCatalog('kuwo'), joox: emptyCatalog('joox') },
 });
+server.removeAllListeners('listening');
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 base = `http://127.0.0.1:${server.address().port}`;
 
@@ -46,7 +47,7 @@ try {
   page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.setDefaultTimeout(45000);
   page.on('pageerror', error => { errors.push(error.message); console.error('UI error:', error.message); });
-  await page.goto(`${base}/?lab=0`);
+  await page.goto(`${base}/?lab=0&scene=archive`);
   await page.waitForFunction(() => !!window.rhineMusic && !document.querySelector('#music-loading'), undefined, { timeout: 45000 });
   await page.waitForTimeout(2500);
 
@@ -85,13 +86,20 @@ try {
  // 缓存在「缓存」页：滑杆 + 文本。
   await page.locator('[data-action="settings-category"][data-category="cache"]').click();
   await until(`document.querySelector('[data-settings-page="cache"]')?.hidden === false`, 'cache page');
-  await page.locator('#cache-limit').fill('4096');
-  await page.locator('#cache-location').fill('D:\\cache');
+  assert.equal(await page.locator('#cache-limit').getAttribute('max'), '16384');
+  assert.equal(await page.locator('#cover-cache-limit').getAttribute('min'), '512');
+  assert.equal(await page.locator('#cover-cache-limit').getAttribute('max'), '2048');
+  await page.locator('#cache-limit').fill('16384');
+  await page.locator('#cover-cache-limit').fill('2048');
+  await page.locator('#cache-location').fill(path.join(directory, 'ui-cache'));
   await page.waitForTimeout(500);
   const cachePrefs = await readPrefs();
-  assert.equal(cachePrefs.cacheLimit, 4096, '缓存上限');
-  assert.equal(cachePrefs.cacheLocation, 'D:\\cache', '缓存位置');
-  assert.match(await page.locator('#cache-limit-status').textContent(), /4096 MB/, '缓存上限有回显');
+  assert.equal(cachePrefs.cacheLimit, 16384, '缓存上限');
+  assert.equal(cachePrefs.coverCacheLimit, 2048);
+  assert.equal((await fetch(base + '/api/audio/cache').then(r => r.json())).limitBytes, 16384 * 1024 ** 2);
+  assert.equal((await fetch(base + '/api/covers/cache').then(r => r.json())).limitBytes, 2048 * 1024 ** 2);
+  assert.equal(cachePrefs.cacheLocation, path.join(directory, 'ui-cache'), '缓存位置');
+  assert.match(await page.locator('#cache-limit-status').textContent(), /16384 MB/, '缓存上限有回显');
 
 // 分类切换与导航高亮：诊断页已按用户要求移除，这里用「本地歌单」。
 await page.evaluate(() => document.querySelector('[data-action="settings-category"][data-category="local"]').click());

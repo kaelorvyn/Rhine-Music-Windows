@@ -13,7 +13,7 @@ const COVER = {
   urls: ['https://p3-luna.douyinpic.com/img/', 'https://p6-luna.douyinpic.com/img/'],
   template_prefix: 'tplv-b829550vbb',
 };
-const COVER_URL = 'https://p3-luna.douyinpic.com/img/tos-cn-i-b829550vbb/b2cbd90873404bcab5de9e6213cc38c0~tplv-b829550vbb-15.webp';
+const COVER_URL = '/api/online/qishui/cover?url=' + encodeURIComponent('https://p3-luna.douyinpic.com/img/tos-cn-i-b829550vbb/b2cbd90873404bcab5de9e6213cc38c0~tplv-b829550vbb-15.webp');
 
 const lunaTrack = (over = {}) => ({
   id: '6732580534901278722',
@@ -173,13 +173,15 @@ test('validQishuiCredential 只接受形状正确的凭据', () => {
   assert.equal(validQishuiCredential({ sessionid: 'abc12345', userId: 'not-numeric' }), false);
 });
 
-test('signHeaders 在原生文件缺失时原样返回，不抛错', async () => {
-  // 指向一个不存在的目录：签名必须优雅退化，而不是让整个播放链路崩掉。
+test('signHeaders 不依赖原生文件，纯 JS 返回两个签名头', async () => {
   process.env.RHINE_QISHUI_NATIVE = 'Z:/definitely-not-here';
   const signer = await import(`./qishui-signer.mjs?missing=${Date.now()}`);
-  assert.equal(signer.signerReady(), false);
+  assert.equal(signer.signerReady(), true);
   const headers = { 'user-agent': 'x' };
-  assert.equal(signer.signHeaders('https://api.qishui.com/x', headers), headers);
+  const result = signer.signHeaders('https://api.qishui.com/x?aid=386088', headers);
+  assert.equal(result['user-agent'], 'x');
+  assert.ok(result['X-Helios'].length > 10); assert.ok(result['X-Medusa'].length > 100);
+  assert.equal(headers['X-Helios'], undefined);
   delete process.env.RHINE_QISHUI_NATIVE;
 });
 
@@ -190,7 +192,7 @@ test('mediaPlayer 未登录时直接返回 null，不发起请求', async () => 
   assert.equal(calls, 0, '没有登录态就不该打接口');
 });
 
-test('prepare 有签名通道时优先用它，且片段会被拒绝', async () => {
+test('prepare 免费歌曲签名通道返回片段时也会被拒绝', async () => {
   // 签名通道给 19 秒（片段），免签名通道也是片段：必须报错而不是当整首播。
   const catalog = new QishuiCatalog({
     auth: { credential: { sessionid: 'abcdefgh12345678' } },
@@ -205,6 +207,23 @@ test('prepare 有签名通道时优先用它，且片段会被拒绝', async () 
     },
   });
   await assert.rejects(() => catalog.prepare('qishui-6732580534901278722'), /没有返回这首歌的播放地址/);
+});
+
+test('prepare 受限歌曲不请求本地签名通道，即使 H5 返回全长也交给上游', async () => {
+  let signedCalls = 0;
+  const catalog = new QishuiCatalog({ fetch: fakeFetch([['seo_track', () => json({ seo_track: { track: lunaTrack() },
+    track_player: { video_model: JSON.stringify({ video_duration: 218.133, video_list: [{ main_url: 'https://cdn/full.m4a' }] }) } })]]) });
+  catalog.mediaPlayer = async () => { signedCalls++; return { audioUrl: 'https://cdn/paid.m4a', duration: 218.133 }; };
+  await assert.rejects(catalog.prepare('qishui-1'), /没有返回这首歌的播放地址/);
+  assert.equal(signedCalls, 0);
+});
+
+test('prepare 免费歌曲可用签名全长补缺，不能用缺少时长的地址', async () => {
+  const catalog = new QishuiCatalog({ fetch: fakeFetch([['seo_track', () => json({ seo_track: { track: lunaTrack({ label_info: {} }) } })]]) });
+  catalog.mediaPlayer = async () => ({ audioUrl: 'https://cdn/free.m4a', format: 'M4A', duration: 218.133 });
+  assert.equal((await catalog.prepare('qishui-1')).audioUrl, 'https://cdn/free.m4a');
+  catalog.mediaPlayer = async () => ({ audioUrl: 'https://cdn/unknown.m4a', format: 'M4A' });
+  await assert.rejects(catalog.prepare('qishui-1'), /没有返回这首歌的播放地址/);
 });
 
 test('songInfo 把 QRC 逐字歌词转成标准 LRC，不把标签当正文', async () => {

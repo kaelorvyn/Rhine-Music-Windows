@@ -2,7 +2,7 @@ import type { MusicAlbum, MusicTrack, NeteasePlaylist } from './music-types';
 import { playbackAlbums } from './playback-albums.ts';
 import { wrap } from './archive-loop.ts';
 import { playlistSourceName, type MusicProvider, type PlaylistSource } from './music-platform.ts';
-import { fetchOnline } from './online-debug.ts';
+import { playlistPage, invalidatePlaylistPages, playlistCoverPreload } from './playlist-cover-preload.ts';
 import { localSongToTrack, type LocalPlaylistSummary, type LocalSong, type LocalSortKey } from './local-playlists.ts';
 /** One account playlist row tagged with its platform, so several platforms can
  * share one aggregated browse view (歌单平台选择器：全部 / 单平台 / 本地). */
@@ -33,6 +33,7 @@ export class NeteasePlaylists {
   setLocalSort(key: LocalSortKey, direction: 'ascending' | 'descending') {
     if (this.localSort.key === key && this.localSort.direction === direction) return;
     this.localSort = { key, direction };
+    playlistCoverPreload.setLocalSort(key, direction);
  // 排序变了，已缓存的分页全部作废。
     this.dispose();
   }
@@ -44,53 +45,91 @@ export class NeteasePlaylists {
   }
   private async request<T>(provider: PlaylistSource, url: string): Promise<T> {
  // 本地歌单不经在线诊断管线（不是平台请求），直接走本机 API。
-    const response = provider === 'local'
-      ? await fetch(url, { signal: this.controller.signal })
-      : await fetchOnline(provider, url.includes('/tracks?') ? 'playlistTracks' : 'playlists', url, { signal: this.controller.signal });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || `${playlistSourceName(provider)}歌单暂时不可用。`);
-    return body;
+    return playlistPage<T>(provider, url, this.controller.signal);
+  }
+
+  private cancelRequests() {
+    invalidatePlaylistPages();
+    this.generation++; this.windowEpoch++; this.titlePrefetchEpoch++; this.titlePrefetchKey = ''; this.controller.abort(); this.controller = new AbortController();
+    this.pending.clear();
   }
   dispose() {
-    this.generation++; this.windowEpoch++; this.titlePrefetchEpoch++; this.titlePrefetchKey = ''; this.controller.abort(); this.controller = new AbortController();
+    this.cancelRequests();
  // Queued jobs still run their cancellation checks and settle callers.
     this.pages.clear(); this.pending.clear(); this.playlists = []; this.loading = false; this.error = ''; this.revision++;
     this.albumsRevision = -1; this.albumsView = []; this.albumCache.clear();
   }
-  async load() {
-    this.dispose(); const generation = this.generation;
-    this.loading = true; this.changed();
+  adoptSnapshot(snapshot: ReturnType<typeof playlistCoverPreload.snapshot>) {
+    this.playlists = snapshot.playlists.map(playlist => ({ ...playlist }));
+    this.pages = new Map(snapshot.pages); this.revision++;
+    this.albumsRevision = -1; this.albumsView = []; this.albumCache.clear();
+  }
+  async load({ keepSnapshot = false, prepareFirstPage = true } = {}) {
+    if (keepSnapshot) this.cancelRequests(); else this.dispose();
+    const generation = this.generation, previous = this.playlists;
+    this.loading = true; this.error = ''; this.changed();
     try {
       const playlists: PlaylistEntry[] = [];
+      const succeeded = new Set<PlaylistSource>();
       for (const provider of this.providers) {
+        const candidate: PlaylistEntry[] = [];
         try {
           if (provider === 'local') {
  // 本地歌单一次取完（数量小），没有分页。
             const page = await this.request<{ playlists: LocalPlaylistSummary[] }>('local', '/api/playlists/local');
             if (generation !== this.generation) return;
-            playlists.push(...page.playlists.map(item => ({
+            candidate.push(...page.playlists.map(item => ({
               id: item.id, name: item.name, trackCount: item.count,
               owned: !item.favorites, provider: 'local' as const,
               ...(item.favorites ? { favorites: true } : {}),
             })));
-            continue;
-          }
-          for (let offset = 0; offset <= 5000; offset += 100) {
+          } else for (let offset = 0; offset <= 5000; offset += 100) {
             const page = await this.request<{ playlists: NeteasePlaylist[]; hasMore: boolean }>(provider, `/api/online/${provider}/playlists?offset=${offset}`);
             if (generation !== this.generation) return;
-            playlists.push(...page.playlists.map(item => ({ ...item, provider })));
+            candidate.push(...page.playlists.map(item => ({ ...item, provider })));
             if (!page.hasMore) break;
-            if (offset === 5000) this.error = '当前显示前 5100 个歌单。';
+            if (offset === 5000) {
+              this.error = '当前显示前 5100 个歌单。';
+              // A truncated catalog cannot prove that older entries were deleted.
+              if (keepSnapshot) candidate.push(...previous.filter(item => item.provider === provider && !candidate.some(next => next.id === item.id)));
+            }
           }
+          succeeded.add(provider);
+          playlists.push(...candidate);
         } catch (failure) {
  // One unreachable platform must not discard the other platforms' playlists.
           if (generation !== this.generation) return;
           if (!this.controller.signal.aborted) this.error = (failure as Error).message;
+          if (keepSnapshot) playlists.push(...previous.filter(item => item.provider === provider).map(item => ({ ...item })));
         }
       }
-      this.playlists = [...new Map(playlists.map(item => [`${item.provider}:${item.id}`, item])).values()]; this.revision++;
+      const next = [...new Map(playlists.map(item => [`${item.provider}:${item.id}`, item])).values()];
+      let firstPage: { key: string; tracks: (MusicTrack | null)[] } | undefined;
+      const first = next.find(item => (item.trackCount || 0) > 0 && succeeded.has(item.provider));
+      if (first && prepareFirstPage) {
+        try {
+          const page = first.provider === 'local' ? await this.localSongs(first.id, 0)
+            : await this.request<{ tracks: (MusicTrack | null)[]; total: number }>(first.provider, `/api/online/${first.provider}/playlists/${first.id}/tracks?offset=0`);
+          if (generation !== this.generation) return;
+          if (!Array.isArray(page.tracks) || !Number.isFinite(page.total) || page.total < 0) throw new Error('歌单分页数据无效');
+          first.trackCount = page.total;
+          firstPage = { key: `${first.provider}:${first.id}:0`, tracks: page.tracks };
+        } catch (failure) {
+          if (generation !== this.generation) return;
+          this.error = (failure as Error).message;
+        }
+      }
+      if (generation !== this.generation) return;
+      const retained = new Map<string, (MusicTrack | null)[]>();
+      if (keepSnapshot) for (const [key, tracks] of this.pages) {
+        const [provider, id, offset] = key.split(':');
+        if (next.some(item => item.provider === provider && String(item.id) === id && Number(offset) < (item.trackCount || 0))) retained.set(key, tracks);
+      }
+      if (firstPage) { retained.delete(firstPage.key); retained.set(firstPage.key, firstPage.tracks); }
+      while (retained.size > 96) retained.delete(retained.keys().next().value!);
+      // Publish catalog and pages together; loading callbacks keep the old wall.
+      this.playlists = next; this.pages = retained; this.revision++;
       this.changed();
-      if (this.playlists.length) await this.ensure(0, 0);
     } catch (failure) { if (generation === this.generation && !this.controller.signal.aborted) this.error = (failure as Error).message; }
     finally { if (generation === this.generation) { this.loading = false; this.changed(); } }
   }
@@ -111,6 +150,7 @@ export class NeteasePlaylists {
   invalidatePlaylist(row: number) {
     const playlist = this.playlists[row];
     if (!playlist) return;
+    invalidatePlaylistPages(playlist.provider);
     const prefix = `${playlist.provider}:${playlist.id}:`;
     for (const key of [...this.pages.keys()]) if (key.startsWith(prefix)) this.pages.delete(key);
     for (const key of [...this.pending.keys()]) if (key.startsWith(prefix)) this.pending.delete(key);
@@ -135,7 +175,10 @@ export class NeteasePlaylists {
         ? await this.localSongs(playlist.id, offset)
         : await this.request<{ tracks: (MusicTrack | null)[]; total: number }>(playlist.provider, `/api/online/${playlist.provider}/playlists/${playlist.id}/tracks?offset=${offset}`);
       if (generation !== this.generation) return;
-      playlist.trackCount = page.total; this.pages.set(key, page.tracks);
+      if (!Array.isArray(page.tracks) || !Number.isFinite(page.total) || page.total < 0) throw new Error('歌单分页数据无效');
+      const current = this.playlists.find(item => item.provider === playlist.provider && item.id === playlist.id);
+      if (!current) return;
+      current.trackCount = page.total; this.pages.set(key, page.tracks);
       while (this.pages.size > 96) this.pages.delete(this.pages.keys().next().value!);
       this.error = ''; this.revision++; this.changed();
     }, key, priority).finally(() => { if (generation === this.generation) this.pending.delete(key); });

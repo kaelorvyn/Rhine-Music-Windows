@@ -3,8 +3,8 @@ export function platformMediaUrl(provider, value, cover = false) {
   try {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.port || url.username || url.password) return undefined;
-    if (!['qq', 'bodian'].includes(provider)) return undefined;
-    const domains = provider === 'bodian' ? ['kuwo.cn'] : cover ? ['gtimg.cn', 'gtimg.com'] : ['qqmusic.qq.com'];
+    if (!['qq', 'bodian', 'qishui'].includes(provider) || (provider === 'qishui' && !cover)) return undefined;
+    const domains = provider === 'qishui' ? ['douyinpic.com'] : provider === 'bodian' ? ['kuwo.cn'] : cover ? ['gtimg.cn', 'gtimg.com'] : ['qqmusic.qq.com'];
     if (!matches(url.hostname, domains)) return undefined;
  // Some multi-level Kuwo CDN endpoints do not offer matching TLS certificates.
  // Preserve their returned scheme; never forward account credentials to media.
@@ -38,7 +38,7 @@ export class PlatformCoverStore {
     if (this.pending.has(key)) return this.pending.get(key);
     if (this.pending.size >= 36) throw Object.assign(new Error('封面请求繁忙。'), { status: 429 });
     const operation = this.run(async () => {
-      const response = await this.fetcher(url, { redirect: 'error', signal: AbortSignal.timeout(10000), headers: { Referer: provider === 'qq' ? 'https://y.qq.com/' : 'https://bodian.kuwo.cn/' } });
+      const response = await this.fetcher(url, { redirect: 'error', signal: AbortSignal.timeout(10000), headers: { Referer: provider === 'qishui' ? 'https://qishui.com/' : provider === 'qq' ? 'https://y.qq.com/' : 'https://bodian.kuwo.cn/' } });
       const type = response.headers.get('content-type')?.split(';')[0];
       if (!response.ok || !['image/jpeg', 'image/png', 'image/webp'].includes(type) || Number(response.headers.get('content-length') || 0) > 4194304) throw new Error('平台封面暂时不可用。');
       const chunks = []; let size = 0;

@@ -1,3 +1,4 @@
+import { coverResources } from './cover-resources.ts';
 import * as THREE from "three";
 import type { MusicSelectionLighting } from "./music-lighting";
 import type { ArchiveRecord } from "./data";
@@ -9,6 +10,7 @@ export const COVER_SIZE = MUSIC_COVER;
 export type CoverImage = { source: CanvasImageSource; width: number; height: number };
 type DecodedCoverImage = CoverImage & { decodedSize: number; pixels: number };
 type DecodeJob = { url: string; generation: number; size: number; priority: number; resolve: (image: DecodedCoverImage | undefined) => void; image?: HTMLImageElement };
+type CoverIdentity = { key: string; owner: string; track?: string };
 export const COVER_PAINT_SIZE = 1024;
 // Use the same UV margin at every texture resolution. A fixed two-pixel inset
 // made the 256px atlas artwork smaller than its 1024px lifted/returning copy.
@@ -116,6 +118,9 @@ export class CoverAtlas {
   private readonly desiredKeys: (string | undefined)[];
   private frameBudget = false;
   private readonly pendingPaints = new Map<number, () => void>();
+  private visibleRequests: { slot: number; record: ArchiveRecord | undefined }[] = [];
+  private readonly imageReadySlots = new Set<number>();
+  private readonly uploadedImageSlots = new Set<number>();
   private lastPrepared = 0;
   private lastPreparationMs = 0;
   private lastUploadMs = 0;
@@ -127,7 +132,7 @@ export class CoverAtlas {
   private peakDecodes = 0;
   private decodedPixels = 0;
   // 预热要覆盖全库，3 个解码槽追不上。
-  private readonly maxDecodeConcurrency = 6;
+  private readonly maxDecodeConcurrency = 3;
   // 12M 像素（≈48MB）只够放 192 张缩略图 —— 用户快速切换时第 193 张起
   // 又要重新下载并解码，这就是「切一下就卡」。抬到 96M（≈384MB 上限，
   // 实际按需增长），整库缩略图都能常驻。
@@ -135,7 +140,12 @@ export class CoverAtlas {
   private prefetchRequests = 0;
   private prefetchHits = 0;
   private readonly slotKeys: (string | undefined)[];
-  private readonly recordKeys = new WeakMap<ArchiveRecord, string>();
+  private readonly recordKeys = new WeakMap<ArchiveRecord, CoverIdentity>();
+  private readonly slotOwners: (string | undefined)[] = [];
+  private readonly slotTracks: (string | undefined)[] = [];
+  private readonly paintedKeys: (string | undefined)[] = [];
+  private readonly uploadedKeys: (string | undefined)[] = [];
+  private selectedPaintedKey?: string;
   private readonly paintedTiles = new Map<string, { source: WeakRef<CanvasImageSource>; canvas: HTMLCanvasElement }>();
   private selectedRecord?: ArchiveRecord;
   private selectedKey?: string;
@@ -147,6 +157,10 @@ export class CoverAtlas {
   private readonly tileHeight: number;
 
   constructor(count: number, maxTextureSize: number, anisotropy: number, lighting?: MusicSelectionLighting, backgroundTileSize = 256, clarity?: CoverClarityState) {
+    // These canvases feed CPU-to-GPU tile copies; GPU-backed 2D surfaces force readbacks on upload.
+    this.atlasCanvas.getContext('2d', { willReadFrequently: true });
+    this.tileCanvas.getContext('2d', { willReadFrequently: true });
+    this.uploadCanvas.getContext('2d', { willReadFrequently: true });
     this.rows = Math.ceil(count / this.columns);
     this.tileWidth = Math.min(
       Math.min(256, Math.max(64, backgroundTileSize)),
@@ -232,7 +246,7 @@ export class CoverAtlas {
       shader.uniforms.coverAtlasTexel = { value: new THREE.Vector2(1 / this.atlasCanvas.width, 1 / this.atlasCanvas.height) };
       shader.fragmentShader = "varying float vCoverReady;\nvarying vec4 vCoverTile;\nuniform vec2 coverAtlasTexel;\n" + shader.fragmentShader;
       shader.fragmentShader = shader.fragmentShader.replace("#include <map_fragment>",
-        "if (vCoverReady < 0.5) discard;\n" + THREE.ShaderChunk.map_fragment.replace("texture2D( map, vMapUv )", "texture2D( map, clamp(vMapUv, vCoverTile.xy + coverAtlasTexel * 0.5, vCoverTile.xy + vCoverTile.zw - coverAtlasTexel * 0.5) )"));
+        "if (vCoverReady < 0.5) { diffuseColor *= vec4(0.788, 0.788, 0.769, 1.0); } else {\n" + THREE.ShaderChunk.map_fragment.replace("texture2D( map, vMapUv )", "texture2D( map, clamp(vMapUv, vCoverTile.xy + coverAtlasTexel * 0.5, vCoverTile.xy + vCoverTile.zw - coverAtlasTexel * 0.5) )") + "\n}");
     };
     material.customProgramCacheKey = () => `album-diffuse-atlas-${Boolean(lighting)}-${Boolean(clarity)}-v5`;
     this.array = new THREE.InstancedMesh(geometry, material, count);
@@ -258,6 +272,7 @@ export class CoverAtlas {
   }
 
   private cachedImage(url?: string) {
+    if (coverResources.enabled) return coverResources.peek(url);
     if (!url || !this.decodedImages.has(url)) return undefined;
     const image = this.decodedImages.get(url);
     this.decodedImages.delete(url);
@@ -269,9 +284,10 @@ export class CoverAtlas {
     if (!url) return Promise.resolve(undefined);
     if (this.disposed) return Promise.resolve(undefined);
     const size = priority ? COVER_PAINT_SIZE : this.tileWidth;
+    if (coverResources.enabled) return coverResources.load(url, size, urgent);
     if (this.decodedImages.has(url)) {
       const cached = this.cachedImage(url);
-      if (!cached || cached.decodedSize >= Math.min(size, Math.max(cached.width, cached.height))) return Promise.resolve(cached);
+      if (!cached || cached.decodedSize >= (coverResources.enabled ? size : Math.min(size, Math.max(cached.width, cached.height)))) return Promise.resolve(cached);
     }
     let pending = this.pendingImages.get(url);
     if (pending) {
@@ -346,23 +362,49 @@ export class CoverAtlas {
     }
   }
 
-  private recordKey(record: ArchiveRecord | undefined) {
- // Description/metadata refreshes replace record objects without changing
- // their print. Cache only the visual identity, not the object reference.
-    let key = record ? this.recordKeys.get(record) : "";
-    if (record && key === undefined) {
-      key = JSON.stringify([record.id, record.album?.coverUrl, record.title]);
-      this.recordKeys.set(record, key);
+  private recordIdentity(record: ArchiveRecord | undefined): CoverIdentity {
+    if (!record) return { key: '', owner: '' };
+    let identity = this.recordKeys.get(record);
+    if (!identity) {
+      const cell = record.album?.playlistCell;
+      const owner = cell ? JSON.stringify([cell.provider || 'netease', cell.playlistId, cell.songIndex]) : record.id;
+      const url = record.album?.coverUrl;
+      identity = { owner, key: JSON.stringify([owner, url || '', url ? '' : record.title]), track: record.album?.tracks?.[0]?.id };
+      this.recordKeys.set(record, identity);
     }
-    return key!;
+    return identity;
+  }
+  private recordKey(record: ArchiveRecord | undefined) { return this.recordIdentity(record).key; }
+
+  private planSlot(slot: number, record: ArchiveRecord | undefined) {
+    const identity = this.recordIdentity(record);
+    const changed = this.slotOwners[slot] !== identity.owner || Boolean(this.slotTracks[slot] && identity.track && this.slotTracks[slot] !== identity.track);
+    this.desiredKeys[slot] = identity.key;
+    if (changed) {
+      this.slotKeys[slot] = undefined; this.paintedKeys[slot] = this.uploadedKeys[slot] = undefined;
+      this.pendingPaints.delete(slot); this.imageReadySlots.delete(slot); this.uploadedImageSlots.delete(slot);
+      this.setReady(slot, 0); this.slotTracks[slot] = identity.track;
+    } else if (identity.track) this.slotTracks[slot] = identity.track;
+    this.slotOwners[slot] = identity.owner;
+    // A newer print supersedes queued CPU work, but the uploaded print of
+    // this same entity stays visible until its replacement reaches the GPU.
+    if (this.slotKeys[slot] !== identity.key) this.dirtySlots.delete(slot);
+    return identity.key;
   }
 
  /** Decode ahead without painting/uploading the entire atlas. A focus-first
  * plan replaces stale speculative queue entries; urgent draws are retained. */
   prefetch(records: readonly (ArchiveRecord | undefined)[], detailed = 0) {
     if (this.disposed) return;
+    if (coverResources.enabled) {
+      for (let i = 0; i < Math.min(detailed, records.length); i++) {
+        const url = records[i]?.album?.coverUrl; if (url) void coverResources.load(url, COVER_PAINT_SIZE);
+      }
+      coverResources.warmAll((function* () { for (const record of records) yield record?.album?.coverUrl; })());
+      return;
+    }
     // 全量：调用方已经把「要预热的范围」决定好了（首屏 or 全库）。
-    const plan = records;
+    const plan = coverResources.enabled ? records : records.slice(0, 32);
     const wanted = new Set(plan.map(record => record?.album?.coverUrl).filter(Boolean));
     for (let i = this.decodeQueue.length - 1; i >= 0; i--) {
       const job = this.decodeQueue[i];
@@ -380,7 +422,7 @@ export class CoverAtlas {
       seen.add(url);
       const high = i < detailed, size = high ? COVER_PAINT_SIZE : this.tileWidth;
       const cached = this.cachedImage(url);
-      if (cached && cached.decodedSize >= Math.min(size, Math.max(cached.width, cached.height))) { this.prefetchHits++; continue; }
+      if (cached && cached.decodedSize >= (coverResources.enabled ? size : Math.min(size, Math.max(cached.width, cached.height)))) { this.prefetchHits++; continue; }
       if (this.decodeQueue.length >= 512 && !this.pendingImages.has(url)) break;
       this.prefetchRequests++; void this.loadImage(url, high, false);
     }
@@ -391,8 +433,8 @@ export class CoverAtlas {
   }
 
   private copyCover(canvas: HTMLCanvasElement, key: string) {
-    const selected = this.selectedKey === key && canvas !== this.selectedCanvas;
-    const slot = selected ? -1 : this.slotKeys.indexOf(key);
+    const selected = this.selectedPaintedKey === key && canvas !== this.selectedCanvas;
+    const slot = selected ? -1 : this.paintedKeys.indexOf(key);
     if (!selected && slot < 0) return false;
     const context = canvas.getContext("2d")!;
     context.setTransform(1, 0, 0, 1, 0, 0);
@@ -421,7 +463,7 @@ export class CoverAtlas {
     paintCover(this.tileCanvas, record, image);
     const canvas = cached?.canvas || document.createElement('canvas');
     canvas.width = this.tileWidth; canvas.height = this.tileHeight;
-    canvas.getContext('2d')!.drawImage(this.tileCanvas, 0, 0);
+    canvas.getContext('2d', { willReadFrequently: true })!.drawImage(this.tileCanvas, 0, 0);
     this.paintedTiles.delete(cacheKey);
  // Weak source identity avoids retaining decoded images beyond their existing budget.
     this.paintedTiles.set(cacheKey, { source: new WeakRef(image.source), canvas });
@@ -433,31 +475,29 @@ export class CoverAtlas {
   }
 
   setSlot(slot: number, record: ArchiveRecord | undefined) {
-    const key = this.recordKey(record);
-    this.desiredKeys[slot] = key;
+    const key = this.planSlot(slot, record);
     if (this.slotKeys[slot] === key) return;
     this.pendingPaints.delete(slot);
     const image = this.cachedImage(record?.album?.coverUrl);
+    const retain = this.sourceReady[slot] === 1;
  // Reuse the target album's existing print before assigning this slot's
  // identity; otherwise the lookup could copy the slot's previous album.
-    if (!image && !this.copyCover(this.tileCanvas, key)) paintCover(this.tileCanvas, record);
+    if (!image && !retain && !this.copyCover(this.tileCanvas, key)) paintCover(this.tileCanvas, record);
     this.slotKeys[slot] = key;
- // A recycled instance must not briefly display the previous album while
- // its new tile waits for the bounded GPU upload budget.
-    this.dirtySlots.delete(slot);
-    this.setReady(slot, 0);
     const generation = this.generation;
     const draw = (image?: CoverImage) => {
       if (this.disposed || generation !== this.generation || this.slotKeys[slot] !== key || this.desiredKeys[slot] !== key) return;
       if (image) this.paintTile(key, record, image);
+      if (image) this.imageReadySlots.add(slot); else this.imageReadySlots.delete(slot);
       const x = (slot % this.columns) * this.tileWidth,
         y = Math.floor(slot / this.columns) * this.tileHeight;
       const context = this.atlasCanvas.getContext("2d")!;
       context.clearRect(x, y, this.tileWidth, this.tileHeight);
       context.drawImage(this.tileCanvas, x, y);
+      this.paintedKeys[slot] = key;
       this.dirtySlots.add(slot);
     };
-    draw(image);
+    if (image || !retain) draw(image);
     if (!image) void this.loadImage(record?.album?.coverUrl).then((loaded) => {
       if (loaded && !this.disposed && generation === this.generation && this.desiredKeys[slot] === key) {
         if (this.frameBudget) this.pendingPaints.set(slot, this.cachedPaintJob(slot, record?.album?.coverUrl, key, generation, draw));
@@ -478,7 +518,7 @@ export class CoverAtlas {
       if (this.disposed || generation !== this.generation || this.slotKeys[slot] !== key || this.desiredKeys[slot] !== key) return;
       const image = this.cachedImage(url);
       if (image) draw(image);
-      else { this.slotKeys[slot] = undefined; this.setReady(slot, 0); this.dirtySlots.delete(slot); }
+      else { this.slotKeys[slot] = undefined; this.dirtySlots.delete(slot); }
     };
   }
 
@@ -499,15 +539,13 @@ export class CoverAtlas {
 
   setFrameBudget(enabled: boolean) { this.frameBudget = enabled; }
 
- /** Planning invalidates stale prints immediately. Canvas preparation happens
- * only for visible slots, in focus order, and yields between bounded frames. */
+ /** Invalidate another song immediately; refresh the same song without a gap. */
   prepareFrame(requests: readonly { slot: number; record: ArchiveRecord | undefined }[], maxJobs: number, timeBudgetMs: number) {
+    this.visibleRequests = [...requests];
     const start = performance.now();
     let prepared = 0;
     for (const { slot, record } of requests) {
-      const key = this.recordKey(record);
-      this.desiredKeys[slot] = key;
-      if (this.slotKeys[slot] !== key) { this.setReady(slot, 0); this.dirtySlots.delete(slot); }
+      this.planSlot(slot, record);
     }
     for (const { slot, record } of requests) {
       if (prepared >= maxJobs || (prepared && performance.now() - start >= timeBudgetMs)) break;
@@ -523,16 +561,27 @@ export class CoverAtlas {
   }
 
   async select(record: ArchiveRecord | undefined) {
+    const previous = this.recordIdentity(this.selectedRecord), identity = this.recordIdentity(record);
+    const retain = Boolean(this.selectedPaintedKey && previous.owner === identity.owner &&
+      !(previous.track && identity.track && previous.track !== identity.track));
     this.selectedRecord = record;
     const key = this.recordKey(record);
     if (this.selectedKey === key) return;
     const generation = this.generation;
     const cached = this.cachedImage(record?.album?.coverUrl);
-    if (cached) paintCover(this.selectedCanvas, record, cached);
-    else if (!this.copyCover(this.selectedCanvas, key)) paintCover(this.selectedCanvas, record);
+    if (cached) { paintCover(this.selectedCanvas, record, cached); this.selectedPaintedKey = key; }
+    else if (!retain) {
+      if (!this.copyCover(this.selectedCanvas, key)) paintCover(this.selectedCanvas, record);
+      this.selectedPaintedKey = key;
+    }
     this.selectedKey = key;
-    this.selectedTexture.needsUpdate = true;
-    if (cached && cached.decodedSize >= Math.min(COVER_PAINT_SIZE, Math.max(cached.width, cached.height))) return;
+    if (cached || !retain) this.selectedTexture.needsUpdate = true;
+    if (cached && cached.decodedSize >= (coverResources.enabled ? COVER_PAINT_SIZE : Math.min(COVER_PAINT_SIZE, Math.max(cached.width, cached.height)))) return;
+    // Show the thumbnail before waiting for a new high-resolution download.
+    const thumbnail = coverResources.enabled ? cached || await this.loadImage(record?.album?.coverUrl) : undefined;
+    if (thumbnail && !this.disposed && generation === this.generation && this.selectedKey === key) {
+      paintCover(this.selectedCanvas, record, thumbnail); this.selectedPaintedKey = key; this.selectedTexture.needsUpdate = true;
+    }
     const image = await this.loadImage(record?.album?.coverUrl, true);
     if (
       !image ||
@@ -542,6 +591,7 @@ export class CoverAtlas {
     )
       return;
     paintCover(this.selectedCanvas, record, image);
+    this.selectedPaintedKey = key;
     this.selectedTexture.needsUpdate = true;
   }
 
@@ -601,6 +651,8 @@ export class CoverAtlas {
       renderer.copyTextureToTexture(this.uploadTexture, this.atlas, null, destination);
       this.dirtySlots.delete(slot);
       this.setReady(slot, 1);
+      this.uploadedKeys[slot] = this.paintedKeys[slot];
+      if (this.imageReadySlots.has(slot)) this.uploadedImageSlots.add(slot); else this.uploadedImageSlots.delete(slot);
       this.uploadedBytes += this.tileWidth * this.tileHeight * 4;
       this.uploadedTiles++;
       if (++uploaded >= limit || (budget && performance.now() - start >= budget.timeBudgetMs)) break;
@@ -612,32 +664,52 @@ export class CoverAtlas {
 
  /** Bounded wait for the currently visible requests; no whole-library preload. */
   async prepareVisible(timeoutMs = 1200) {
-    const pending = [...this.pendingImages.values()];
+    const generation = this.generation;
+    const requests = [...this.visibleRequests];
+    const pending = coverResources.enabled
+      ? [...new Set(requests.map(request => request.record?.album?.coverUrl).filter((url): url is string => Boolean(url)))]
+        .map(url => coverResources.load(url, 256, true))
+      : [...this.pendingImages.values()];
     let timer: ReturnType<typeof setTimeout> | undefined;
     const settled = !pending.length || await Promise.race([
       Promise.all(pending).then(() => true),
       new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, Math.min(3000, timeoutMs))); }),
     ]);
     if (timer !== undefined) clearTimeout(timer);
+    // Fill the same planned slots from decoded pixels; GPU upload follows in
+    // the renderer's existing bounded preparation turns, not on the intro clock.
+    for (let offset = 0; offset < requests.length;) {
+      if (this.disposed || generation !== this.generation) break;
+      const end = Math.min(requests.length, offset + 8);
+      this.prepareFrame(requests.slice(offset, end), 8, 4);
+      while (offset < end && this.slotKeys[requests[offset].slot] === this.desiredKeys[requests[offset].slot] &&
+        !this.pendingPaints.has(requests[offset].slot)) offset++;
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    }
+    if (generation === this.generation) this.visibleRequests = requests;
     return { settled, ...this.getStats() };
   }
 
   getStats() {
+    const resources = coverResources.enabled ? coverResources.stats() : undefined;
     return {
+      resources,
       atlasWidth: this.atlasCanvas.width, atlasHeight: this.atlasCanvas.height,
       atlasBytes: this.atlasCanvas.width * this.atlasCanvas.height * 4,
       tileWidth: this.tileWidth, tileHeight: this.tileHeight,
-      activeDecodes: this.activeJobs.size, queuedDecodes: this.decodeQueue.length,
+      activeDecodes: resources?.decodes ?? this.activeJobs.size, queuedDecodes: resources?.queued ?? this.decodeQueue.length,
       pendingImages: this.pendingImages.size, peakDecodes: this.peakDecodes,
-      cachedImages: this.decodedImages.size, cachedBytes: this.decodedPixels * 4,
-      cacheLimitBytes: this.maxDecodedPixels * 4, cacheLimitImages: 2048,
+      cachedImages: resources?.cachedImages ?? this.decodedImages.size, cachedBytes: resources?.cachedBytes ?? this.decodedPixels * 4,
+      cacheLimitBytes: resources?.cacheLimitBytes ?? this.maxDecodedPixels * 4, cacheLimitImages: 2048,
       prefetchRequests: this.prefetchRequests, prefetchHits: this.prefetchHits,
-      prefetchQueueLimit: 32,
+      prefetchQueueLimit: resources ? null : 32,
       preparedTiles: this.paintedTiles.size, preparedTileBytes: this.paintedTiles.size * this.tileWidth * this.tileHeight * 4,
       dirtyTiles: this.dirtySlots.size, uploadedTiles: this.uploadedTiles,
       uploadedBytes: this.uploadedBytes, uploadBatches: this.uploadBatches,
       gpuInitialized: this.gpuInitialized,
       visiblePrints: this.renderSlots.length, frameBudget: this.frameBudget,
+      visibleImages: this.renderSlots.filter(slot => this.uploadedImageSlots.has(slot) && this.sourceReady[slot] === 1).length,
+      visibleReady: this.renderSlots.filter(slot => this.sourceReady[slot] === 1 && this.uploadedKeys[slot] !== undefined).length,
       pendingPaints: this.pendingPaints.size, lastPrepared: this.lastPrepared,
       lastPreparationMs: +this.lastPreparationMs.toFixed(2), lastUploadMs: +this.lastUploadMs.toFixed(2),
       lastUploadLimit: this.lastUploadLimit,
@@ -660,8 +732,11 @@ export class CoverAtlas {
     this.slotKeys.fill(undefined);
     this.selectedRecord = undefined;
     this.selectedKey = undefined;
+    this.selectedPaintedKey = undefined;
+    this.slotOwners.length = this.slotTracks.length = this.paintedKeys.length = this.uploadedKeys.length = 0;
     this.cancelDecodes();
     this.dirtySlots.clear();
+    this.visibleRequests = []; this.imageReadySlots.clear(); this.uploadedImageSlots.clear();
     this.pendingPaints.clear(); this.desiredKeys.fill(undefined); this.sourceReady.fill(0);
     this.coverReady.array.fill(0);
     this.coverReady.needsUpdate = true;
@@ -671,6 +746,8 @@ export class CoverAtlas {
     this.generation++;
     this.cancelDecodes();
     this.dirtySlots.clear();
+    this.slotOwners.length = this.slotTracks.length = this.paintedKeys.length = this.uploadedKeys.length = 0;
+    this.visibleRequests = []; this.imageReadySlots.clear(); this.uploadedImageSlots.clear();
     this.pendingPaints.clear();
     this.uploadTexture.dispose();
     this.atlas.dispose();
@@ -683,5 +760,23 @@ export class CoverAtlas {
     this.selectedCanvas.width = this.selectedCanvas.height = 1;
     this.tileCanvas.width = this.tileCanvas.height = 1;
     this.uploadCanvas.width = this.uploadCanvas.height = 1;
+  }
+
+  captureSelected() {
+    const canvas=document.createElement('canvas');canvas.width=this.selectedCanvas.width;canvas.height=this.selectedCanvas.height;
+    canvas.getContext('2d')!.drawImage(this.selectedCanvas,0,0);
+    return {canvas,record:this.selectedRecord};
+  }
+  restoreSelected(snapshot: ReturnType<CoverAtlas['captureSelected']>) {
+    if(!snapshot.record)return;
+    this.selectedRecord=snapshot.record;this.selectedKey=this.recordKey(snapshot.record);this.selectedPaintedKey=this.selectedKey;
+    this.selectedCanvas.getContext('2d')!.drawImage(snapshot.canvas,0,0);
+    this.selectedTexture.needsUpdate=true;
+    const generation=this.generation,key=this.selectedKey;
+    void this.loadImage(snapshot.record.album?.coverUrl,true).then(image=>{
+      if(image && !this.disposed && generation===this.generation && this.selectedKey===key){
+        paintCover(this.selectedCanvas,this.selectedRecord,image);this.selectedTexture.needsUpdate=true;
+      }
+    });
   }
 }

@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import './update-center.css';
 import { escapeHtml as esc } from './html';
 import { openExternal } from './desktop';
+import { isDesktopApp } from './platform';
 import { version as APP_VERSION } from '../package.json';
 
 /** 更新来源：本项目的 GitHub 仓库。 */
@@ -11,7 +12,7 @@ const RELEASES_URL = `https://github.com/${REPO}/releases`;
 /** 开着应用时每小时复查一次（用户要求的频率）。 */
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
-const isDesktop = () => '__TAURI_INTERNALS__' in window;
+const isDesktop = isDesktopApp;
 
 interface AppInfo {
   version: string;

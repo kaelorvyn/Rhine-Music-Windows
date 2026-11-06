@@ -15,7 +15,7 @@ fn main() {
             "desktop_tray_preference",
             // 自更新：漏了这两个的后果是运行时 invoke 直接被 ACL 拒，
             // 前端只看到「Command desktop_app_info not allowed by ACL」。
-            "desktop_app_info", "desktop_update_install",
+            "desktop_app_info", "desktop_update_install", "desktop_qishui_verify",
         ]),
     )).expect("desktop permission manifest");
 }

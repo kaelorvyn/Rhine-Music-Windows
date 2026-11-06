@@ -4,6 +4,7 @@ import {
   type QualityPreset,
   type RenderQuality,
 } from "./render-quality";
+import { isAndroidApp } from "./platform";
 
 function select(
   quality: RenderQuality,
@@ -11,7 +12,10 @@ function select(
   label: string,
   choices: (readonly [string | number, string])[],
 ) {
-  return `<label class="quality-control"><span>${label}</span><select data-quality="${key}" aria-label="${label}">${choices.map(([value, text]) => `<option value="${value}" ${quality[key] === value ? "selected" : ""}>${text}</option>`).join("")}</select></label>`;
+  const locked=quality.pipeline==='lowIntegrated'&&['antialias','aoSamples','aoResolution','depthOfFieldResolution','arrayBudget'].includes(key);
+  if(quality.pipeline==='lowIntegrated'&&key==='arrayBudget')choices=[[1,'轻量立体外壳']];
+  if(quality.pipeline==='lowIntegrated'&&key==='shadows')choices=[[0,'关闭'],[512,'512 · 选中与过渡盒子']];
+  return `<label class="quality-control"><span>${key==='arrayBudget'&&locked?'阵列外观：轻量立体':label}</span><select data-quality="${key}" aria-label="${label}" ${locked?'disabled':''}>${choices.map(([value, text]) => `<option value="${value}" ${quality[key] === value ? "selected" : ""}>${text}</option>`).join("")}</select></label>`;
 }
 function range(
   quality: RenderQuality,
@@ -24,9 +28,17 @@ function range(
 }
 export function qualityMarkup(quality: RenderQuality) {
   const preset = matchingPreset(quality);
+  const labels = isAndroidApp() ? {
+    ...presetLabels,
+    lowIntegrated: "省电手机适配",
+    balanced: "标准手机适配",
+    performance: "省电手机适配 · 低负载",
+    discrete: "高性能手机适配",
+    discretePlus: "高性能手机适配 · 增强",
+  } : presetLabels;
   return `<section class="quality-settings" aria-label="画质设置">
-    <div class="quality-heading"><h3>RENDER QUALITY <span>渲染画质</span></h3><select id="quality-preset" aria-label="画质预设">${(Object.keys(presetLabels) as QualityPreset[]).map((key) => `<option value="${key}" ${preset === key ? "selected" : ""}>${presetLabels[key]}</option>`).join("")}<option value="custom" disabled ${preset === "custom" ? "selected" : ""}>自定义</option></select></div>
-    <p class="quality-summary" id="quality-summary" aria-live="polite"></p>
+    <div class="quality-heading"><h3>RENDER QUALITY <span>渲染画质</span></h3><select id="quality-preset" aria-label="画质预设">${(Object.keys(labels) as QualityPreset[]).map((key) => `<option value="${key}" ${preset === key ? "selected" : ""}>${labels[key]}</option>`).join("")}<option value="custom" disabled ${preset === "custom" ? "selected" : ""}>自定义</option></select></div>
+    <p class="quality-summary" id="quality-summary" aria-live="polite"></p><p class="quality-note" id="low-pipeline-note" ${quality.pipeline==='lowIntegrated'?'':'hidden'}>远处画质动态调整，选中封面保持清晰。</p>
     <details class="quality-advanced"><summary>精细设置 <span>清晰度 / 材质 / 阴影</span></summary><div class="quality-grid">
     ${range(quality, "scale", "渲染比例", 50, 200)}
     ${select(
@@ -40,6 +52,7 @@ export function qualityMarkup(quality: RenderQuality) {
       ["smaa", "SMAA"],
     ])}
     ${select(quality, "pixelBudget", "主画面像素上限", [
+      [518_400, "52 万"], [640_000, "64 万"], [921_600, "92 万 · 低性能核显"],
       [1_440_000, "144 万 · 核显"], [2_073_600, "207 万 · MX"],
       [3_686_400, "369 万 · 增强"], [8_294_400, "829 万"],
     ])}
@@ -61,6 +74,7 @@ export function qualityMarkup(quality: RenderQuality) {
       "阴影分辨率 · 阵列",
       [
         [0, "关闭"],
+        [512, "512"],
         [1024, "1024"],
         [2048, "2048"],
         [4096, "4096"],
@@ -100,12 +114,15 @@ export function syncQualityUI(quality: RenderQuality) {
   const preset = document.querySelector<HTMLSelectElement>("#quality-preset");
   if (!preset) return;
   preset.value = matchingPreset(quality);
+  const note=document.querySelector<HTMLElement>('#low-pipeline-note');if(note)note.hidden=quality.pipeline!=='lowIntegrated';
+  const array=document.querySelector<HTMLSelectElement>('[data-quality="arrayBudget"]');
+  if(array)array.options[1] && (array.options[1].textContent=quality.pipeline==='lowIntegrated'?'轻量立体外壳':'可见完整玻璃');
   document
     .querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-quality]")
     .forEach((control) => {
       const key = control.dataset.quality as keyof RenderQuality;
       control.value = String(quality[key]);
-      control.disabled = (key === "aoResolution" && quality.aoSamples === 0) ||
+      control.disabled = (quality.pipeline==='lowIntegrated'&&['antialias','aoSamples','aoResolution','depthOfField','depthOfFieldResolution','arrayBudget'].includes(key)) || (key === "aoResolution" && quality.aoSamples === 0) ||
         (key === "depthOfFieldResolution" && quality.depthOfField === 0);
     });
   document

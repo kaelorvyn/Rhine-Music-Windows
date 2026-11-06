@@ -25,7 +25,7 @@ export function networkFailureCodes(failure) {
 
 export function withOnlineDiagnostic(failure, { provider = 'netease', operation = 'request', stage = 'internal', code = 'INTERNAL_UNKNOWN', upstreamStatus, businessCode, causes = [], chain, transport } = {}) {
   if (!(failure instanceof Error) || diagnostics.has(failure)) return failure;
-  const source = ['netease', 'qq', 'bodian'].includes(provider) ? provider : 'netease';
+  const source = ['netease', 'qq', 'bodian', 'qishui'].includes(provider) ? provider : 'netease';
   const safeCode = /^(?:HTTP_\d{3}|BUSINESS_(?:-?\d{1,6}|MISSING_CODE)|NETWORK_(?:UNKNOWN|TIMEOUT)|INTERNAL_(?:TYPEERROR|REFERENCEERROR|RANGEERROR|UNKNOWN)|RESPONSE_(?:INVALID_JSON|TOO_LARGE)|PLAYBACK_NO_URL)$/.test(code) || code.startsWith('NETWORK_') && networkCodes.has(code.slice(8)) ? code : 'INTERNAL_UNKNOWN';
   diagnostics.set(failure, {
     id: randomUUID(), time: new Date().toISOString(), provider: source,

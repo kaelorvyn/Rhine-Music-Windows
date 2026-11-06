@@ -2769,3 +2769,9 @@
   background: none;
   cursor: pointer;
 }
+
+/* Only browsing surfaces own drag input; native controls and scrollers keep theirs. */
+.music-app .album-callout, .music-app .music-counter, .music-app .library-status { touch-action:none; user-select:none; }
+/* Empty grid gaps pass through to the canvas; the ruler and buttons keep input. */
+.music-app .music-navigation { pointer-events:none; }
+.music-app .music-navigation :is(button,a,input,select,#album-ticks,#playlist-song-bars,.music-counter) { pointer-events:auto; }

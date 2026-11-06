@@ -62,6 +62,7 @@ export class CoverClarityState {
 /** Present the budget scene, then draw only visible paper inserts at native
  * display resolution, after DOF/transmission. No full native-size scene render. */
 export class CoverClarityPass extends Pass {
+  selectedOnly = false;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private state: CoverClarityState;
@@ -81,6 +82,10 @@ export class CoverClarityPass extends Pass {
   private clearColor = new THREE.Color();
   private size = new THREE.Vector2();
   private frames = 0;
+  private roots: THREE.Object3D[] = [];
+  private drawables: THREE.Object3D[] = [];
+  private hidden: THREE.Object3D[] = [];
+  private materialStates = new Map<THREE.Material, { depthTest: boolean; depthWrite: boolean; toneMapped: boolean; transparent: boolean }>();
   private fallbackFrames = 0;
   private coverDraws = 0;
   depthSource?: () => { texture: THREE.Texture; packed: boolean } | null;
@@ -98,8 +103,12 @@ export class CoverClarityPass extends Pass {
     const shadowAuto = renderer.shadowMap.autoUpdate, shadowDirty = renderer.shadowMap.needsUpdate;
     renderer.getClearColor(this.clearColor);
     const clearAlpha = renderer.getClearAlpha();
-    const hidden: THREE.Object3D[] = [];
-    const materials = new Map<THREE.Material, { depthTest: boolean; depthWrite: boolean; toneMapped: boolean; transparent: boolean }>();
+    if (this.roots.length !== this.scene.children.length || this.roots.some((root, i) => root !== this.scene.children[i])) {
+      this.roots = [...this.scene.children]; this.drawables.length = 0;
+      this.scene.traverse(object => { if (object instanceof THREE.Mesh || object instanceof THREE.Points || object instanceof THREE.Line) this.drawables.push(object); });
+    }
+    const hidden = this.hidden; hidden.length = 0;
+    const materials = this.materialStates; materials.clear();
     try {
       renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false;
       let depth = this.depthSource?.();
@@ -125,9 +134,9 @@ export class CoverClarityPass extends Pass {
       this.state.near.value = this.camera.near; this.state.far.value = this.camera.far;
       this.state.enabled.value = true;
       this.coverDraws = 0;
-      this.scene.traverse((object) => {
-        if (!(object instanceof THREE.Mesh || object instanceof THREE.Points || object instanceof THREE.Line) || !object.visible) return;
-        if (!object.userData.albumCover) { hidden.push(object); object.visible = false; return; }
+      for (const object of this.drawables) {
+        if (!(object instanceof THREE.Mesh || object instanceof THREE.Points || object instanceof THREE.Line) || !object.visible) continue;
+        if (!object.userData.albumCover || this.selectedOnly && object instanceof THREE.InstancedMesh) { hidden.push(object); object.visible = false; continue; }
         this.coverDraws++;
         for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
           if (!materials.has(material)) materials.set(material, {
@@ -140,7 +149,7 @@ export class CoverClarityPass extends Pass {
  // Native prints use the same renderer exposure as OutputPass.
           material.toneMapped = true;
         }
-      });
+      }
       renderer.render(this.scene, this.camera);
       this.frames++;
     } finally {

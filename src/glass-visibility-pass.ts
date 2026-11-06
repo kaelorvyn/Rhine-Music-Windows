@@ -95,6 +95,12 @@ const analysisFragment = /* glsl */ `
 export class GlassVisibilityRenderPass extends RenderPass {
   mode: GlassOcclusionMode = "on";
   moving = false;
+  matricesPrepared = false;
+  mainDepth: THREE.Texture | null = null;
+  captureDepth = false;
+  private sharedDepth?: THREE.WebGLRenderTarget;
+  private roots: THREE.Object3D[] = [];
+  private glass: THREE.Mesh[] = [];
   measure = (_label: string, draw: () => void) => draw();
   private readonly depthScene = new THREE.Scene();
   private readonly proxies = new WeakMap<THREE.Mesh, THREE.Mesh>();
@@ -163,20 +169,26 @@ export class GlassVisibilityRenderPass extends RenderPass {
   private collectGlass() {
     this.depthScene.clear();
     this.depthDraws = this.glassInstances = this.depthTriangles = this.fullGlassTriangles = 0;
-    this.scene.updateMatrixWorld(true);
-    this.scene.traverseVisible((source) => {
-      if (!canSeedGlassDepth(source)) return;
+    if (!this.matricesPrepared) this.scene.updateMatrixWorld(true);
+    if (this.roots.length !== this.scene.children.length || this.roots.some((root, i) => root !== this.scene.children[i])) {
+      this.roots = [...this.scene.children]; this.glass.length = 0;
+      this.scene.traverse(source => { if (source instanceof THREE.Mesh) this.glass.push(source); });
+    }
+    for (const source of this.glass) {
+      let ancestor: THREE.Object3D | null = source; let visible = true;
+      while (ancestor) { if (!ancestor.visible) { visible = false; break; } ancestor = ancestor.parent; }
+      if (!visible || !canSeedGlassDepth(source)) continue;
  // Extracted and rotating cases keep their ordinary depth draw; only the
  // instanced shelf seeds depth, where its expensive overlap occurs.
-      if (!(source instanceof THREE.InstancedMesh)) return;
-      if (source instanceof THREE.InstancedMesh && source.count === 0) return;
+      if (!(source instanceof THREE.InstancedMesh)) continue;
+      if (source instanceof THREE.InstancedMesh && source.count === 0) continue;
       let geometry = this.depthGeometries.get(source.geometry);
       if (!geometry) {
         geometry = createConservativeGlassDepthGeometry(source.geometry);
         this.depthGeometries.set(source.geometry, geometry);
         this.ownedDepthGeometries.add(geometry);
       }
-      if (!geometry.index?.count) return;
+      if (!geometry.index?.count) continue;
       let proxy = this.proxies.get(source);
       if (!proxy) {
         proxy = source instanceof THREE.InstancedMesh
@@ -200,12 +212,27 @@ export class GlassVisibilityRenderPass extends RenderPass {
       this.glassInstances += count;
       this.depthTriangles += count * geometry.index.count / 3;
       this.fullGlassTriangles += count * (source.geometry.index?.count ?? source.geometry.getAttribute("position").count) / 3;
-    });
+    }
   }
 
+  private saveMainDepth(renderer: THREE.WebGLRenderer, read: THREE.WebGLRenderTarget) {
+    if (!this.captureDepth || !read.depthTexture) return;
+    const width = Math.max(1, Math.floor(read.width)), height = Math.max(1, Math.floor(read.height));
+    if (!this.sharedDepth || this.sharedDepth.width !== width || this.sharedDepth.height !== height) {
+      this.sharedDepth?.dispose();
+      this.sharedDepth = new THREE.WebGLRenderTarget(width, height, {
+        depthTexture: new THREE.DepthTexture(width, height, THREE.UnsignedIntType),
+      });
+      renderer.initRenderTarget(this.sharedDepth);
+    }
+    // Later fullscreen passes may clear composer depth. Preserve it without redrawing geometry.
+    renderer.copyTextureToTexture(read.depthTexture, this.sharedDepth.depthTexture!);
+    this.mainDepth = this.sharedDepth.depthTexture;
+  }
   override render(renderer: THREE.WebGLRenderer, write: THREE.WebGLRenderTarget,
     read: THREE.WebGLRenderTarget, deltaTime = 0, maskActive = false) {
     this.frames++;
+    this.mainDepth = null;
     this.activeThisFrame = false;
     this.width = read.width; this.height = read.height;
     const background = this.scene.background;
@@ -218,6 +245,7 @@ export class GlassVisibilityRenderPass extends RenderPass {
     if (!active) {
       this.depthDraws = this.glassInstances = this.depthTriangles = this.fullGlassTriangles = this.depthCpuMs = 0;
       this.measure("sceneWithShadowsAndTransmission", () => super.render(renderer, write, read, deltaTime, maskActive));
+      this.saveMainDepth(renderer, read);
       return;
     }
     const started = performance.now();
@@ -225,6 +253,7 @@ export class GlassVisibilityRenderPass extends RenderPass {
     if (!this.depthDraws) {
       this.depthCpuMs = 0;
       this.measure("sceneWithShadowsAndTransmission", () => super.render(renderer, write, read, deltaTime, maskActive));
+      this.saveMainDepth(renderer, read);
       return;
     }
     const autoClear = renderer.autoClear, clear = this.clear;
@@ -254,7 +283,8 @@ export class GlassVisibilityRenderPass extends RenderPass {
       this.scene.background = null;
       this.clear = false;
       this.measure("sceneWithShadowsAndTransmission", () => super.render(renderer, write, read, deltaTime, maskActive));
-      if (this.mode === "debug" || this.frames % 256 === 64) {
+      this.saveMainDepth(renderer, read);
+      if (this.mode === "debug") {
         try { this.measure("glassVisibilityAnalysis", () => this.analyze(renderer, read)); }
         catch {
  // Optional diagnostics must never interrupt playback/rendering.
@@ -385,7 +415,8 @@ export class GlassVisibilityRenderPass extends RenderPass {
   }
 
   override dispose() {
-    this.disposed = true; this.generation++;
+    this.disposed = true;
+    this.sharedDepth?.dispose(); this.mainDepth = null; this.generation++;
     this.depthScene.clear(); this.depthScene.overrideMaterial = null;
     this.analysisMaterial.uniforms.frontDepth.value = null;
     this.overlayMaterial.uniforms.regions.value = null;

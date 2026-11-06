@@ -35,7 +35,7 @@ export function normalizeVisualizer(input: Partial<VisualizerOptions> | undefine
   const source = input ?? {};
   const style: VisualizerStyle =
     source.style === "dots" || source.style === "mini" || source.style === "outline" ? source.style : "bars";
-  const position: VisualizerPosition = source.position === "bottom" ? "bottom" : "progress";
+  const position: VisualizerPosition = source.position === "progress" ? "progress" : "bottom";
   const color = typeof source.color === "string" && /^#[\da-f]{6}$/i.test(source.color) ? source.color.toLowerCase() : undefined;
   return { enabled: source.enabled !== false, position, style, ...(color ? { color } : {}) };
 }

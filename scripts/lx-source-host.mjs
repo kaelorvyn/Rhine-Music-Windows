@@ -149,7 +149,27 @@ export class LxSourceHost {
    * 超时给得比普通调用宽：这是批量任务，跑完就长期受益。
    */
   async selfCheck(options = {}) {
+    if (this._selfCheckRunning) throw new Error('音源自检正在进行')
+    const ids = options.pluginIds
+    if (ids !== undefined && (!Array.isArray(ids) || !ids.length
+      || ids.some((id) => typeof id !== 'string' || !this._snapshot.plugins?.some((plugin) => plugin.id === id)))) {
+      throw new Error('无效的音源 id')
+    }
     if (!this.enabled) return { checked: 0, alive: 0, dead: 0 }
+    const started = Date.now()
+    const budgetMs = options.budgetMs ?? 120000
+    if (!Number.isFinite(budgetMs) || budgetMs < 0) throw new Error('无效的自检预算')
+    const selected = (this._snapshot.plugins ?? []).filter((plugin) =>
+      (!ids || ids.includes(plugin.id)) && (ids?.length === 1 || plugin.enabled))
+    const probesForCount = options.probes ?? DEFAULT_PROBES
+    this._prepareState = {
+      running: true, phase: 'prepare', pluginIds: selected.map((plugin) => plugin.id),
+      done: 0, total: selected.reduce((n, plugin) => n + probesForCount.filter((p) => plugin.platforms.includes(p.source)).length, 0), alive: 0,
+      sourceTotal: selected.length, sourceDone: 0, sourceRemaining: selected.length, activeSources: [],
+      startedAt: started, finishedAt: null,
+    }
+    this._selfCheckRunning = true
+    try {
     // resolveId 是函数，**不能**通过 postMessage 传给 worker（会抛
     // "could not be cloned"）。所以在主线程先解析好探针真实 id，只把结果传进去。
     const { resolveId, ...rest } = options
@@ -159,14 +179,26 @@ export class LxSourceHost {
       for (const probe of probes) {
         if (probe.info) continue
         try {
-          const info = await resolveId(probe.source, probe.keyword)
+          const ms = Math.min(rest.callTimeoutMs ?? 8000, budgetMs - (Date.now() - started))
+          if (ms <= 0) break
+          let timer
+          const info = await Promise.race([
+            Promise.resolve().then(() => resolveId(probe.source, probe.keyword)),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('探针准备超时')), ms) }),
+          ]).finally(() => clearTimeout(timer))
           if (info?.id) probe.info = info
         } catch { /* 取不到就走插件搜索那条路 */ }
       }
     }
-    const result = await this._call('selfCheck', [{ ...rest, ...(probes ? { probes } : {}) }], { timeout: this._selfCheckTimeout })
+    const remaining = Math.max(0, budgetMs - (Date.now() - started))
+    this._prepareState = null
+    const result = await this._call('selfCheck', [{ ...rest, budgetMs: remaining, ...(probes ? { probes } : {}) }], { timeout: Math.max(this._selfCheckTimeout, remaining + 5000) })
     this._snapshot = await this._call('snapshot', [])
     return result
+    } finally {
+      this._prepareState = null
+      this._selfCheckRunning = false
+    }
   }
 
   /** 自检明细（每个音源的死活与音质）。 */
@@ -177,8 +209,10 @@ export class LxSourceHost {
 
   /** 自检进度：前端加载页据此画进度条；没在跑时 running=false。 */
   async progress() {
-    if (!this.enabled) return { running: false, done: 0, total: 0, alive: 0 }
-    try { return await this._call('progress', []) } catch { return { running: false, done: 0, total: 0, alive: 0 } }
+    if (this._prepareState) return this._prepareState
+    const idle = { running: false, phase: 'idle', done: 0, total: 0, alive: 0, sourceTotal: 0, sourceDone: 0, sourceRemaining: 0, activeSources: [] }
+    if (!this.enabled) return idle
+    try { return await this._call('progress', []) } catch { return idle }
   }
 
   /** 自检结果快照（落盘缓存用）。 */
@@ -208,7 +242,10 @@ export class LxSourceHost {
   terminate() {
     this._worker?.terminate()
     this._worker = null
-    for (const [, entry] of this._pending) clearTimeout(entry.timer)
+    for (const [, entry] of this._pending) {
+      clearTimeout(entry.timer)
+      entry.reject(new Error('音源 worker 已终止'))
+    }
     this._pending.clear()
   }
 }

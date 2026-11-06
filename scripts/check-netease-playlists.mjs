@@ -6,6 +6,20 @@ import { setPlaylistAlbums, setMusicAlbums, records, fileLocation, fileAtSlot } 
 import { fileAtCell, selectionCell, visibleCell, LOOP_COLUMNS, MUSIC_LOOP_ROWS } from '../src/archive-loop.ts';
 const song = id => ({ id, name: `歌曲 ${id}`, ar: [{ name: '歌手' }], al: { id: 55, name: '专辑', picUrl: 'https://p1.music.126.net/test.jpg' }, dt: 120000 });
 
+test('catalog-only startup rejects an invalid first song page without publishing it', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async input => String(input).includes('/tracks?') ? Response.json({ total: 1 })
+    : Response.json({ playlists: [{ id: 'startup', name: 'Startup', trackCount: 1 }], hasMore: false });
+  const library = new NeteasePlaylists(() => {});
+  try {
+    await library.load({ prepareFirstPage: false });
+    assert.equal(library.track(0, 0), undefined);
+    await assert.rejects(library.ensure(0, 0, true), /歌单分页数据无效/);
+    assert.equal(library.track(0, 0), undefined);
+    assert.equal(library.playlists[0].trackCount, 1);
+  } finally { library.dispose(); globalThis.fetch = previousFetch; }
+});
+
 test('changing platform cancels old playlist pages and uses the newly selected account routes', async () => {
   const previousFetch = globalThis.fetch; let release, started;
   const pending = new Promise(resolve => started = resolve), requests = [];

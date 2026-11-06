@@ -1,5 +1,7 @@
 /** Rendering controls are independent of lighting, materials and animation. */
+export type RenderPipeline = 'standard' | 'lowIntegrated';
 export type RenderQuality = {
+  pipeline: RenderPipeline;
   scale: number;
   pixelRatio: number;
   antialias: "off" | "smaa";
@@ -15,7 +17,14 @@ export type RenderQuality = {
 };
 
 export const qualityPresets = {
+  lowIntegrated: {
+    pipeline: 'lowIntegrated', scale: 100, pixelRatio: 1, antialias: 'off',
+    shadows: 512, aoSamples: 0, aoResolution: 0.5, depthOfField: 0,
+    depthOfFieldResolution: 0.5, transmission: 0.25, anisotropy: 4,
+    arrayBudget: 1, pixelBudget: 921_600,
+  },
   balanced: {
+    pipeline: 'standard',
     scale: 100,
     pixelRatio: 1,
     antialias: "smaa",
@@ -30,6 +39,7 @@ export const qualityPresets = {
     pixelBudget: 1_440_000,
   },
   performance: {
+    pipeline: 'standard',
     scale: 80,
     pixelRatio: 1,
     antialias: "off",
@@ -44,18 +54,21 @@ export const qualityPresets = {
     pixelBudget: 1_440_000,
   },
   discrete: {
+    pipeline: 'standard',
     scale: 100, pixelRatio: 1.5, antialias: "smaa", shadows: 1024,
     aoSamples: 8, aoResolution: 0.5, depthOfField: 100,
     depthOfFieldResolution: 0.5, transmission: 0.5, anisotropy: 8,
     arrayBudget: 1, pixelBudget: 2_073_600,
   },
   discretePlus: {
+    pipeline: 'standard',
     scale: 100, pixelRatio: 2, antialias: "smaa", shadows: 2048,
     aoSamples: 16, aoResolution: 0.5, depthOfField: 100,
     depthOfFieldResolution: 0.5, transmission: 0.75, anisotropy: 16,
     arrayBudget: 1, pixelBudget: 3_686_400,
   },
   original: {
+    pipeline: 'standard',
     scale: 100,
     pixelRatio: 1.5,
     antialias: "off",
@@ -70,6 +83,7 @@ export const qualityPresets = {
     pixelBudget: 8_294_400,
   },
   high: {
+    pipeline: 'standard',
     scale: 125,
     pixelRatio: 2,
     antialias: "smaa",
@@ -84,6 +98,7 @@ export const qualityPresets = {
     pixelBudget: 8_294_400,
   },
   ultra: {
+    pipeline: 'standard',
     scale: 150,
     pixelRatio: 2,
     antialias: "smaa",
@@ -100,6 +115,7 @@ export const qualityPresets = {
 } as const satisfies Record<string, RenderQuality>;
 export type QualityPreset = keyof typeof qualityPresets;
 export const presetLabels: Record<QualityPreset, string> = {
+  lowIntegrated: '低性能核显适配',
   balanced: "核显适配",
   discrete: "独显适配 · MX",
   discretePlus: "独显适配 · 增强",
@@ -135,7 +151,8 @@ export function normalizeQuality(
   const fallback = legacyHigh
     ? base
     : { ...base, pixelRatio: 1, aoSamples: 0, depthOfField: 0 };
-  return {
+  const quality: RenderQuality = {
+    pipeline: member(v.pipeline, ['standard', 'lowIntegrated'] as const, 'standard'),
     scale: range(v.scale, 50, 200, 5, fallback.scale),
     pixelRatio: member(v.pixelRatio, [1, 1.5, 2, 3], fallback.pixelRatio),
     antialias: member(
@@ -143,7 +160,7 @@ export function normalizeQuality(
       ["off", "smaa"] as const,
       fallback.antialias,
     ),
-    shadows: member(v.shadows, [0, 1024, 2048, 4096], fallback.shadows),
+    shadows: member(v.shadows, [0, 512, 1024, 2048, 4096], fallback.shadows),
     aoSamples: member(v.aoSamples, [0, 8, 16, 32, 64], fallback.aoSamples),
     aoResolution: member(v.aoResolution, [0.5, 0.75, 1], fallback.aoResolution),
     depthOfField: range(v.depthOfField, 0, 150, 5, fallback.depthOfField),
@@ -159,9 +176,16 @@ export function normalizeQuality(
     ),
     anisotropy: member(v.anisotropy, [1, 2, 4, 8, 16], fallback.anisotropy),
     arrayBudget: member(v.arrayBudget, [0, 1], fallback.arrayBudget),
-    pixelBudget: member(v.pixelBudget, [1_440_000, 2_073_600, 3_686_400, 8_294_400],
+    pixelBudget: member(v.pixelBudget, [518_400, 640_000, 921_600, 1_440_000, 2_073_600, 3_686_400, 8_294_400],
       v.arrayBudget === 1 ? 1_440_000 : fallback.pixelBudget),
   };
+  if (quality.pipeline === 'lowIntegrated') {
+    quality.antialias = 'off'; quality.aoSamples = 0; quality.depthOfField = 0;
+    quality.arrayBudget = 1;
+    quality.pixelBudget = Math.min(921_600, quality.pixelBudget);
+    quality.shadows = Math.min(512, quality.shadows);
+  }
+  return quality;
 }
 
 /** Opt in to the desktop GPU budget once, only for the exact old default.

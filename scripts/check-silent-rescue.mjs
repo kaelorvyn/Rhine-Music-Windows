@@ -150,9 +150,9 @@ try {
   assert.equal(failed.toastStyle.radius, '14px', 'toast 用面板圆角');
   assert.equal(failed.toastStyle.borderTop, '1px', 'toast 用 --line 描边而不是整块深色');
 
- // ③ 用户再点同一首：同一句文案**不重复弹**（黑框不再连着一闪一闪）。
- // 注意这里不能只等固定时长：服务端 prepare 会依次问「共享池 → 备用音源 →
- // 自定义音源」，这一轮真的走网络、要好几秒。等 error 真的再次出现再判定。
+
+
+
   await page.evaluate(() => { window.__notices.length = 0; });
   await page.evaluate(() => { window.rhineMusic.player; });
   await playRow('netease-90');

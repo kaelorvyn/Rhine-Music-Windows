@@ -29,3 +29,10 @@ assert.equal(swipeDirection(70,0,1500),null);
 assert.deepEqual(swipeDirection(-70,4,200),{axis:'lane',direction:1});
 assert.deepEqual(swipeDirection(4,70,200),{axis:'row',direction:-1});
 console.log('Viewport, reference framing, touch thresholds and render resolution checks passed.');
+for (const [w,h] of [[360,640],[390,844],[984,1380]]) {
+  const header=164, top=Math.min(h-140,Math.max(h*.5,header+48+Math.min(w*.6,h*.27)));
+  const shot=archiveFraming(w,h,7.33,1,true,header,top), half=3.7*h/shot.span/2;
+  assert.ok(shot.detailY*h-half>=header+47,'measured header clears the cover');
+  assert.ok(shot.detailY*h+half<=top-23,'cover clears the document');
+}
+assert.equal(viewportLayout(360,360,true).kind,'compact');

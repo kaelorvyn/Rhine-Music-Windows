@@ -146,3 +146,11 @@
 @media (max-width: 720px) {
   .song-view-tabs { gap: 18px; margin-bottom: 14px; }
 }
+
+/* Real platform word spans; no guessed timing for ordinary LRC lines. */
+.lyric-word { color: var(--ink); }
+.current .lyric-word, [data-mini-lyric] .lyric-word {
+  background: linear-gradient(to right, var(--accent) var(--word-progress, 0%), var(--ink) var(--word-progress, 0%));
+  background-clip: text; -webkit-background-clip: text; color: transparent;
+}
+@media (forced-colors: active) { .current .lyric-word, [data-mini-lyric] .lyric-word { background: none; color: CanvasText; } }

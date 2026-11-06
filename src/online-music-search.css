@@ -409,6 +409,23 @@
 
 /* 登录卡片（设置页） */
 .netease-login { margin-bottom: 22px; }
+.qishui-sms-form { display: grid; gap: 14px; margin-top: 16px; }
+.qishui-login-options { display: grid; grid-template-columns: minmax(200px, .85fr) minmax(0, 1.15fr); gap: 24px; align-items: start; margin-top: 20px; }
+.qishui-login-options[hidden] { display: none; }
+.qishui-login-options strong { font-size: 13px; font-weight: 500; }
+.qishui-login-options .qishui-sms-form { margin-top: 0; }
+.qishui-qr-panel { min-width: 0; text-align: center; }
+.qishui-qr-panel .netease-qr { min-height: 192px; padding: 14px 0 0; }
+.qishui-qr-panel .netease-qr img { padding: 8px; border-radius: 10px; box-shadow: none; }
+.qishui-qr-panel small { display: block; font-size: 12px; line-height: 1.8; opacity: .7; margin-top: 10px; }
+.qishui-qr-panel .text-button { min-height: 44px; }
+@media (max-width: 600px) { .qishui-login-options { grid-template-columns: minmax(0, 1fr); gap: 22px; } }
+.qishui-sms-form[hidden], [data-sms-action][hidden] { display: none; }
+.qishui-sms-form label { display: grid; gap: 8px; font-size: 12px; min-width: 0; }
+.qishui-sms-form input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--ink); font: inherit; }
+.qishui-sms-form input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.qishui-sms-code { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+.qishui-sms-form .text-button { min-height: 44px; }
 .netease-account {
   display: flex;
   align-items: center;

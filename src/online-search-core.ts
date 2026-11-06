@@ -2,15 +2,15 @@ import type { MusicTrack, OnlineSearchResults } from './music-types.ts';
 import { musicPlatforms, type MusicProvider } from './music-platform.ts';
 import { fetchOnline } from './online-debug.ts';
 
-/** 搜索平台页签顺序：网易云音乐 → QQ音乐 → 酷我音乐 → 酷狗音乐。
- *
- * 搜索平台行只在这 4 个里出现。
- * JOOX / 波点不出现在搜索平台行 —— 它们只在歌单来源下拉里可选。
- * 上游没有「全部」聚合页签，所以这里也不提供。 */
-export type SearchSource = Exclude<MusicProvider, 'bodian' | 'joox'>;
-export const providerOrder: SearchSource[] = ['netease', 'qq', 'kuwo', 'kugou'];
+
+
+
+
+
+export type SearchSource = MusicProvider;
+export const providerOrder: SearchSource[] = ['netease', 'qq', 'kuwo', 'kugou', 'joox', 'qishui'];
 export const searchSourceNames: Record<SearchSource, string> = {
-  netease: '网易云音乐', qq: 'QQ音乐', kuwo: '酷我音乐', kugou: '酷狗音乐',
+  netease: '网易云音乐', qq: 'QQ音乐', kuwo: '酷我音乐', kugou: '酷狗音乐', joox: 'JOOX', qishui: '汽水音乐',
 };
 /** 每页固定 20 条。 */
 export const SEARCH_PAGE_SIZE = 20;

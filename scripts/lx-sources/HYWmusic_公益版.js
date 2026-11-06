@@ -1,18 +1,19 @@
 /**
  * @name HYWmusic_公益版
- * @version v1.0.0
+ * @version v1.2.0
  * @author Ryn
  * @description qq群：1094095648；965503129
  * @homepage https://github.com/Macrohard0001/HYWmusic_source
  * @license MIT
- * @updateUrl http://103.79.184.97/api/releases?script=HYWmusic_%E5%85%AC%E7%9B%8A%E7%89%88&scriptType=free&releaseType=lx&version=v1.0.0
+ * @updateUrl https://103.79.184.97/api/releases?script=HYWmusic_%E5%85%AC%E7%9B%8A%E7%89%88&scriptType=free&releaseType=lx&version=v1.2.0
  *
- * 支持平台: kw、kg、tx、wy、mg
- * 支持音质: 128k、320k、flac、flac24bit、hires
- * 生成时间: 2026-08-31T10:47:11.493Z
+ * 支持平台: kw、tx、wy、mg、qs、bili、ytb、xm、kg
+ * 支持音质: 128k、320k、flac、flac24bit
+ * 生成时间: 2026-10-08T11:39:01.047Z
  *
  * 协议参考：ikun-music-source.js + lxmusic.toside.cn/desktop/custom-source
- *   - MUSIC_QUALITY 每平台独立音质（按后端勾选写入）
+ *   - MUSIC_QUALITY 每平台独立音质（收敛到规范标准集，高音质可直接请求由服务端解析）
+ *   - actions 固定 ['musicUrl']（官方桌面/移动规范：非 local 源仅支持 musicUrl）
  *   - on handler 纯 Promise 风格：({action, source, info}) => Promise
  *   - inited 发送 status:true + sources
  *   - API_BASE 必须注入，禁止回退 localhost
@@ -26,12 +27,12 @@ const UPDATE_ENABLE = true
 const { EVENT_NAMES, request, on, send, env, version: LX_VERSION } = globalThis.lx
 
 // ====== 每平台独立音质（参考 ikun） ======
-const MUSIC_QUALITY = JSON.parse('{"kw":["128k","320k","flac","flac24bit","hires"],"kg":["128k","320k","flac","flac24bit","hires"],"tx":["128k","320k","flac","flac24bit","hires"],"wy":["128k","320k","flac","flac24bit","hires"],"mg":["128k"]}')
+const MUSIC_QUALITY = JSON.parse('{"kw":["128k","320k","flac","flac24bit"],"tx":["128k","320k","flac","flac24bit"],"wy":["128k","320k","flac","flac24bit"],"mg":["128k","320k"],"qs":["128k","320k"],"bili":["128k","320k"],"ytb":["128k"],"xm":["128k","320k"],"kg":["128k","320k","flac","flac24bit"]}')
 const MUSIC_SOURCE = Object.keys(MUSIC_QUALITY)
 
 // ====== 运行参数 ======
-const API_BASE = 'http://103.79.184.97'
-const CARD_KEY = '公益版'
+const API_BASE = 'https://103.79.184.97'
+const CARD_KEY = '6C1F-53W0-GRKI-EVFG'
 
 // ====== 日志 ======
 const log = {
@@ -56,7 +57,10 @@ const httpFetch = (url, options = { method: 'GET' }) => {
       ...(options.headers || {}),
       'User-Agent': env ? `lx-music-${env}/${LX_VERSION}` : `lx-music-request/${LX_VERSION || '1.0.0'}`,
     }
-    if (CARD_KEY) headers['X-Card-Key'] = CARD_KEY
+    // Node http 拒绝非 Latin1 header 值：中文卡密会 ERR_INVALID_CHAR（请求未发出即失败，
+    // LX 客户端表现 Invalid character in header content ["x-card-key"]）。
+    // 服务端优先读 query key（本脚本已在 query 携带 key=卡密），header 仅在 ASCII 安全时附带。
+    if (CARD_KEY && /^[\x20-\x7E]*$/.test(CARD_KEY)) headers['X-Card-Key'] = CARD_KEY
     const reqOptions = { ...options, headers }
     if (!reqOptions.method) reqOptions.method = 'GET'
     // 兼容 LX 沙箱 request 的两种 callback 签名：
@@ -82,47 +86,6 @@ const httpFetch = (url, options = { method: 'GET' }) => {
 //   promise,
 //   new Promise((_, reject) => setTimeout(() => reject(new Error('请求超时(' + ms + 'ms)')), ms))
 // ])
-
-// ====== 更新检查（参考 ikun：初始化后异步执行，不阻塞音源注册） ======
-const VERSION = 'v1.0.0'
-const UPDATE_URL = 'http://103.79.184.97/api/releases?script=HYWmusic_%E5%85%AC%E7%9B%8A%E7%89%88&scriptType=free&releaseType=lx&version=v1.0.0'
-
-const parseVer = (v) => String(v || '').replace(/^v/i, '').split(/[.-]/).map((n) => parseInt(n, 10) || 0)
-const cmpVer = (a, b) => {
-  const pa = parseVer(a)
-  const pb = parseVer(b)
-  const len = Math.max(pa.length, pb.length)
-  for (let i = 0; i < len; i++) {
-    if ((pa[i] || 0) > (pb[i] || 0)) return 1
-    if ((pa[i] || 0) < (pb[i] || 0)) return -1
-  }
-  return 0
-}
-
-const checkUpdate = async () => {
-  if (!UPDATE_ENABLE) return
-  if (!UPDATE_URL || !/^https?:\/\//.test(UPDATE_URL)) return
-  try {
-    const res = await httpFetch(UPDATE_URL, { method: 'GET' })
-    if (res.statusCode !== 200 || !res.body) return
-    let data = res.body
-    if (typeof data === 'string') {
-      try { data = JSON.parse(data) } catch (e) { return }
-    }
-    // 服务端约定：code 0 = 已是最新；code 200 = 有新版本，data.url/data.version
-    if (data.code !== 200 || !data.data) return
-    const remote = data.data.version
-    if (!remote || cmpVer(VERSION, remote) >= 0) return
-    log.info('发现新版本 v' + remote + '，弹出更新提示')
-    send(EVENT_NAMES.updateAlert, {
-      desc: String(data.msg || ('发现新版本 v' + remote)).slice(0, 200),
-      version: String(remote),
-      updateUrl: data.data.url ? (API_BASE + data.data.url) : UPDATE_URL,
-    })
-  } catch (e) {
-    log.warn('更新检查失败', e && e.message)
-  }
-}
 
 // ====== musicInfo 字段收集：透传完整字段 ======
 const collectMusicInfoParams = (musicInfo, platform) => {
@@ -248,12 +211,14 @@ on(EVENT_NAMES.request, ({ action, source, info }) => {
 })
 
 // ====== 构建 sources（每平台独立 qualitys，参考 ikun） ======
+// v1.5.16：actions 固定 ['musicUrl'] —— 官方桌面/移动规范均规定非 local 源仅支持
+// musicUrl；声明 lyric/pic 会被官方客户端过滤，且可能导致严格第三方客户端初始化失败。
 const musicSources = {}
 MUSIC_SOURCE.forEach((item) => {
   musicSources[item] = {
     name: item,
     type: 'music',
-    actions: ['musicUrl', 'lyric', 'pic'],
+    actions: ['musicUrl'],
     qualitys: MUSIC_QUALITY[item],
   }
 })
@@ -265,5 +230,64 @@ send(EVENT_NAMES.inited, {
   sources: musicSources,
 })
 
-// 初始化完成后异步检查更新（不阻塞、失败静默）
+// ====== 更新检查（v1.3.5+：inited 后异步调用，发现新版本发 updateAlert） ======
+const SCRIPT_VERSION = 'v1.2.0'
+const UPDATE_URL = 'https://103.79.184.97/api/releases?script=HYWmusic_%E5%85%AC%E7%9B%8A%E7%89%88&scriptType=free&releaseType=lx&version=' + SCRIPT_VERSION
+
+const parseVer = (s) => {
+  const m = String(s || '').match(/\d+(?:\.\d+)+/)
+  if (!m) return null
+  return m[0].split('.').map((n) => parseInt(n, 10))
+}
+
+const cmpVer = (a, b) => {
+  const va = parseVer(a)
+  const vb = parseVer(b)
+  if (!va || !vb) return 0
+  const len = Math.max(va.length, vb.length)
+  for (let i = 0; i < len; i++) {
+    const x = va[i] || 0
+    const y = vb[i] || 0
+    if (x > y) return 1
+    if (x < y) return -1
+  }
+  return 0
+}
+
+const checkUpdate = async () => {
+  try {
+    if (!UPDATE_ENABLE) return
+    log.info('检查更新: ' + UPDATE_URL)
+    // v1.4.14 修复：httpFetch resolve 的是 { statusCode, headers, body } 包装对象，
+    // 旧模板误将包装对象整体 JSON.parse（等价于 parse "[object Object]"），
+    // 必然抛 SyntaxError 静默 return —— 导致所有脚本更新检查永远失效、
+    // 用户端永远收不到新版本提示（旧脚本用户长期滞留旧版）。
+    const resp = await httpFetch(UPDATE_URL, { method: 'GET' })
+    if (!resp || resp.statusCode !== 200) return
+    let respBody = resp.body
+    if (typeof respBody === 'string') {
+      try { respBody = JSON.parse(respBody) } catch (e) { return }
+    }
+    if (!respBody || typeof respBody !== 'object') return
+    if (respBody.code !== 200 || !respBody.data || !respBody.data.version) return
+    const latestVersion = respBody.data.version
+    if (cmpVer(latestVersion, SCRIPT_VERSION) > 0) {
+      // 服务端返回相对路径，需补全为绝对 URL
+      const absUrl = respBody.data.url && String(respBody.data.url).indexOf('http') === 0
+        ? respBody.data.url
+        : API_BASE + (respBody.data.url || '')
+      log.info('发现新版本 ' + latestVersion + ' -> ' + absUrl)
+      send(EVENT_NAMES.updateAlert, {
+        log: respBody.data.updateLog || ('发现新版本 ' + latestVersion),
+        updateUrl: absUrl,
+      })
+    } else {
+      log.info('当前已是最新版本: ' + SCRIPT_VERSION)
+    }
+  } catch (e) {
+    log.warn('更新检查失败: ' + (e && e.message))
+  }
+}
+
+// 异步调用（不阻塞 inited；失败静默，不影响正常音源功能）
 checkUpdate()

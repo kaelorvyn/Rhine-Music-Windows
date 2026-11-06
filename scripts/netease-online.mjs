@@ -1,3 +1,4 @@
+import { withWordLyrics } from './word-lyrics.mjs';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { Agent } from 'undici';
@@ -119,6 +120,7 @@ export async function sdkCall(method, params, signal) {
     mvUrl: require('NeteaseCloudMusicApi/module/mv_url.js'),
     album: require('NeteaseCloudMusicApi/module/album.js'),
     lyric: require('NeteaseCloudMusicApi/module/lyric.js'),
+    lyricNew: require('NeteaseCloudMusicApi/module/lyric_new.js'),
     crypto: require('NeteaseCloudMusicApi/util/crypto.js') };
   const cookie = params.cookie || {};
   return sdk[method]({ ...params, cookie }, async (uri, data, options) => {
@@ -270,11 +272,12 @@ export class NeteaseOnline {
       if (!track) throw error('网易云没有返回这首歌的资料。', 404);
       const [albumResult, lyricResult] = await Promise.allSettled([
         track.onlineSource.albumId ? this.request('album', { id: track.onlineSource.albumId }) : Promise.resolve({}),
-        this.request('lyric', { id }),
+        this.request('lyricNew', { id }).then(value => value.yrc?.lyric || value.lrc?.lyric || value.nolyric ? value : this.request('lyric', { id })).catch(() => this.request('lyric', { id })),
       ]);
       if (epoch !== this.auth.epoch) throw error('登录状态已改变。', 409);
       const album = albumResult.status === 'fulfilled' ? albumResult.value.album || {} : {};
       const lyric = lyricResult.status === 'fulfilled' ? lyricResult.value : {};
+      const timedLyric = withWordLyrics({ original: typeof lyric.yrc?.lyric === 'string' ? lyric.yrc.lyric : '' });
       const published = Number(album.publishTime || song.publishTime);
       const lyricText = value => typeof value === 'string' ? value.slice(0, 200000).replace(/\0/g, '') : '';
       const result = { track, album: {
@@ -282,7 +285,8 @@ export class NeteaseOnline {
         artist: clean(album.artist?.name) || track.artist,
         published: published > 0 && Number.isFinite(published) && published < 8640000000000000 ? new Date(published).toISOString().slice(0, 10) : undefined,
         company: clean(album.company), description: typeof album.description === 'string' ? album.description.slice(0, 12000).replace(/\0/g, '') : undefined,
-      }, lyrics: { original: lyricText(lyric.lrc?.lyric), translated: lyricText(lyric.tlyric?.lyric),
+      }, lyrics: { original: timedLyric.wordLines?.length ? timedLyric.original : lyricText(lyric.lrc?.lyric),
+        wordLines: timedLyric.wordLines, translated: lyricText(lyric.ytlrc?.lyric || lyric.tlyric?.lyric),
         instrumental: lyric.nolyric === true, unavailable: lyric.uncollected === true,
         error: lyricResult.status === 'rejected' ? lyricResult.reason.message : undefined },
         metadataError: albumResult.status === 'rejected' ? albumResult.reason.message : undefined };

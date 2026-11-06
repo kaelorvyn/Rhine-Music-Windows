@@ -2,16 +2,21 @@
 
 // 应用自更新：下载 GitHub Release 的便携包，退出后替换自身再拉起。
 mod update;
+mod qishui_verify;
+mod qishui_passport;
 
 // 必须把命令**导入到顶层**再注册：`generate_handler![update::desktop_app_info]`
 // 会让 Tauri 2 把命令名取成带模块路径的 `update::desktop_app_info`，而前端
 // `invoke('desktop_app_info')` 用的是裸名 —— 结果每次调用都失败，而前端又把
 // 错误 catch 掉了，表现就是「版本读不出来、点更新没反应」。
 use update::{desktop_app_info, desktop_update_install};
+use qishui_verify::desktop_qishui_verify;
 
-use std::{io::{BufRead, BufReader, Write}, path::PathBuf, process::{Child, Command, Stdio}, sync::{atomic::{AtomicBool, Ordering}, Mutex}, time::{Duration, Instant}};
+use std::{collections::HashMap, io::{BufRead, BufReader, Write}, path::PathBuf, process::{Child, Command, Stdio}, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, Mutex, mpsc}, time::{Duration, Instant}};
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+#[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem};
+#[cfg(desktop)]
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
 
 /// 关闭按钮是否最小化到托盘（而不是退出）。
@@ -52,11 +57,31 @@ fn request_high_performance_gpu() {
     }
 }
 
-struct MusicService(Mutex<Option<Child>>);
+struct MusicService {
+    child: Mutex<Option<Child>>,
+    replies: Arc<Mutex<HashMap<u64, mpsc::Sender<serde_json::Value>>>>,
+    sequence: AtomicU64,
+}
 
 impl MusicService {
+    fn request(&self, action: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        let id = self.sequence.fetch_add(1, Ordering::SeqCst);
+        let (send, receive) = mpsc::channel();
+        self.replies.lock().map_err(|_| "验证服务不可用")?.insert(id, send);
+        let message = serde_json::json!({"id":id,"action":action,"args":args}).to_string() + "\n";
+        let written = self.child.lock().ok().and_then(|mut child| child.as_mut().and_then(|process| process.stdin.as_mut()).map(|input| input.write_all(message.as_bytes()).and_then(|_| input.flush())));
+        if !matches!(written, Some(Ok(()))) {
+            if let Ok(mut pending) = self.replies.lock() { pending.remove(&id); }
+            return Err("验证服务未运行".into());
+        }
+        let reply = receive.recv_timeout(Duration::from_secs(if action == "verification-http" { 30 } else { 10 }));
+        if let Ok(mut pending) = self.replies.lock() { pending.remove(&id); }
+        let reply = reply.map_err(|_| "验证服务响应超时")?;
+        if reply["ok"] != true { return Err("本次验证已失效，请重新获取验证码".into()); }
+        Ok(reply["result"].clone())
+    }
     fn stop(&self) {
-        if let Some(mut child) = self.0.lock().unwrap().take() {
+        if let Some(mut child) = self.child.lock().unwrap().take() {
             if let Some(stdin) = child.stdin.as_mut() { let _ = stdin.write_all(b"shutdown\n"); }
             let deadline = Instant::now() + Duration::from_secs(3);
             while Instant::now() < deadline {
@@ -72,11 +97,17 @@ impl Drop for MusicService { fn drop(&mut self) { self.stop(); } }
 
 #[tauri::command]
 fn desktop_window_state(window: WebviewWindow) -> serde_json::Value {
+    #[cfg(mobile)]
+    { let _ = window; return serde_json::json!({ "fullscreen": false, "maximized": false }); }
+    #[cfg(desktop)]
     serde_json::json!({ "fullscreen": window.is_fullscreen().unwrap_or(false), "maximized": window.is_maximized().unwrap_or(false) })
 }
 
 #[tauri::command]
 fn desktop_window_action(window: WebviewWindow, action: &str) -> Result<(), String> {
+    #[cfg(mobile)]
+    { let _ = (window, action); return Err("手机端不支持桌面窗口控制".into()); }
+    #[cfg(desktop)]
     match action {
         "minimize" => window.minimize(),
         // Maximize uses the Windows work area, leaving the taskbar available.
@@ -97,20 +128,32 @@ fn desktop_window_action(window: WebviewWindow, action: &str) -> Result<(), Stri
 
 #[tauri::command]
 async fn desktop_pick_folder() -> Result<Option<String>, String> {
+    #[cfg(target_os = "android")]
+    return Err("手机端不支持选择桌面音乐文件夹".into());
+    #[cfg(not(target_os = "android"))]
     tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().set_title("选择音乐文件夹").pick_folder().map(|p| p.to_string_lossy().into_owned()))
         .await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn desktop_open_link(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    return Err("手机端链接打开桥接尚未启用".into());
+    #[cfg(not(target_os = "android"))]
+    {
     let parsed: tauri::Url = url.parse().map_err(|_| "Invalid link")?;
     if !matches!(parsed.scheme(), "https" | "http") { return Err("Only web links are allowed".into()); }
     open::that_detached(url).map_err(|e| e.to_string())
+    }
 }
 
 // Feedback opens a user-reviewed draft; it never sends mail or accepts another recipient.
 #[tauri::command]
 fn desktop_open_feedback(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    return Err("手机端反馈桥接尚未启用".into());
+    #[cfg(not(target_os = "android"))]
+    {
     if url.len() > 7500 { return Err("Feedback draft is too long".into()); }
     let parsed: tauri::Url = url.parse().map_err(|_| "Invalid feedback link")?;
     if parsed.scheme() != "mailto" || parsed.path() != "2228396737@qq.com"
@@ -126,8 +169,10 @@ fn desktop_open_feedback(url: &str) -> Result<(), String> {
     }
     if keys.len() != 2 { return Err("Missing feedback fields".into()); }
     open::that_detached(url).map_err(|e| e.to_string())
+    }
 }
 
+#[cfg(desktop)]
 fn start_service(app: &tauri::AppHandle) -> Result<(MusicService, tauri::Url), Box<dyn std::error::Error>> {
     let resource_root = app.path().resource_dir()?.join("runtime");
     let runtime: PathBuf = if resource_root.join("node.exe").is_file() { resource_root }
@@ -150,12 +195,21 @@ fn start_service(app: &tauri::AppHandle) -> Result<(MusicService, tauri::Url), B
     let mut child = command.spawn()?;
     let stdout = child.stdout.take().ok_or("Missing service output")?;
     let (send, receive) = std::sync::mpsc::channel();
+    let replies: Arc<Mutex<HashMap<u64, mpsc::Sender<serde_json::Value>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let reader_replies = replies.clone();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if let Some(address) = line.strip_prefix("RHINE_READY ") { let _ = send.send(address.to_owned()); }
+            if let Some(raw) = line.strip_prefix("RHINE_VERIFY ") {
+                if let Ok(reply) = serde_json::from_str::<serde_json::Value>(raw) {
+                    if let Some(id) = reply["id"].as_u64() {
+                        if let Some(sender) = reader_replies.lock().ok().and_then(|mut pending| pending.remove(&id)) { let _ = sender.send(reply); }
+                    }
+                }
+            }
         }
     });
-    let service = MusicService(Mutex::new(Some(child)));
+    let service = MusicService { child: Mutex::new(Some(child)), replies, sequence: AtomicU64::new(1) };
     let address = receive.recv_timeout(Duration::from_secs(25)).map_err(|_| "音乐服务启动超时，请查看本地数据目录中的 service.log")?;
     let mut url: tauri::Url = address.parse()?;
     url.set_query(Some("desktop=1"));
@@ -166,6 +220,7 @@ fn start_service(app: &tauri::AppHandle) -> Result<(MusicService, tauri::Url), B
 ///
 /// 图标直接复用 `bundle.icon` 里那个（`default_window_icon()`），不额外塞一份
 /// 资源 —— 否则打包体积变大，还容易出现托盘图标和任务栏图标不一致。
+#[cfg(desktop)]
 fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出 Rhine Music", true, None::<&str>)?;
@@ -216,9 +271,14 @@ fn desktop_tray_preference(enabled: bool) {
     MINIMIZE_TO_TRAY.store(enabled, Ordering::SeqCst);
 }
 
-fn main() {
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
     request_high_performance_gpu();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("rhine-qishui-http", qishui_verify::proxy_request)
+        .register_asynchronous_uri_scheme_protocol("rhine-qishui-result", qishui_passport::result_request);
+    #[cfg(desktop)]
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") { let _ = window.unminimize(); let _ = window.show(); let _ = window.set_focus(); }
         }))
@@ -228,13 +288,17 @@ fn main() {
                 | tauri_plugin_window_state::StateFlags::POSITION
                 | tauri_plugin_window_state::StateFlags::MAXIMIZED)
             .build())
-        .invoke_handler(tauri::generate_handler![desktop_window_action, desktop_window_state, desktop_pick_folder, desktop_open_link, desktop_open_feedback, desktop_tray_preference, desktop_app_info, desktop_update_install])
+        ;
+    let builder = builder
+        .invoke_handler(tauri::generate_handler![desktop_window_action, desktop_window_state, desktop_pick_folder, desktop_open_link, desktop_open_feedback, desktop_tray_preference, desktop_app_info, desktop_update_install, desktop_qishui_verify])
         .setup(|app| {
+            #[cfg(desktop)]
+            {
             let (service, url) = start_service(app.handle())?;
             app.manage(service);
             let origin = url.origin().ascii_serialization();
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
-                .title("Rhine Music").inner_size(1280.0, 800.0).min_inner_size(800.0, 560.0)
+                .title("Rhine Music").inner_size(1280.0, 800.0).min_inner_size(360.0, 360.0)
                 .decorations(false).resizable(true).fullscreen(false)
                 .initialization_script("Object.defineProperty(window, '__RHINE_GPU_REQUEST__', { value: 'prefer-discrete-with-integrated-fallback' });")
                 .background_color(tauri::window::Color(232, 229, 225, 255))
@@ -265,11 +329,18 @@ fn main() {
                     _ => {}
                 }
             });
+            }
+            #[cfg(mobile)]
+            {
+                app.manage(MusicService { child: Mutex::new(None), replies: Arc::new(Mutex::new(HashMap::new())), sequence: AtomicU64::new(1) });
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into())).build()?;
+            }
             Ok(())
-        })
-        .build(tauri::generate_context!())
-        .expect("Rhine Music desktop initialization failed")
-        .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) { app.state::<MusicService>().stop(); }
         });
+    builder.run(tauri::generate_context!()).expect("Rhine Music initialization failed");
+}
+
+#[cfg(not(mobile))]
+fn main() {
+    run();
 }

@@ -1,7 +1,8 @@
-export interface LyricLine { time: number; text: string; translation?: string }
+import { parseWordLyrics, validWords, type WordLine, type Word } from "../scripts/word-lyrics.mjs";
+export interface LyricLine { time: number; text: string; translation?: string; words?: Word[] }
 
 /** Standard LRC: multiple timestamps, decimal precision, offsets and untimed text. */
-export function parseLyrics(source: string, translated = ''): LyricLine[] {
+export function parseLyrics(source: string, translated = '', wordLines?: WordLine[]): LyricLine[] {
   const parse = (input: string) => {
     const offset = Number(/\[offset:([+-]?\d+)\]/i.exec(input)?.[1] || 0) / 1000;
     const result: LyricLine[] = [];
@@ -17,9 +18,14 @@ export function parseLyrics(source: string, translated = ''): LyricLine[] {
     }
     return result.sort((a, b) => a.time - b.time).slice(0, 4000);
   };
-  const lines = parse(source), translations = parse(translated);
+  const raw = parseWordLyrics(source);
+  const lines = raw.length ? raw : parse(source), translations = parse(translated);
+  const timed = new Map((Array.isArray(wordLines) ? wordLines : raw).slice(0, 4000).filter(line => line && typeof line.text === "string" && Number.isFinite(line.time)).map(line => [Math.round(line.time * 1000), line]));
   const byTime = new Map(translations.map(line => [Math.round(line.time * 100), line.text]));
-  return lines.map(line => ({ ...line, translation: byTime.get(Math.round(line.time * 100)) }));
+  return lines.map(line => {
+    const candidate = timed.get(Math.round(line.time * 1000));
+    return { ...line, ...(candidate && validWords(line.text, candidate.words, line.time) ? { words: candidate.words } : {}), translation: byTime.get(Math.round(line.time * 100)) };
+  });
 }
 
 export function lyricIndex(lines: readonly LyricLine[], time: number) {
@@ -44,16 +50,16 @@ export function untimedLyrics(source: string) {
 export async function backfillLyrics(
   track: { title: string; artist: string; duration: number; onlineSource?: { provider: string; id: string } },
   fetcher: (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }> = (url) => fetch(url),
-): Promise<{ original: string; translated: string; instrumental: boolean; unavailable: boolean } | null> {
+): Promise<{ original: string; translated: string; instrumental: boolean; unavailable: boolean; wordLines?: WordLine[] } | null> {
   const query = new URLSearchParams({ title: track.title, artist: track.artist, duration: String(Math.round(track.duration) || 0) });
   const source = track.onlineSource;
   if (source) { query.set('provider', source.provider); query.set('id', source.id); }
   try {
     const response = await fetcher(`/api/lyrics?${query}`);
     if (!response.ok) return null;
-    const value = await response.json() as { original?: string; translated?: string; instrumental?: boolean } | null;
+    const value = await response.json() as { original?: string; translated?: string; instrumental?: boolean; wordLines?: WordLine[] } | null;
     if (value?.instrumental) return { original: '', translated: '', instrumental: true, unavailable: false };
-    if (value?.original) return { original: value.original, translated: value.translated || '', instrumental: false, unavailable: false };
+    if (value?.original) return { ...(Array.isArray(value.wordLines) ? { wordLines: value.wordLines } : {}), original: value.original, translated: value.translated || '', instrumental: false, unavailable: false };
     return null;
   } catch { return null; }
 }

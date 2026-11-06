@@ -161,7 +161,7 @@
   .settings-page .settings-row input[type="checkbox"]::after { display: none; }
 }
 
-/* ── 共享音源：连通性检测结果 ─────────────────────────────── */
+
 .pool-connectivity:empty { display: none; }
 .pool-connectivity { margin: 14px 0 0; }
 .pool-connectivity-note { margin: 0; color: var(--muted); font-size: 12px; }
@@ -201,13 +201,14 @@
 .pool-connectivity-list li.pool-miss .pool-meter { color: var(--ink); opacity: .55; }
 
 /* ── 自定义音源管理 ─────────────────────────────────────── */
-.lx-sources-actions { display: flex; gap: 10px; margin: 4px 0 14px; }
+.lx-sources-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 14px; }
+.lx-sources-progress { margin: 0 0 14px; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .lx-sources-list { margin: 0; padding: 0; list-style: none; }
 .lx-source-row {
   display: grid;
   /* meter 列原来是 92px 死值，状态文字加长（「182ms · master · 酷我」）后
      直接溢出压到「停用」按钮上。改成按内容伸缩、可收缩省略。 */
-  grid-template-columns: minmax(0, 1fr) minmax(0, max-content) 66px 66px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content) 66px 66px 66px;
   align-items: center;
   gap: 12px;
   min-height: 46px;
@@ -236,8 +237,14 @@
   min-height: 32px;
   padding: 0 12px;
   font-size: 13px;
+  white-space: nowrap;
 }
 .lx-source-row .text-button[disabled] { opacity: .35; cursor: default; }
+@media (max-width: 1000px) {
+  .lx-source-row { grid-template-columns: repeat(3, minmax(66px, 1fr)); gap: 8px 12px; padding: 10px 0; }
+  .lx-source-name { grid-column: 1 / -1; }
+  .lx-source-meter { grid-column: 1 / -1; text-align: left; }
+}
 
 /* ── 自带音源折叠组：我们提供的音源收纳成一行，用户自加的留在外面 ── */
 .lx-source-group { border-bottom: 1px solid var(--line); }
@@ -345,3 +352,5 @@
   border-color: var(--accent);
   color: var(--accent);
 }
+
+.graphics-preparation{position:fixed;inset:110px 0 0;z-index:9999;background:var(--boot-bg-root,#e8e5e1);display:grid;place-items:center;text-align:center;color:var(--boot-ink,#232520)}.graphics-preparation strong{font-size:32px;letter-spacing:3px}.graphics-preparation p{font-size:12px;color:var(--muted,#777)}

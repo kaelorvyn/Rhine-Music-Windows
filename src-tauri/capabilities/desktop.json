@@ -14,6 +14,7 @@
     "allow-desktop-open-feedback",
     "allow-desktop-tray-preference",
     "allow-desktop-app-info",
-    "allow-desktop-update-install"
+    "allow-desktop-update-install",
+    "allow-desktop-qishui-verify"
   ]
 }

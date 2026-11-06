@@ -74,8 +74,11 @@ body:has(.rhine-loading:not([hidden])) .desktop-chrome{color:var(--boot-chrome)}
 .rhine-loading .opening-hold{display:none;position:absolute;left:0;right:0;top:calc(50% - 32px);text-align:center}
 .rhine-loading .opening-hold strong{display:block;font-size:clamp(24px,4vw,44px);letter-spacing:3px}
 .rhine-loading .opening-hold span{display:block;margin-top:10px;font-size:14px;letter-spacing:4px}
-.rhine-loading[data-state=waiting] .opening-stage,.rhine-loading[data-state=error] .opening-stage{visibility:hidden}
-.rhine-loading[data-state=waiting] .opening-hold,.rhine-loading[data-state=error] .opening-hold{display:block}
+.rhine-loading:is([data-state=preparing],[data-state=waiting],[data-state=error]) .opening-stage{visibility:hidden}
+.rhine-loading:is([data-state=preparing],[data-state=waiting],[data-state=error]) .opening-hold{display:block}
+.rhine-loading:not([data-state=playing]) .opening-skip{display:none}
+.rhine-loading .opening-notice{display:none;position:absolute;top:calc(50% + 66px);left:32px;right:32px;margin:0;text-align:center;font-size:12px;line-height:1.8;color:var(--boot-status)}
+.rhine-loading[data-state=preparing][data-first-preparation=true] .opening-notice{display:block}
 .rhine-loading[data-state=error] .opening-status{bottom:auto;top:calc(50% + 38px)}
 .netease-qr p,.netease-auth-status{font-size:12px;line-height:1.8;opacity:.7}
 .together-welcome h3{font-size:20px;font-weight:500;margin-bottom:24px}

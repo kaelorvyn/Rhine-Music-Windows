@@ -50,3 +50,19 @@
 .fx-hint { font-size: 11px; letter-spacing: normal; color: var(--muted, #8b7f70); opacity: 0.8; }
 .fx-toggle small { display: block; font-size: 10px; letter-spacing: normal; color: var(--muted, #8b7f70); }
 .fx-limiter { margin: 8px 0 4px; margin-left: 0; }
+.fx-head { position: sticky; top: -18px; padding-block: 8px; background: var(--surface, #faf7f2); z-index: 2; }
+.fx-head button { min-height: 44px; }
+.fx-slider-row, .fx-preamp-row { min-width: 0; }
+.fx-slider-row input[type='range'] { min-width: 0; width: 0; }
+@media (max-width: 540px) {
+  .fx-surface { padding-inline: 16px; }
+  .fx-bands { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px 4px; }
+  .fx-band { min-width: 0; }
+  .fx-band input[type='range'] { width: 44px; }
+  .fx-grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .fx-preamp-row { flex-wrap: wrap; }
+  .fx-preamp-row .fx-slider-row { flex-basis: 100%; }
+  .fx-preset { min-height: 44px; }
+  .fx-head { gap: 6px; flex-wrap: wrap; }
+  .fx-head strong { font-size: 16px; }
+}

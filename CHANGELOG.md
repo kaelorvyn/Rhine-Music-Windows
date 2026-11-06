@@ -1,5 +1,12 @@
 # 更新记录
 
+## 0.2.0 Premium · 2026-11-06
+
+- 更新内置音源版本与音源加载链路；本次收到的“全豆要 V4.1”和“念心音源 1.0.2”与现有内置文件逐字节一致，因此保持现有文件不重复替换。
+- 保留启动、渲染、封面缓存、触摸浏览、紧凑横竖屏、登录、歌词和更新器改动。
+
+完整说明见 [CHANGELOG-0.2.0.md](CHANGELOG-0.2.0.md)。
+
 本文件记录 Rhine Music Windows 版的发布与变更。上游 [RhineLabUI](https://github.com/LBEILC/RhineLabUI)
 与 [Rhine-Music-Demo](https://github.com/RonaldDeng/Rhine-Music-Demo) 的历史见各自仓库。
 

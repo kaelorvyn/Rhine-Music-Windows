@@ -2,6 +2,7 @@ import { escapeHtml as esc } from './html';
 import { musicPlatforms, type MusicProvider } from './music-platform';
 import { fetchOnline } from './online-debug';
 export type NeteaseAccount = { loggedIn: boolean; profile?: { nickname: string; userId?: string }; warning?: string };
+export type PlatformLogin = Pick<NeteaseLogin, 'mount' | 'status' | 'dispose'>;
 type Challenge = { id: string; image: string; expiresAt: number };
 export class NeteaseLogin {
   private container?: HTMLElement;
@@ -16,6 +17,7 @@ export class NeteaseLogin {
   private kugouMethod: 'kugou' | 'kugou-lite' = 'kugou-lite';
   constructor(private onAccountChange: (account: NeteaseAccount) => void = () => {}, readonly provider: MusicProvider = 'netease') {}
   private get name() { return musicPlatforms[this.provider]; }
+  private get scanPrompt() { return this.provider === 'kuwo' ? '请使用微信扫码，登录微信关联的酷我账号。' : this.provider === 'qishui' ? '请使用汽水音乐 App 扫码确认。' : '等待扫码…'; }
   private pending = false;
   private message = '';
   private nativeHidden = false;
@@ -68,8 +70,13 @@ export class NeteaseLogin {
   async status() {
     if (this.pending || this.challenge) return;
     const generation = this.generation; const controller = this.controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+      if (generation === this.generation) { this.message = '读取账号状态超时，请重试。'; this.render(); }
+    }, 15000);
     try { const account = await this.request('status', undefined, controller.signal); if (generation !== this.generation || controller.signal.aborted) return; this.account = account; this.onAccountChange(account); this.message = ''; this.render(); }
     catch (failure) { if (generation === this.generation && !controller.signal.aborted) { this.message = (failure as Error).message; this.render(); } }
+    finally { clearTimeout(timeout); }
   }
   private async start() {
     if (this.pending) return;
@@ -78,11 +85,11 @@ export class NeteaseLogin {
     try {
       const challenge = await this.request('start', this.provider === 'qq' ? { method: this.qqMethod } : this.provider === 'kugou' ? { method: this.kugouMethod } : {}, controller.signal) as Challenge;
       if (generation !== this.generation || controller.signal.aborted) { void this.request('cancel', { id: challenge.id }).catch(() => {}); return; }
-      this.challenge = challenge; this.message = this.provider === 'bodian' ? '请使用波点音乐 App 扫码确认。' : '等待扫码…';
+      this.challenge = challenge; this.message = this.scanPrompt;
     } catch (failure) { if (!controller.signal.aborted && generation === this.generation) this.message = (failure as Error).message; }
     finally { if (generation === this.generation) { this.pending = false; this.render(); this.schedule(); } }
   }
-  private schedule() { clearTimeout(this.timer); if (this.challenge && !this.nativeHidden && document.visibilityState === 'visible') this.timer = setTimeout(() => void this.poll(), this.provider === 'bodian' ? 2200 : 1800); }
+  private schedule() { clearTimeout(this.timer); if (this.challenge && !this.nativeHidden && document.visibilityState === 'visible') this.timer = setTimeout(() => void this.poll(), 1800); }
   private async poll() {
     const challenge = this.challenge; if (!challenge || this.pending) return;
     if (Date.now() >= challenge.expiresAt) { this.cancel(); this.message = '二维码已过期。'; this.render(); return; }
@@ -92,7 +99,7 @@ export class NeteaseLogin {
       if (generation !== this.generation || controller.signal.aborted) return;
       if (result.state === 'authorized') { this.challenge = undefined; this.account = result; this.onAccountChange(result); this.message = result.warning || '已登录。'; }
       else if (result.state === 'expired') { this.challenge = undefined; this.message = result.message || '二维码已过期。'; }
-      else this.message = result.state === 'scanned' ? '已扫码，等待确认。' : this.provider === 'bodian' ? '请使用波点音乐 App 扫码确认。' : '等待扫码…';
+      else this.message = result.state === 'scanned' ? '已扫码，等待确认。' : this.scanPrompt;
     } catch (failure) { if (generation === this.generation && !controller.signal.aborted) this.message = `${(failure as Error).message} 正在重试…`; }
     finally { if (generation === this.generation) { this.pending = false; this.render(); this.schedule(); } }
   }

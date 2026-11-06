@@ -62,7 +62,8 @@ pool-credential.json
 /outputs/
 
 # 原生签名库（汽水登录所需的 bdms.node / metasecml.dll，二进制不入库）
-/scripts/vendor/
+/scripts/vendor/*
+!/scripts/vendor/qishui-purejs/
 
 # 第三方接口调研笔记（内部资料，不公开）
 /QISHUI-API.md

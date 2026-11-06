@@ -45,6 +45,9 @@ const METHODS = {
     runtime.bySource.clear()
     runtime.urlCache.clear()
     runtime.health.clear()
+    runtime.inFlight.clear()
+    runtime.healthScope = undefined
+    runtime.selfCheckState = null
     runtime.selfCheckReport = null
     runtime.loadReport = []
     runtime.disabled = new Set()
